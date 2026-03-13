@@ -60,8 +60,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Check current package version
+        run: echo "CURRENT_VERSION=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
+
       - name: Bump package version
-        run: npm version "${VERSION}" --no-git-tag-version
+        shell: bash
+        run: |
+          if [ "${CURRENT_VERSION}" = "${VERSION}" ]; then
+            echo "package.json already at ${VERSION}; keeping current version."
+            exit 0
+          fi
+          npm version "${VERSION}" --no-git-tag-version
 
       - name: Update README release examples
         run: node scripts/update-release-version.mjs "${VERSION}"
@@ -78,17 +87,25 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Commit release preparation
+        id: commit
         shell: bash
         run: |
           git add package.json package-lock.json README.md
+          if git diff --cached --quiet; then
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           git commit -m "chore: prepare release ${TAG}"
+          echo "created=true" >> "$GITHUB_OUTPUT"
 
       - name: Create release tag
         run: git tag "${TAG}"
 
       - name: Push commit and tag
         run: |
-          git push origin "HEAD:${DEFAULT_BRANCH}"
+          if [ "${{ steps.commit.outputs.created }}" = "true" ]; then
+            git push origin "HEAD:${DEFAULT_BRANCH}"
+          fi
           git push origin "${TAG}"
 
       - name: Pack release tarball
