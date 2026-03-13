@@ -4,6 +4,7 @@
 
 Current implemented surface:
 
+- `cstack <intent>`
 - `discover`
 - `spec`
 - `update`
@@ -11,6 +12,8 @@ Current implemented surface:
 - `inspect`
 - repo-local config in `.cstack/config.toml`
 - durable run artifacts in `.cstack/runs/<run-id>/`
+- inferred routing plans and stage lineage for intent runs
+- bounded specialist reviews for security, DevSecOps, traceability, audit, and release-pipeline concerns
 - live in-progress activity output while Codex is running
 - colored TTY dashboard for active runs, with plain-line fallback for logs and non-interactive shells
 
@@ -79,6 +82,10 @@ npm install -g .
 ## Current Commands
 
 ```bash
+# Route a high-level task through the inferred front door
+cstack "Introduce SSO with audit logging and hardened release checks"
+cstack run "Plan a compliance-safe billing migration" --dry-run
+
 # Generate a discovery run
 cstack discover "Map the current CLI surface and artifact model"
 
@@ -98,6 +105,39 @@ cstack inspect <run-id>
 ```
 
 If you are running from source without a global install, use `node ./bin/cstack.js ...`.
+
+## Route by Intent
+
+`cstack <intent>` is now the primary front door for higher-level tasks.
+
+What it does today:
+
+- accepts a natural-language task
+- infers an internal stage plan
+- persists `routing-plan.json` and `stage-lineage.json`
+- executes the currently implemented deterministic stages inside one orchestrated run
+- attaches bounded specialist reviews when the intent suggests they are justified
+
+Current first-slice behavior:
+
+- `discover` and `spec` are executed automatically inside the intent run
+- `build`, `review`, and `ship` may still appear in the inferred plan but are recorded as deferred in this first release slice
+- specialist reviews may run after the `spec` stage and are recorded under `delegates/`
+
+Examples:
+
+```bash
+# quoted single-argument intent
+cstack "Introduce SSO with audit logging and hardened release checks"
+
+# explicit subcommand form
+cstack run "Plan a compliance-safe billing migration" --dry-run
+```
+
+How to inspect it:
+
+- `cstack inspect <run-id>` now shows the routing plan, stage lineage, and specialist dispositions for intent runs
+- the run directory includes `routing-plan.json`, `stage-lineage.json`, and specialist artifacts under `delegates/`
 
 ## Update cstack
 
@@ -164,10 +204,11 @@ EOF
 Then use `cstack` from that repo root:
 
 ```bash
-# 1. Map the repo before changing anything
-cstack discover "Map the current architecture, key modules, and likely risk areas"
+# 1. Start from the inferred front door for broader tasks
+cstack "Add feature flags to the billing flow with audit logging"
 
-# 2. Turn that understanding into an implementation-ready plan
+# 2. Or use explicit stages when you want tighter control
+cstack discover "Map the current architecture, key modules, and likely risk areas"
 cstack spec "Design a safe migration plan for adding feature flags to the billing flow"
 
 # 3. Inspect saved runs and artifacts
@@ -189,8 +230,8 @@ This is an activity feed, not private chain-of-thought output. It shows what the
 
 Recommended workflow in an existing codebase:
 
-1. Start with `discover` to understand the repo shape, constraints, and likely hotspots.
-2. Use `spec` to turn a concrete change request into an implementation-ready artifact.
+1. Start with `cstack <intent>` when the task is broad enough that routing and specialist selection are useful.
+2. Use explicit `discover` and `spec` commands when you want to force a specific stage yourself.
 3. Read the saved outputs in `.cstack/runs/<run-id>/` before moving on to manual implementation or later `cstack` workflows.
 
 Useful repo-local files:
@@ -247,8 +288,12 @@ Current artifact set:
 - `final.md`
 - `stdout.log`
 - `stderr.log`
+- `routing-plan.json` for intent runs
+- `stage-lineage.json` for intent runs
 - `artifacts/spec.md` for `spec`
 - `artifacts/findings.md` for `discover`
+- `delegates/<specialist>/request.md` for specialist reviews in intent runs
+- `delegates/<specialist>/result.json` for specialist reviews in intent runs
 
 `events.jsonl` records the live progress feed so `cstack inspect` can show recent activity after the run has finished.
 
@@ -300,6 +345,7 @@ Published release assets:
 
 Implemented:
 
+- `cstack <intent>`
 - `discover`
 - `spec`
 - `update`
@@ -308,13 +354,15 @@ Implemented:
 - config loading
 - run creation and persistence
 - Codex exec adapter
+- inferred routing plans and stage lineage
+- bounded specialist review artifacts
 - live progress reporting and event logging
 - build, typecheck, and test pipeline
 
 Not implemented yet:
 
-- `build`
-- `review`
-- `ship`
+- automatic execution of `build`
+- automatic execution of `review`
+- automatic execution of `ship`
 - active multi-agent delegation policy
 - GitHub issue sync helpers inside the CLI

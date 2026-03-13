@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import path from "node:path";
 import { runDiscover } from "./commands/discover.js";
+import { runIntentCommand } from "./commands/intent.js";
 import { runSpec } from "./commands/spec.js";
 import { runRuns } from "./commands/runs.js";
 import { runInspect } from "./commands/inspect.js";
@@ -9,6 +10,8 @@ import { runUpdateCommand, UpdateCommandError } from "./commands/update.js";
 function usage(): string {
   return [
     "Usage:",
+    "  cstack <intent>",
+    "  cstack run <intent> [--dry-run]",
     "  cstack discover <prompt>",
     "  cstack spec <prompt>",
     "  cstack update [--check] [--dry-run] [--yes] [--version <x>] [--channel stable]",
@@ -24,6 +27,9 @@ async function main(): Promise<void> {
   switch (command) {
     case "discover":
       await runDiscover(cwd, rest.join(" "));
+      return;
+    case "run":
+      await runIntentCommand(cwd, rest, "run");
       return;
     case "spec":
       await runSpec(cwd, rest.join(" "));
@@ -43,6 +49,10 @@ async function main(): Promise<void> {
       process.stdout.write(`${usage()}\n`);
       return;
     default:
+      if (command && !command.startsWith("-") && (rest.length > 0 || /\s/.test(command))) {
+        await runIntentCommand(cwd, [command, ...rest], "bare");
+        return;
+      }
       throw new Error(`Unknown command: ${command}\n\n${usage()}`);
   }
 }

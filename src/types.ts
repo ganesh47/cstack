@@ -1,4 +1,64 @@
-export type WorkflowName = "spec" | "discover" | "update";
+export type WorkflowName = "spec" | "discover" | "update" | "intent";
+
+export type StageName = "discover" | "spec" | "build" | "review" | "ship";
+
+export type StageStatus =
+  | "planned"
+  | "running"
+  | "completed"
+  | "failed"
+  | "skipped"
+  | "deferred";
+
+export type SpecialistName =
+  | "security-review"
+  | "devsecops-review"
+  | "traceability-review"
+  | "audit-review"
+  | "release-pipeline-review";
+
+export type SpecialistDisposition = "accepted" | "partial" | "discarded";
+
+export interface RoutingStagePlan {
+  name: StageName;
+  rationale: string;
+  status: StageStatus;
+  executed: boolean;
+  notes?: string;
+  stageDir?: string;
+  artifactPath?: string;
+}
+
+export interface SpecialistSelection {
+  name: SpecialistName;
+  reason: string;
+  selected: boolean;
+}
+
+export interface SpecialistExecution {
+  name: SpecialistName;
+  reason: string;
+  status: "planned" | "running" | "completed" | "failed";
+  disposition: SpecialistDisposition;
+  specialistDir?: string;
+  artifactPath?: string;
+  notes?: string;
+}
+
+export interface RoutingPlan {
+  intent: string;
+  inferredAt: string;
+  entrypoint: "bare" | "run";
+  stages: RoutingStagePlan[];
+  specialists: SpecialistSelection[];
+  summary: string;
+}
+
+export interface StageLineage {
+  intent: string;
+  stages: RoutingStagePlan[];
+  specialists: SpecialistExecution[];
+}
 
 export type RunEventType =
   | "starting"
@@ -61,5 +121,9 @@ export interface RunRecord {
   error?: string;
   inputs: {
     userPrompt: string;
+    entrypoint?: "workflow" | "intent";
+    plannedStages?: string[];
+    selectedSpecialists?: string[];
+    dryRun?: boolean;
   };
 }
