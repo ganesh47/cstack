@@ -1,0 +1,145 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish, for example v0.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      INPUT_TAG: ${{ github.event.inputs.tag }}
+      REF_TAG: ${{ github.ref_name }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+
+      - name: Resolve release tag
+        id: tag
+        shell: bash
+        run: |
+          if [ -n "${INPUT_TAG}" ]; then
+            echo "value=${INPUT_TAG}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${REF_TAG}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate package version matches tag
+        shell: bash
+        run: |
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          EXPECTED_TAG="v${PACKAGE_VERSION}"
+          if [ "${EXPECTED_TAG}" != "${{ steps.tag.outputs.value }}" ]; then
+            echo "package.json version ${PACKAGE_VERSION} does not match tag ${{ steps.tag.outputs.value }}"
+            exit 1
+          fi
+          echo "PACKAGE_VERSION=${PACKAGE_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Pack release tarball
+        shell: bash
+        run: |
+          mkdir -p release
+          PACKAGE_FILE="$(npm pack --pack-destination release | tail -n 1)"
+          echo "PACKAGE_FILE=${PACKAGE_FILE}" >> "$GITHUB_ENV"
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          cd release
+          sha256sum "${PACKAGE_FILE}" > SHA256SUMS.txt
+
+      - name: Generate release notes
+        shell: bash
+        run: |
+          cat > release/RELEASE_NOTES.md <<EOF
+          ## Install
+
+          Requirements:
+          - Node.js 22+
+          - Codex CLI installed and available on \`PATH\`
+
+          Install directly from this GitHub release:
+
+          \`\`\`bash
+          npm install -g https://github.com/ganesh47/cstack/releases/download/${{ steps.tag.outputs.value }}/${PACKAGE_FILE}
+          \`\`\`
+
+          Download first, then install locally:
+
+          \`\`\`bash
+          curl -LO https://github.com/ganesh47/cstack/releases/download/${{ steps.tag.outputs.value }}/${PACKAGE_FILE}
+          npm install -g ./${PACKAGE_FILE}
+          \`\`\`
+
+          Verify the download:
+
+          \`\`\`bash
+          curl -LO https://github.com/ganesh47/cstack/releases/download/${{ steps.tag.outputs.value }}/SHA256SUMS.txt
+          sha256sum -c SHA256SUMS.txt
+          \`\`\`
+
+          ## What is in this release
+
+          - packaged CLI entrypoint
+          - compiled \`dist/\` runtime
+          - current README and install guidance
+
+          ## Quick start
+
+          \`\`\`bash
+          cstack --help
+          cstack spec "Draft an implementation note for the next cstack slice"
+          \`\`\`
+          EOF
+
+      - name: Publish GitHub release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.tag.outputs.value }}
+        shell: bash
+        run: |
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" \
+              "release/${PACKAGE_FILE}" \
+              "release/SHA256SUMS.txt" \
+              --clobber
+            gh release edit "${RELEASE_TAG}" \
+              --title "cstack ${RELEASE_TAG}" \
+              --notes-file release/RELEASE_NOTES.md
+          else
+            gh release create "${RELEASE_TAG}" \
+              "release/${PACKAGE_FILE}" \
+              "release/SHA256SUMS.txt" \
+              --title "cstack ${RELEASE_TAG}" \
+              --notes-file release/RELEASE_NOTES.md
+          fi

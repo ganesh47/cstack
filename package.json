@@ -4,13 +4,34 @@
   "private": true,
   "type": "module",
   "description": "Workflow wrapper around Codex CLI",
+  "homepage": "https://github.com/ganesh47/cstack#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ganesh47/cstack.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ganesh47/cstack/issues"
+  },
+  "keywords": [
+    "codex",
+    "cli",
+    "workflow",
+    "agent",
+    "release"
+  ],
   "bin": {
     "cstack": "./bin/cstack.js"
   },
+  "files": [
+    "bin/",
+    "dist/",
+    "README.md"
+  ],
   "scripts": {
     "build": "npm run clean && tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
     "dev": "tsx src/cli.ts",
+    "prepack": "npm run build",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
