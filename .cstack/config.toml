@@ -1,0 +1,6 @@
+[codex]
+sandbox = "workspace-write"
+
+[workflows.spec.delegation]
+enabled = false
+maxAgents = 0

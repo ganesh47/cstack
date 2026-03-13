@@ -1,0 +1,37 @@
+{
+  "name": "cstack",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Workflow wrapper around Codex CLI",
+  "bin": {
+    "cstack": "./bin/cstack.js"
+  },
+  "scripts": {
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist",
+    "dev": "tsx src/cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@iarna/toml": "^2.2.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.1",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  },
+  "vitest": {
+    "test": {
+      "exclude": [
+        "dist/**",
+        "node_modules/**"
+      ]
+    }
+  }
+}
