@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import path from "node:path";
+import { runDiscover } from "./commands/discover.js";
 import { runSpec } from "./commands/spec.js";
 import { runRuns } from "./commands/runs.js";
 import { runInspect } from "./commands/inspect.js";
@@ -7,6 +8,7 @@ import { runInspect } from "./commands/inspect.js";
 function usage(): string {
   return [
     "Usage:",
+    "  cstack discover <prompt>",
     "  cstack spec <prompt>",
     "  cstack runs",
     "  cstack inspect [run-id]"
@@ -18,6 +20,9 @@ async function main(): Promise<void> {
   const [, , command, ...rest] = process.argv;
 
   switch (command) {
+    case "discover":
+      await runDiscover(cwd, rest.join(" "));
+      return;
     case "spec":
       await runSpec(cwd, rest.join(" "));
       return;

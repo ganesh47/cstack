@@ -4,3 +4,7 @@ sandbox = "workspace-write"
 [workflows.spec.delegation]
 enabled = false
 maxAgents = 0
+
+[workflows.discover.delegation]
+enabled = true
+maxAgents = 2

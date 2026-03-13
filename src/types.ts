@@ -1,4 +1,4 @@
-export type WorkflowName = "spec";
+export type WorkflowName = "spec" | "discover";
 
 export interface CodexConfig {
   command?: string;
@@ -19,6 +19,7 @@ export interface CstackConfig {
   codex: CodexConfig;
   workflows: {
     spec: WorkflowConfig;
+    discover: WorkflowConfig;
   };
 }
 

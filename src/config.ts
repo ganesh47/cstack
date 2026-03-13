@@ -16,6 +16,12 @@ const DEFAULT_CONFIG: CstackConfig = {
         enabled: false,
         maxAgents: 0
       }
+    },
+    discover: {
+      delegation: {
+        enabled: true,
+        maxAgents: 2
+      }
     }
   }
 };

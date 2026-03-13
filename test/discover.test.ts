@@ -3,14 +3,14 @@ import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { chmodSync } from "node:fs";
-import { runSpec } from "../src/commands/spec.js";
+import { runDiscover } from "../src/commands/discover.js";
 import { listRuns, readRun } from "../src/run.js";
 
-describe("runSpec", () => {
+describe("runDiscover", () => {
   let repoDir: string;
 
   beforeEach(async () => {
-    repoDir = await fs.mkdtemp(path.join(os.tmpdir(), "cstack-spec-"));
+    repoDir = await fs.mkdtemp(path.join(os.tmpdir(), "cstack-discover-"));
     const fakeCodexPath = path.resolve("test/fixtures/fake-codex.mjs");
     chmodSync(fakeCodexPath, 0o755);
 
@@ -25,15 +25,19 @@ describe("runSpec", () => {
         `command = "${fakeCodexPath.replaceAll("\\", "\\\\")}"`,
         'sandbox = "workspace-write"',
         "",
-        "[workflows.spec.delegation]",
-        "enabled = false",
-        "maxAgents = 0",
+        "[workflows.discover.delegation]",
+        "enabled = true",
+        "maxAgents = 2",
         ""
       ].join("\n"),
       "utf8"
     );
 
-    await fs.writeFile(path.join(repoDir, ".cstack", "prompts", "spec.md"), "# test prompt asset\n", "utf8");
+    await fs.writeFile(
+      path.join(repoDir, ".cstack", "prompts", "discover.md"),
+      "# test discover prompt asset\n",
+      "utf8"
+    );
     await fs.writeFile(path.join(repoDir, "docs", "specs", "cstack-spec-v0.1.md"), "# repo spec\n", "utf8");
     await fs.writeFile(
       path.join(repoDir, "docs", "research", "gstack-codex-interaction-model.md"),
@@ -46,20 +50,21 @@ describe("runSpec", () => {
     await fs.rm(repoDir, { recursive: true, force: true });
   });
 
-  it("creates a completed run with artifact and session metadata", async () => {
-    await runSpec(repoDir, "Draft the first vertical slice.");
+  it("creates a completed discover run with findings artifact", async () => {
+    await runDiscover(repoDir, "Map the repo constraints for the next slice.");
 
     const runs = await listRuns(repoDir);
     expect(runs).toHaveLength(1);
 
     const run = await readRun(repoDir, runs[0]!.id);
     const finalBody = await fs.readFile(run.finalPath, "utf8");
-    const artifactBody = await fs.readFile(path.join(path.dirname(run.finalPath), "artifacts", "spec.md"), "utf8");
+    const artifactBody = await fs.readFile(path.join(path.dirname(run.finalPath), "artifacts", "findings.md"), "utf8");
+    const contextBody = await fs.readFile(run.contextPath, "utf8");
 
+    expect(run.workflow).toBe("discover");
     expect(run.status).toBe("completed");
-    expect([null, "fake-codex 0.0.1"]).toContain(run.codexVersion);
-    expect([undefined, "fake-session-123"]).toContain(run.sessionId);
-    expect(run.codexCommand.some((part) => part.includes("fake-codex.mjs"))).toBe(true);
+    expect(contextBody).toContain("Delegation enabled: yes");
+    expect(contextBody).toContain("Delegation max agents: 2");
     expect(finalBody).toContain("fake Codex response");
     expect(artifactBody).toContain("Fake Spec");
   });

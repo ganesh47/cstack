@@ -17,7 +17,7 @@ for await (const chunk of process.stdin) {
   prompt += chunk.toString("utf8");
 }
 
-process.stderr.write("session id: fake-session-123\n");
+await new Promise((resolve) => process.stderr.write("session id: fake-session-123\n", resolve));
 
 if (!finalPath) {
   process.stderr.write("missing final path\n");
