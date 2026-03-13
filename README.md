@@ -17,7 +17,7 @@ Current implemented surface:
 - run ledger views across active and historical runs
 - interactive post-run inspection for artifact-grounded follow-up in TTYs
 - live in-progress activity output while Codex is running
-- colored TTY dashboard for active runs, with plain-line fallback for logs and non-interactive shells
+- ANSI-first operator console for active runs, with plain-line fallback for logs and non-interactive shells
 
 ## Install
 
@@ -174,6 +174,13 @@ Each row shows the run id, workflow, current status, active stage when known, ac
 
 The interactive inspector is artifact-grounded. It does not silently continue the original Codex reasoning session.
 
+When launched in a TTY, the inspector now opens on a compact home view with:
+
+- an `Observed` section for facts from saved artifacts
+- a `Plan` section with stage and specialist strips
+- a `Suggested next actions` section
+- a persistent shortcut footer
+
 Useful inspector commands:
 
 - `summary`
@@ -190,6 +197,16 @@ Useful inspector commands:
 - `resume`
 - `fork`
 - `exit`
+
+Shortcuts:
+
+- `1` summary
+- `2` stages
+- `3` specialists
+- `4` artifacts
+- `f` final output
+- `r` routing
+- `q` exit
 
 For TTY runs, `cstack` may offer `Inspect this run now? [Y/n]` after the summary. Non-interactive shells skip that prompt.
 
@@ -271,7 +288,16 @@ cstack inspect
 cstack inspect <run-id> --interactive
 ```
 
-While a run is active in a normal terminal, `cstack` now renders a colored fixed-height progress dashboard instead of endlessly appending log lines.
+While a run is active in a normal terminal, `cstack` now renders a bounded ANSI dashboard instead of endlessly appending log lines.
+
+The live dashboard shows:
+
+- workflow, status, elapsed time, and session
+- stage strip
+- specialist strip when relevant
+- observed activity
+- inferred next step
+- bounded recent activity
 
 In non-interactive shells, CI logs, or redirected output, it falls back to plain progress lines such as:
 

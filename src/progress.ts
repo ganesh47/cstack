@@ -1,5 +1,12 @@
 import type { RunEvent, RunEventType, WorkflowName } from "./types.js";
 
+type DashboardStatus = "pending" | "running" | "completed" | "failed" | "deferred" | "skipped";
+
+interface DashboardItem {
+  name: string;
+  status: DashboardStatus;
+}
+
 const ANSI = {
   reset: "\u001B[0m",
   dim: "\u001B[2m",
@@ -79,6 +86,46 @@ function streamTag(event: RunEvent): string {
   return event.stream === "stderr" ? "stderr" : "stdout";
 }
 
+function compactName(input: string): string {
+  return input.replace(/-/g, " ");
+}
+
+function statusColor(status: DashboardStatus): string {
+  switch (status) {
+    case "completed":
+      return ANSI.green;
+    case "failed":
+      return ANSI.red;
+    case "running":
+      return ANSI.cyan;
+    case "deferred":
+      return ANSI.yellow;
+    case "skipped":
+      return ANSI.gray;
+    case "pending":
+    default:
+      return ANSI.blue;
+  }
+}
+
+function statusLabel(status: DashboardStatus): string {
+  switch (status) {
+    case "completed":
+      return "done";
+    case "failed":
+      return "fail";
+    case "running":
+      return "live";
+    case "deferred":
+      return "defer";
+    case "skipped":
+      return "skip";
+    case "pending":
+    default:
+      return "plan";
+  }
+}
+
 function findLastEvent(events: RunEvent[], predicate: (event: RunEvent) => boolean): RunEvent | undefined {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const candidate = events[index];
@@ -129,6 +176,8 @@ export class ProgressReporter {
   private readonly colorsEnabled: boolean;
   private readonly dashboardEnabled: boolean;
   private readonly historyLimit: number;
+  private stages: DashboardItem[];
+  private specialists: DashboardItem[];
   private history: RunEvent[] = [];
   private lastRenderedLines = 0;
   private lastEvent: RunEvent | null = null;
@@ -142,6 +191,70 @@ export class ProgressReporter {
     this.colorsEnabled = Boolean(stream.isTTY && process.env.NO_COLOR !== "1");
     this.dashboardEnabled = Boolean(stream.isTTY && process.env.TERM && process.env.TERM !== "dumb");
     this.historyLimit = 6;
+    this.stages =
+      workflow === "intent"
+        ? []
+        : [
+            {
+              name: workflow,
+              status: "running"
+            }
+          ];
+    this.specialists = [];
+  }
+
+  setStages(names: string[]): void {
+    this.stages = names.map((name, index) => ({
+      name,
+      status: index === 0 ? "running" : "pending"
+    }));
+    if (this.dashboardEnabled && this.started) {
+      this.render();
+    }
+  }
+
+  setSpecialists(names: string[]): void {
+    this.specialists = names.map((name) => ({
+      name,
+      status: "pending"
+    }));
+    if (this.dashboardEnabled && this.started) {
+      this.render();
+    }
+  }
+
+  markStage(name: string, status: DashboardStatus): void {
+    let matched = false;
+    this.stages = this.stages.map((stage) => {
+      if (stage.name !== name) {
+        return stage;
+      }
+      matched = true;
+      return { ...stage, status };
+    });
+    if (!matched) {
+      this.stages.push({ name, status });
+    }
+    if (this.dashboardEnabled && this.started) {
+      this.render();
+    }
+  }
+
+  markSpecialist(name: string, status: DashboardStatus): void {
+    let matched = false;
+    this.specialists = this.specialists.map((specialist) => {
+      if (specialist.name !== name) {
+        return specialist;
+      }
+      matched = true;
+      return { ...specialist, status };
+    });
+    if (!matched) {
+      this.specialists.push({ name, status });
+    }
+    if (this.dashboardEnabled && this.started) {
+      this.render();
+    }
   }
 
   emit(event: RunEvent): void {
@@ -158,11 +271,19 @@ export class ProgressReporter {
       this.started = true;
     }
 
-    this.render();
-
     if (event.type === "completed" || event.type === "failed") {
+      if (this.stages.length === 1 && this.stages[0]?.name === this.workflow) {
+        this.stages[0] = {
+          ...this.stages[0],
+          status: event.type === "completed" ? "completed" : "failed"
+        };
+      }
+      this.render();
       this.close();
+      return;
     }
+
+    this.render();
   }
 
   close(): void {
@@ -203,13 +324,41 @@ export class ProgressReporter {
       `elapsed ${colorize(elapsed, ANSI.bold, this.colorsEnabled)}`,
       `session ${colorize(session, ANSI.dim, this.colorsEnabled)}`
     ].join("  |  ");
-    const activityLine = `${colorize("current", ANSI.bold, this.colorsEnabled)} ${currentLineMessage}`;
+    const activityLine = `${colorize("observed", ANSI.bold, this.colorsEnabled)} ${currentLineMessage}`;
+    const nextStage = this.stages.find((stage) => stage.status === "pending");
+    const nextSpecialist = this.specialists.find((specialist) => specialist.status === "pending");
+    const nextLine = `${colorize("next", ANSI.bold, this.colorsEnabled)} ${
+      status === "completed"
+        ? "inspect artifacts or move to the next workflow"
+        : nextStage
+          ? `${compactName(nextStage.name)} is next`
+          : nextSpecialist
+            ? `${compactName(nextSpecialist.name)} is next`
+            : "waiting for the current step to finish"
+    }`;
+    const stageLine =
+      this.stages.length > 0 ? `${colorize("stages", ANSI.bold, this.colorsEnabled)} ${this.renderItems(this.stages)}` : undefined;
+    const specialistLine =
+      this.specialists.length > 0
+        ? `${colorize("specialists", ANSI.bold, this.colorsEnabled)} ${this.renderItems(this.specialists)}`
+        : undefined;
     const activityHeader = colorize("recent activity", ANSI.bold, this.colorsEnabled);
     const activityLines = this.history.slice(-5).map((event) => {
       const label = colorize(`[${streamTag(event)} +${formatElapsed(event.elapsedMs)}]`, eventColor(event.type), this.colorsEnabled);
       return `${label} ${event.message}`;
     });
 
-    return [header, statusLine, activityLine, activityHeader, ...activityLines];
+    return [header, statusLine, stageLine, specialistLine, activityLine, nextLine, activityHeader, ...activityLines].filter(
+      Boolean
+    ) as string[];
+  }
+
+  private renderItems(items: DashboardItem[]): string {
+    return items
+      .map((item) => {
+        const label = `${compactName(item.name)}:${statusLabel(item.status)}`;
+        return colorize(`[${label}]`, statusColor(item.status), this.colorsEnabled);
+      })
+      .join(" ");
   }
 }

@@ -55,6 +55,10 @@ describe("ProgressReporter", () => {
 
     const output = stream.writes.join("");
     expect(output).toContain("\u001B[?25l");
+    expect(output).toContain("stages");
+    expect(output).toContain("[discover:done]");
+    expect(output).toContain("observed");
+    expect(output).toContain("next");
     expect(output).toContain("recent activity");
     expect(output).toContain("session-abc");
     expect(output).toContain("scanning repository context");

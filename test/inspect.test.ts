@@ -188,10 +188,10 @@ describe("inspect", () => {
       await runInspect(repoDir, [runId]);
       const output = stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join("");
 
-      expect(output).toContain("Routing plan:");
-      expect(output).toContain("Selected specialists:");
-      expect(output).toContain("Stage lineage:");
-      expect(output).toContain("Final output:");
+      expect(output).toContain("Observed");
+      expect(output).toContain("Plan");
+      expect(output).toContain("Suggested next actions");
+      expect(output).toContain("Shortcuts");
     } finally {
       stdoutSpy.mockRestore();
     }
@@ -205,6 +205,8 @@ describe("inspect", () => {
     await expect(handleInspectorCommand(repoDir, inspection, "show specialist audit-review")).resolves.toContain("\"disposition\": \"accepted\"");
     await expect(handleInspectorCommand(repoDir, inspection, "show artifact artifacts/spec.md")).resolves.toContain("# Spec artifact");
     await expect(handleInspectorCommand(repoDir, inspection, "resume")).resolves.toContain("codex resume fake-session-123");
+    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("Observed");
+    await expect(handleInspectorCommand(repoDir, inspection, "f")).resolves.toContain("# Final");
   });
 
   it("rejects interactive inspection without a tty", async () => {

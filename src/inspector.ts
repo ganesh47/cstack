@@ -31,6 +31,45 @@ async function readJsonFile<T>(filePath: string): Promise<T | null> {
   }
 }
 
+function badge(name: string, status: string): string {
+  return `[${name}:${status}]`;
+}
+
+function renderStageStrip(inspection: RunInspection): string {
+  if (inspection.stageLineage) {
+    return inspection.stageLineage.stages.map((stage) => badge(stage.name, stage.status)).join(" ");
+  }
+  if (inspection.routingPlan) {
+    return inspection.routingPlan.stages.map((stage) => badge(stage.name, "plan")).join(" ");
+  }
+  return "[none]";
+}
+
+function renderSpecialistStrip(inspection: RunInspection): string {
+  if (inspection.stageLineage?.specialists.length) {
+    return inspection.stageLineage.specialists.map((specialist) => badge(specialist.name, specialist.status)).join(" ");
+  }
+  const planned = inspection.routingPlan?.specialists.filter((specialist) => specialist.selected) ?? [];
+  return planned.length > 0 ? planned.map((specialist) => badge(specialist.name, "plan")).join(" ") : "[none]";
+}
+
+function renderSuggestedActions(inspection: RunInspection): string[] {
+  const lines: string[] = [];
+  const deferredStages = inspection.stageLineage?.stages.filter((stage) => stage.status === "deferred" || stage.status === "skipped") ?? [];
+
+  for (const stage of deferredStages.slice(0, 2)) {
+    lines.push(`- inspect why ${stage.name} is ${stage.status}`);
+  }
+  if (inspection.run.sessionId) {
+    lines.push(`- resume with codex resume ${inspection.run.sessionId}`);
+  }
+  if (inspection.artifacts.some((artifact) => artifact.path === "routing-plan.json")) {
+    lines.push("- review routing with `show routing`");
+  }
+
+  return lines.length > 0 ? lines : ["- no obvious follow-up recorded"];
+}
+
 function classifyArtifact(relativePath: string): ArtifactEntry["kind"] {
   if (relativePath.startsWith("artifacts/")) {
     return "artifact";
@@ -147,26 +186,35 @@ export function renderInspectionSummary(cwd: string, inspection: RunInspection):
 
   return (
     [
-      `Run: ${run.id}`,
-      `Workflow: ${run.workflow}`,
-      `Status: ${run.status}`,
-      `Created: ${run.createdAt}`,
-      `Updated: ${run.updatedAt}`,
-      `Branch: ${run.gitBranch}`,
-      `Summary: ${run.summary ?? run.inputs.userPrompt}`,
-      run.currentStage ? `Current stage: ${run.currentStage}` : undefined,
-      run.activeSpecialists && run.activeSpecialists.length > 0 ? `Active specialists: ${run.activeSpecialists.join(", ")}` : undefined,
-      `Final: ${path.relative(cwd, run.finalPath)}`,
-      run.eventsPath ? `Events: ${path.relative(cwd, run.eventsPath)}` : undefined,
-      run.sessionId ? `Session: ${run.sessionId}` : undefined,
-      run.lastActivity ? `Last activity: ${run.lastActivity}` : undefined,
+      `cstack inspect  ${run.id}`,
+      `workflow ${run.workflow}  |  status ${run.status}  |  updated ${run.updatedAt}`,
+      "",
+      "Observed",
+      `- summary: ${run.summary ?? run.inputs.userPrompt}`,
+      `- branch: ${run.gitBranch}`,
+      run.currentStage ? `- current stage: ${run.currentStage}` : undefined,
+      run.activeSpecialists && run.activeSpecialists.length > 0 ? `- active specialists: ${run.activeSpecialists.join(", ")}` : undefined,
+      `- final: ${path.relative(cwd, run.finalPath)}`,
+      run.eventsPath ? `- events: ${path.relative(cwd, run.eventsPath)}` : undefined,
+      run.sessionId ? `- session: ${run.sessionId}` : undefined,
+      run.lastActivity ? `- last activity: ${run.lastActivity}` : undefined,
+      "",
+      "Plan",
+      `- stages: ${renderStageStrip(inspection)}`,
+      `- specialists: ${renderSpecialistStrip(inspection)}`,
       ...renderRoutingSection(inspection),
       ...renderLineageSection(inspection),
+      "",
+      "Suggested next actions",
+      ...renderSuggestedActions(inspection),
       recentEvents.length > 0 ? "" : undefined,
-      recentEvents.length > 0 ? "Recent activity:" : undefined,
+      recentEvents.length > 0 ? "Recent activity" : undefined,
       ...recentEvents.map((event) => `  [${event.type}] +${Math.floor(event.elapsedMs / 1000)}s ${event.message}`),
       "",
-      "Final output:",
+      "Shortcuts",
+      "- 1 summary  2 stages  3 specialists  4 artifacts  f final  r routing  q exit",
+      "",
+      "Final output",
       finalBody || "(missing)"
     ]
       .filter(Boolean)
@@ -264,6 +312,13 @@ async function readRelativeArtifact(inspection: RunInspection, relativePath: str
 function helpText(): string {
   return [
     "Inspector commands:",
+    "- 1 (summary)",
+    "- 2 (stages)",
+    "- 3 (specialists)",
+    "- 4 (artifacts)",
+    "- f (show final)",
+    "- r (show routing)",
+    "- q (exit)",
     "- summary",
     "- stages",
     "- specialists",
@@ -288,22 +343,22 @@ export async function handleInspectorCommand(cwd: string, inspection: RunInspect
     return null;
   }
 
-  if (trimmed === "summary") {
+  if (trimmed === "1" || trimmed === "summary") {
     return renderInspectionSummary(cwd, inspection).trimEnd();
   }
-  if (trimmed === "stages") {
+  if (trimmed === "2" || trimmed === "stages") {
     return renderStages(inspection);
   }
-  if (trimmed === "specialists") {
+  if (trimmed === "3" || trimmed === "specialists") {
     return renderSpecialists(inspection);
   }
-  if (trimmed === "artifacts") {
+  if (trimmed === "4" || trimmed === "artifacts") {
     return renderArtifacts(inspection);
   }
-  if (trimmed === "show final") {
+  if (trimmed === "f" || trimmed === "show final") {
     return inspection.finalBody || "(missing)";
   }
-  if (trimmed === "show routing") {
+  if (trimmed === "r" || trimmed === "show routing") {
     return inspection.routingPlan ? `${JSON.stringify(inspection.routingPlan, null, 2)}\n` : "No routing plan recorded for this run.";
   }
   if (trimmed === "what remains") {
@@ -322,7 +377,7 @@ export async function handleInspectorCommand(cwd: string, inspection: RunInspect
   if (trimmed === "help") {
     return helpText();
   }
-  if (trimmed === "exit" || trimmed === "quit") {
+  if (trimmed === "q" || trimmed === "exit" || trimmed === "quit") {
     return "__EXIT__";
   }
   if (trimmed.startsWith("why deferred ")) {
@@ -367,6 +422,7 @@ export async function runInteractiveInspector(
 
   try {
     io.output.write("Entering cstack run inspector. Type `help` for commands.\n");
+    io.output.write(renderInspectionSummary(cwd, inspection));
     while (true) {
       let answer: string;
       try {

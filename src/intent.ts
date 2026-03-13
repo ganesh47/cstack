@@ -196,6 +196,10 @@ function buildIntentContext(routingPlan: RoutingPlan): string {
 
 function createEventRecorder(runId: string, eventsPath: string): {
   emit: (type: "starting" | "activity" | "heartbeat" | "completed" | "failed", message: string) => Promise<void>;
+  setStages: (names: string[]) => void;
+  setSpecialists: (names: string[]) => void;
+  markStage: (name: string, status: "pending" | "running" | "completed" | "failed" | "deferred" | "skipped") => void;
+  markSpecialist: (name: string, status: "pending" | "running" | "completed" | "failed" | "deferred" | "skipped") => void;
 } {
   const reporter = new ProgressReporter("intent", runId);
   const startedAt = Date.now();
@@ -205,7 +209,11 @@ function createEventRecorder(runId: string, eventsPath: string): {
       const event = buildEvent(type, Date.now() - startedAt, message);
       await fs.appendFile(eventsPath, `${JSON.stringify(event)}\n`, "utf8");
       reporter.emit(event);
-    }
+    },
+    setStages: (names) => reporter.setStages(names),
+    setSpecialists: (names) => reporter.setSpecialists(names),
+    markStage: (name, status) => reporter.markStage(name, status),
+    markSpecialist: (name, status) => reporter.markSpecialist(name, status)
   };
 }
 
@@ -454,6 +462,8 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
 
   await writeRunRecord(runDir, runRecord);
   const events = createEventRecorder(runId, eventsPath);
+  events.setStages(routingPlan.stages.map((stage) => stage.name));
+  events.setSpecialists(routingPlan.specialists.filter((specialist) => specialist.selected).map((specialist) => specialist.name));
 
   try {
     await events.emit("starting", `Routing intent across ${routingPlan.stages.map((stage) => stage.name).join(" -> ")}`);
@@ -473,6 +483,12 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
         status: "skipped",
         notes: "Dry run: no stage execution performed."
       }));
+      for (const stage of stageLineage.stages) {
+        events.markStage(stage.name, "skipped");
+      }
+      for (const specialist of routingPlan.specialists.filter((entry) => entry.selected)) {
+        events.markSpecialist(specialist.name, "skipped");
+      }
       await writeJson(stageLineagePath, stageLineage);
       const finalSummary = buildFinalSummary(resolvedIntent, routingPlan, stageLineage);
       await fs.writeFile(finalPath, finalSummary, "utf8");
@@ -510,11 +526,13 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
       if (!EXECUTABLE_STAGES.includes(stageName)) {
         lineageStage.status = "deferred";
         lineageStage.notes = "Planned by the router, but not executed in this first intent-runner slice.";
+        events.markStage(stageName, "deferred");
         await writeJson(stageLineagePath, stageLineage);
         continue;
       }
 
       lineageStage.status = "running";
+      events.markStage(stageName, "running");
       runRecord.currentStage = stageName;
       runRecord.updatedAt = new Date().toISOString();
       await writeRunRecord(runDir, runRecord);
@@ -538,6 +556,7 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
         lineageStage.executed = true;
         lineageStage.stageDir = result.stageDir;
         lineageStage.artifactPath = result.artifactPath;
+        events.markStage(stageName, "completed");
         await writeJson(stageLineagePath, stageLineage);
         continue;
       }
@@ -561,6 +580,7 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
       lineageStage.executed = true;
       lineageStage.stageDir = result.stageDir;
       lineageStage.artifactPath = result.artifactPath;
+      events.markStage(stageName, "completed");
       await writeJson(stageLineagePath, stageLineage);
     }
 
@@ -570,6 +590,7 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
       runRecord.activeSpecialists = [specialist.name];
       runRecord.updatedAt = new Date().toISOString();
       await writeRunRecord(runDir, runRecord);
+      events.markSpecialist(specialist.name, "running");
       await events.emit("activity", `Running specialist ${specialist.name}`);
       const result = await executeSpecialist({
         cwd,
@@ -583,6 +604,7 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
         specOutput
       });
       stageLineage.specialists.push(result);
+      events.markSpecialist(specialist.name, result.status === "completed" ? "completed" : "failed");
       await writeJson(stageLineagePath, stageLineage);
     }
 
