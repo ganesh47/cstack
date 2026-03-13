@@ -180,6 +180,29 @@ The post-run interactive inspector should be TTY-only and optional. Its job is t
 
 It should start as a wrapper-owned inspector, not as an automatic handoff into a new Codex conversation. If the user wants continued reasoning, the inspector may then surface explicit `resume` or `fork` actions.
 
+### TTY UX direction
+
+The terminal UX should become more engaging by being clearer and more stateful, not by becoming decorative.
+
+V1.1 should make two explicit choices:
+
+- use an enhanced ANSI layout first
+- defer a heavier full-screen ncurses/TUI approach unless the lighter layout proves insufficient
+
+The goal is an operator console feel:
+
+- explicit state instead of raw log tailing
+- bounded panes instead of endless scroll
+- visible separation between observed facts and inferred next actions
+- compact shortcuts in the inspector without hiding the typed command model
+
+The product should not add:
+
+- fake thought-trace UI
+- spinner theater without state value
+- an unbounded second chat inside the inspector
+- full-screen terminal complexity unless the simpler layout fails to deliver clarity
+
 ### Workflow intent boundaries
 
 - `discover` is for context gathering, not for deciding implementation details prematurely.
@@ -457,6 +480,41 @@ Auditability matters more than completeness in v1.
 - Delegate records should be explicit about whether they are observed directly or leader-reported.
 - The post-run interactive inspector should answer from saved artifacts first and should distinguish observed facts from inferred guidance.
 
+### Active-run TTY dashboard
+
+When running in a TTY, the wrapper should prefer a bounded dashboard over an endlessly growing event log.
+
+That dashboard should show:
+
+- run id
+- workflow
+- run status
+- elapsed time
+- explicit stage plan
+- current stage highlighted
+- specialist status strip
+- bounded recent-activity pane
+- artifact or next-action hints when relevant
+
+The dashboard may summarize observed process activity, but it must not imply access to private chain-of-thought or invisible model state.
+
+Non-TTY environments should continue to receive plain line-oriented output.
+
+### Inspector console presentation
+
+The interactive inspector should present itself as a structured console rather than a raw REPL dump.
+
+The default experience should include:
+
+- a compact home view
+- view-oriented navigation for summary, stages, specialists, artifacts, routing, and final output
+- lightweight shortcuts in addition to typed commands
+- an explicit visual split between:
+  - observed
+  - inferred guidance
+
+The first implementation may stay ANSI-first and line-oriented under the hood, but the rendered experience should feel intentional and bounded.
+
 This is enough to let a user inspect what was requested, what was observed, and what was decided.
 
 ## 9. **Codex CLI Integration Assumptions**
@@ -599,6 +657,18 @@ The first version should support a small command set such as:
 - `fork`
 
 This keeps the post-run experience useful without turning it into an unbounded second chat layer.
+
+The inspector should also support a small shortcut layer for the most common views, for example:
+
+- `1` summary
+- `2` stages
+- `3` specialists
+- `4` artifacts
+- `f` final
+- `r` routing
+- `q` exit
+
+Typed commands remain the canonical control surface. Shortcuts are an acceleration layer, not a replacement.
 
 ### Run ids and Codex session mapping
 
@@ -768,6 +838,7 @@ This keeps the operator model coherent: one workflow, one leader, a small set of
 - Add `cstack resume` and `cstack fork`
 - Capture verification commands and change summaries
 - Add `cstack inspect <run-id> --interactive` as a wrapper-owned post-run inspector
+- Upgrade the TTY inspector into a view-oriented ANSI console with shortcuts
 
 ### Milestone 3: review and ship workflows
 
@@ -788,6 +859,13 @@ This keeps the operator model coherent: one workflow, one leader, a small set of
 - Implement bounded specialist presets for security, DevSecOps, traceability, audit, and release-pipeline review
 - Record specialist selection reasons and acceptance states
 
+### Milestone 6: richer TTY run experience
+
+- Upgrade active-run progress into a bounded ANSI dashboard
+- Show stage and specialist status strips during active runs
+- Add a more intentional inspector home view and view shortcuts
+- Preserve clean non-TTY fallback behavior
+
 ## 14. **Open Questions**
 
 1. How much direct sub-agent telemetry can `cstack` reliably observe from Codex CLI versus infer from leader output?
@@ -798,10 +876,11 @@ This keeps the operator model coherent: one workflow, one leader, a small set of
 6. How should artifact retention work for large repos with many runs: keep all runs, expire old runs, or archive only summaries?
 7. Should the interactive inspector remain purely artifact-grounded in v1, or should it gain an explicit Codex-backed “explain this run” mode later?
 8. How much live state should `cstack runs` expose for active runs before the wrapper can reliably observe every internal stage transition?
+9. At what point, if any, should `cstack` move from enhanced ANSI layouts to a heavier full-screen TUI?
 
 ## 15. **Recommended Next Spec**
 
-The next spec should define the post-run interactive inspector, the run-ledger contract for active and historical runs, and the boundaries between artifact inspection versus resumed Codex reasoning.
+The next spec should define the richer TTY interaction model in detail, including the active-run dashboard contract, the inspector shortcut model, and the threshold for a future full-screen TUI.
 
 That spec should answer:
 
@@ -815,9 +894,11 @@ That spec should answer:
 - specialist activation reasons and artifact schema
 - run-ledger schema for active and historical runs
 - post-run inspector command set and persistence model
+- active-run dashboard layout and update contract
+- inspector shortcut map and view model
 
 Without that layer, implementation will drift into ad hoc process management.
 
 ## **Build Recommendation**
 
-Build the run-experience layer next. The first slice should make `cstack runs` a real ledger for active and historical runs, add `cstack inspect <run-id> --interactive` as an artifact-grounded post-run console, and keep `resume` and `fork` as explicit escalation actions. That improves inspectability and user trust without turning the wrapper into an uncontrolled second chat runtime.
+Build the richer TTY layer next. The first slice should keep the run ledger and artifact-grounded inspector intact, but upgrade the terminal experience into an ANSI-first operator console with clearer stage/specialist state, a bounded activity pane, and shortcut-driven inspection views. That improves usability without committing the product to a brittle full-screen TUI too early.
