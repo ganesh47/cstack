@@ -26,7 +26,19 @@ Links:
 
 - [Releases page](https://github.com/ganesh47/cstack/releases)
 - [Release workflow](./.github/workflows/release.yml)
+- [Prepare release workflow](./.github/workflows/prepare-release.yml)
 
+Recommended install path:
+
+```bash
+npm install -g "https://github.com/ganesh47/cstack/releases/latest/download/cstack-latest.tgz"
+```
+
+<!-- release-version:start -->
+Current release example version: `v0.1.0`
+<!-- release-version:end -->
+
+<!-- release-examples:start -->
 Install directly from a published release tarball:
 
 ```bash
@@ -49,6 +61,7 @@ VERSION=v0.1.0
 curl -LO "https://github.com/ganesh47/cstack/releases/download/${VERSION}/SHA256SUMS.txt"
 sha256sum -c SHA256SUMS.txt
 ```
+<!-- release-examples:end -->
 
 ### Install from source
 
@@ -140,14 +153,30 @@ Tagged releases are built and published by GitHub Actions.
 
 Release flow:
 
-1. update `package.json` version
-2. commit and push the version change
-3. create and push a matching tag, for example `v0.1.0`
-4. GitHub Actions runs build, typecheck, tests, `npm pack`, checksum generation, and GitHub Release publishing
+1. dispatch `Prepare Release` from the GitHub Actions UI or `gh workflow run`
+2. the workflow updates `package.json`, `package-lock.json`, and the versioned README examples
+3. the workflow commits to the default branch
+4. the workflow creates and pushes a matching tag, for example `v0.1.0`
+5. the workflow builds, tests, packs, and publishes the GitHub Release
+
+Browser dispatch:
+
+1. open `Actions`
+2. choose `Prepare Release`
+3. click `Run workflow`
+4. enter a version like `0.1.0`
+
+CLI dispatch:
+
+```bash
+gh workflow run prepare-release.yml --repo ganesh47/cstack -f version=0.1.0
+gh run watch --repo ganesh47/cstack
+```
 
 Published release assets:
 
 - `cstack-<version>.tgz`
+- `cstack-latest.tgz`
 - `SHA256SUMS.txt`
 
 ## Current Scope
