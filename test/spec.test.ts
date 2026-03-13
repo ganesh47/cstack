@@ -59,7 +59,7 @@ describe("runSpec", () => {
     expect(run.status).toBe("completed");
     expect(run.codexVersion).toBe("fake-codex 0.0.1");
     expect(run.sessionId).toBe("fake-session-123");
-    expect(run.codexCommand[0]).toContain("fake-codex.mjs");
+    expect(run.codexCommand.some((part) => part.includes("fake-codex.mjs"))).toBe(true);
     expect(finalBody).toContain("Context included.");
     expect(artifactBody).toContain("Fake Spec");
   });

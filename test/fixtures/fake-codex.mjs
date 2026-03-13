@@ -5,7 +5,7 @@ import { writeFile } from "node:fs/promises";
 const args = process.argv.slice(2);
 
 if (args.includes("--version")) {
-  process.stdout.write("fake-codex 0.0.1\n");
+  await new Promise((resolve) => process.stdout.write("fake-codex 0.0.1\n", resolve));
   process.exit(0);
 }
 
@@ -31,7 +31,9 @@ await writeFile(
     "",
     "This is a fake Codex response.",
     "",
-    prompt.includes("Repository spec context") ? "Context included." : "Context missing."
+    prompt.includes("Repository spec excerpt") || prompt.includes("Repository spec context")
+      ? "Context included."
+      : "Context missing."
   ].join("\n") + "\n",
   "utf8"
 );

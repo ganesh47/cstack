@@ -19,6 +19,20 @@ export interface CodexRunResult {
   sessionId?: string;
 }
 
+function resolveCommand(command: string, args: string[]): { file: string; args: string[] } {
+  if (/\.(mjs|cjs|js|ts)$/i.test(command)) {
+    return {
+      file: process.execPath,
+      args: [command, ...args]
+    };
+  }
+
+  return {
+    file: command,
+    args
+  };
+}
+
 export function buildCodexExecArgs(options: CodexRunOptions): string[] {
   const args = [
     "exec",
@@ -50,9 +64,10 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
   const stdout = createWriteStream(path.resolve(options.stdoutPath), { flags: "w" });
   const stderr = createWriteStream(path.resolve(options.stderrPath), { flags: "w" });
   const bin = options.config.codex.command || process.env.CSTACK_CODEX_BIN || "codex";
+  const invocation = resolveCommand(bin, args);
 
   return new Promise<CodexRunResult>((resolve, reject) => {
-    const child = spawn(bin, args, {
+    const child = spawn(invocation.file, invocation.args, {
       cwd: options.cwd,
       stdio: ["pipe", "pipe", "pipe"]
     });
@@ -91,7 +106,7 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
       const result: CodexRunResult = {
         code: code ?? 1,
         signal,
-        command: [bin, ...args]
+        command: [invocation.file, ...invocation.args]
       };
       if (sessionId) {
         result.sessionId = sessionId;

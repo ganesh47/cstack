@@ -15,6 +15,20 @@ function slugify(input: string): string {
     .slice(0, 48) || "run";
 }
 
+function resolveCommand(command: string, args: string[]): { file: string; args: string[] } {
+  if (/\.(mjs|cjs|js|ts)$/i.test(command)) {
+    return {
+      file: process.execPath,
+      args: [command, ...args]
+    };
+  }
+
+  return {
+    file: command,
+    args
+  };
+}
+
 export function makeRunId(workflow: WorkflowName, userPrompt: string, now = new Date()): string {
   const timestamp = now.toISOString().replace(/[:.]/g, "-");
   return `${timestamp}-${workflow}-${slugify(userPrompt)}`;
@@ -38,7 +52,8 @@ export async function detectGitBranch(cwd: string): Promise<string> {
 
 export async function detectCodexVersion(cwd: string, codexCommand = process.env.CSTACK_CODEX_BIN || "codex"): Promise<string | null> {
   try {
-    const { stdout } = await execFileAsync(codexCommand, ["--version"], { cwd });
+    const invocation = resolveCommand(codexCommand, ["--version"]);
+    const { stdout } = await execFileAsync(invocation.file, invocation.args, { cwd });
     return stdout.trim() || null;
   } catch {
     return null;
