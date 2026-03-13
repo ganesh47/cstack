@@ -15,7 +15,7 @@ Current implemented surface:
 
 Requirements:
 
-- Node.js 22+
+- Node.js 24+
 - Codex CLI installed and available on `PATH`
 
 ### Install from a GitHub release
