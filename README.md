@@ -92,6 +92,63 @@ cstack inspect <run-id>
 
 If you are running from source without a global install, use `node ./bin/cstack.js ...`.
 
+## Use cstack in an Existing Repo
+
+`cstack` is designed to be run from inside the repository you want to work on.
+
+Minimal setup in an existing repo:
+
+```bash
+cd /path/to/your-repo
+mkdir -p .cstack/prompts
+cat > .cstack/config.toml <<'EOF'
+[codex]
+command = "codex"
+sandbox = "workspace-write"
+
+[workflows.spec.delegation]
+enabled = false
+maxAgents = 0
+
+[workflows.discover.delegation]
+enabled = true
+maxAgents = 2
+EOF
+```
+
+Then use `cstack` from that repo root:
+
+```bash
+# 1. Map the repo before changing anything
+cstack discover "Map the current architecture, key modules, and likely risk areas"
+
+# 2. Turn that understanding into an implementation-ready plan
+cstack spec "Design a safe migration plan for adding feature flags to the billing flow"
+
+# 3. Inspect saved runs and artifacts
+cstack runs
+cstack inspect
+```
+
+Recommended workflow in an existing codebase:
+
+1. Start with `discover` to understand the repo shape, constraints, and likely hotspots.
+2. Use `spec` to turn a concrete change request into an implementation-ready artifact.
+3. Read the saved outputs in `.cstack/runs/<run-id>/` before moving on to manual implementation or later `cstack` workflows.
+
+Useful repo-local files:
+
+- `.cstack/config.toml`
+- `.cstack/prompts/spec.md`
+- `.cstack/prompts/discover.md`
+
+Practical notes:
+
+- run `cstack` from the repo root so artifact paths and repo docs resolve correctly
+- keep `.cstack/runs/` out of version control; this repo already ignores it
+- commit `.cstack/config.toml` and prompt assets if you want shared team defaults
+- point `[codex].command` at a custom Codex binary/script only if you need a local wrapper for testing
+
 ## Local Config
 
 Repo config lives at `.cstack/config.toml`.
