@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import path from "node:path";
-import { buildEvent, formatProgressMessage } from "./progress.js";
+import { buildEvent, ProgressReporter } from "./progress.js";
 import type { CstackConfig } from "./types.js";
 import type { RunEvent, WorkflowName } from "./types.js";
 
@@ -125,6 +125,7 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
   const bin = options.config.codex.command || process.env.CSTACK_CODEX_BIN || "codex";
   const invocation = resolveCommand(bin, args);
   const startedAt = Date.now();
+  const reporter = new ProgressReporter(options.workflow, options.runId);
 
   return new Promise<CodexRunResult>((resolve, reject) => {
     const closeStreams = async (): Promise<void> =>
@@ -154,7 +155,7 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
 
     const emitEvent = (event: RunEvent) => {
       events.write(`${JSON.stringify(event)}\n`);
-      process.stdout.write(`${formatProgressMessage(event, options.workflow, options.runId)}\n`);
+      reporter.emit(event);
       lastActivity = event.message;
     };
 
@@ -226,6 +227,7 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
 
     child.on("error", (error) => {
       clearInterval(heartbeat);
+      reporter.close();
       void closeStreams().finally(() => reject(error));
     });
 
@@ -248,6 +250,7 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
       if (sessionId) {
         result.sessionId = sessionId;
       }
+      reporter.close();
       await closeStreams();
       resolve(result);
     });

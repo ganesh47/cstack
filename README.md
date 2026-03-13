@@ -11,6 +11,7 @@ Current implemented surface:
 - repo-local config in `.cstack/config.toml`
 - durable run artifacts in `.cstack/runs/<run-id>/`
 - live in-progress activity output while Codex is running
+- colored TTY dashboard for active runs, with plain-line fallback for logs and non-interactive shells
 
 ## Install
 
@@ -131,7 +132,9 @@ cstack runs
 cstack inspect
 ```
 
-While a run is active, `cstack` now prints live progress lines such as:
+While a run is active in a normal terminal, `cstack` now renders a colored fixed-height progress dashboard instead of endlessly appending log lines.
+
+In non-interactive shells, CI logs, or redirected output, it falls back to plain progress lines such as:
 
 ```text
 [cstack discover <run-id> +0:00] Starting Codex run
