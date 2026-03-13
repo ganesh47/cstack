@@ -93,7 +93,7 @@ export function formatProgressMessage(event: RunEvent, workflow: WorkflowName, r
   const prefix = `[cstack ${workflow} ${runId} +${formatElapsed(event.elapsedMs)}]`;
   switch (event.type) {
     case "starting":
-      return `${prefix} Starting Codex run`;
+      return `${prefix} ${workflow === "update" ? "Starting update" : "Starting Codex run"}`;
     case "session":
       return `${prefix} Session: ${event.message}`;
     case "heartbeat":

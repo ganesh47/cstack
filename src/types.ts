@@ -1,4 +1,4 @@
-export type WorkflowName = "spec" | "discover";
+export type WorkflowName = "spec" | "discover" | "update";
 
 export type RunEventType =
   | "starting"

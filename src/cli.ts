@@ -4,12 +4,14 @@ import { runDiscover } from "./commands/discover.js";
 import { runSpec } from "./commands/spec.js";
 import { runRuns } from "./commands/runs.js";
 import { runInspect } from "./commands/inspect.js";
+import { runUpdateCommand, UpdateCommandError } from "./commands/update.js";
 
 function usage(): string {
   return [
     "Usage:",
     "  cstack discover <prompt>",
     "  cstack spec <prompt>",
+    "  cstack update [--check] [--dry-run] [--yes] [--version <x>] [--channel stable]",
     "  cstack runs",
     "  cstack inspect [run-id]"
   ].join("\n");
@@ -29,6 +31,9 @@ async function main(): Promise<void> {
     case "runs":
       await runRuns(cwd);
       return;
+    case "update":
+      await runUpdateCommand(cwd, rest);
+      return;
     case "inspect":
       await runInspect(cwd, rest[0]);
       return;
@@ -45,5 +50,5 @@ async function main(): Promise<void> {
 main().catch((error) => {
   const message = error instanceof Error ? error.message : String(error);
   process.stderr.write(`${message}\n`);
-  process.exitCode = 1;
+  process.exitCode = error instanceof UpdateCommandError ? error.exitCode : 1;
 });

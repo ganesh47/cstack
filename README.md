@@ -6,6 +6,7 @@ Current implemented surface:
 
 - `discover`
 - `spec`
+- `update`
 - `runs`
 - `inspect`
 - repo-local config in `.cstack/config.toml`
@@ -84,6 +85,10 @@ cstack discover "Map the current CLI surface and artifact model"
 # Generate a spec run
 cstack spec "Design a run artifact model for cstack"
 
+# Check for the latest stable GitHub release or apply it
+cstack update --check
+cstack update --yes
+
 # List saved runs
 cstack runs
 
@@ -93,6 +98,44 @@ cstack inspect <run-id>
 ```
 
 If you are running from source without a global install, use `node ./bin/cstack.js ...`.
+
+## Update cstack
+
+`cstack update` is a GitHub-release self-update command for the installed CLI.
+
+Supported surface:
+
+```bash
+# Check only
+cstack update --check
+
+# Show the exact plan without mutating
+cstack update --dry-run
+
+# Apply the latest stable release
+cstack update --yes
+
+# Install a specific stable release
+cstack update --yes --version 0.3.0
+```
+
+Default behavior:
+
+- in a normal interactive terminal, `cstack update` checks the latest stable GitHub release and prompts before applying it
+- in non-interactive shells, `cstack update` refuses mutation unless you pass `--yes`
+- the command downloads the exact versioned tarball plus `SHA256SUMS.txt`, verifies the checksum locally, and then installs through `npm`
+
+Important limits:
+
+- `cstack update` updates the installed CLI package only
+- it does not rewrite `.cstack/config.toml`, prompt assets, or repo files
+- if you are running `cstack` directly from a source checkout, self-update is intentionally unsupported in this first version
+
+Manual fallback:
+
+```bash
+npm install -g "https://github.com/ganesh47/cstack/releases/latest/download/cstack-latest.tgz"
+```
 
 ## Use cstack in an Existing Repo
 
@@ -259,6 +302,7 @@ Implemented:
 
 - `discover`
 - `spec`
+- `update`
 - `runs`
 - `inspect`
 - config loading
