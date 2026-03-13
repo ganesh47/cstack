@@ -14,6 +14,8 @@ Current implemented surface:
 - durable run artifacts in `.cstack/runs/<run-id>/`
 - inferred routing plans and stage lineage for intent runs
 - bounded specialist reviews for security, DevSecOps, traceability, audit, and release-pipeline concerns
+- run ledger views across active and historical runs
+- interactive post-run inspection for artifact-grounded follow-up in TTYs
 - live in-progress activity output while Codex is running
 - colored TTY dashboard for active runs, with plain-line fallback for logs and non-interactive shells
 
@@ -98,10 +100,13 @@ cstack update --yes
 
 # List saved runs
 cstack runs
+cstack runs --active
+cstack runs --workflow intent --json
 
 # Inspect the latest run or a specific run id
 cstack inspect
 cstack inspect <run-id>
+cstack inspect <run-id> --interactive
 ```
 
 If you are running from source without a global install, use `node ./bin/cstack.js ...`.
@@ -136,8 +141,57 @@ cstack run "Plan a compliance-safe billing migration" --dry-run
 
 How to inspect it:
 
-- `cstack inspect <run-id>` now shows the routing plan, stage lineage, and specialist dispositions for intent runs
+- `cstack inspect <run-id>` now shows the routing plan, stage lineage, specialist dispositions, and recent activity for intent runs
+- `cstack inspect <run-id> --interactive` opens an artifact-grounded console for follow-up questions
 - the run directory includes `routing-plan.json`, `stage-lineage.json`, and specialist artifacts under `delegates/`
+
+## Runs and Inspection
+
+`cstack runs` is now the run ledger, not just a raw directory listing.
+
+Useful views:
+
+```bash
+# all known runs, newest first
+cstack runs
+
+# currently active runs only
+cstack runs --active
+
+# only intent runs
+cstack runs --workflow intent
+
+# recent runs as JSON for scripts
+cstack runs --recent 10 --json
+```
+
+Each row shows the run id, workflow, current status, active stage when known, active specialists when known, and a short summary.
+
+`cstack inspect` works at two levels:
+
+- `cstack inspect <run-id>` prints a one-shot summary of the run, its artifacts, routing, lineage, and recent events
+- `cstack inspect <run-id> --interactive` opens a structured terminal inspector
+
+The interactive inspector is artifact-grounded. It does not silently continue the original Codex reasoning session.
+
+Useful inspector commands:
+
+- `summary`
+- `stages`
+- `specialists`
+- `artifacts`
+- `show final`
+- `show routing`
+- `show stage <name>`
+- `show specialist <name>`
+- `show artifact <relative-path>`
+- `why deferred <stage>`
+- `what remains`
+- `resume`
+- `fork`
+- `exit`
+
+For TTY runs, `cstack` may offer `Inspect this run now? [Y/n]` after the summary. Non-interactive shells skip that prompt.
 
 ## Update cstack
 
@@ -214,6 +268,7 @@ cstack spec "Design a safe migration plan for adding feature flags to the billin
 # 3. Inspect saved runs and artifacts
 cstack runs
 cstack inspect
+cstack inspect <run-id> --interactive
 ```
 
 While a run is active in a normal terminal, `cstack` now renders a colored fixed-height progress dashboard instead of endlessly appending log lines.
@@ -290,12 +345,13 @@ Current artifact set:
 - `stderr.log`
 - `routing-plan.json` for intent runs
 - `stage-lineage.json` for intent runs
+- `artifacts-index.json` or equivalent artifact inventory derived by the inspector
 - `artifacts/spec.md` for `spec`
 - `artifacts/findings.md` for `discover`
 - `delegates/<specialist>/request.md` for specialist reviews in intent runs
 - `delegates/<specialist>/result.json` for specialist reviews in intent runs
 
-`events.jsonl` records the live progress feed so `cstack inspect` can show recent activity after the run has finished.
+`events.jsonl` records the live progress feed so `cstack inspect` can show recent activity after the run has finished. The interactive inspector also derives its artifact inventory from the saved run directory.
 
 ## Development
 
@@ -356,6 +412,8 @@ Implemented:
 - Codex exec adapter
 - inferred routing plans and stage lineage
 - bounded specialist review artifacts
+- run ledger filtering and JSON output
+- interactive post-run inspection
 - live progress reporting and event logging
 - build, typecheck, and test pipeline
 
@@ -365,4 +423,5 @@ Not implemented yet:
 - automatic execution of `review`
 - automatic execution of `ship`
 - active multi-agent delegation policy
+- `cstack`-native `resume` and `fork` wrappers
 - GitHub issue sync helpers inside the CLI

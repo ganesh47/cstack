@@ -1,4 +1,5 @@
 export type WorkflowName = "spec" | "discover" | "update" | "intent";
+export type RunStatus = "running" | "completed" | "failed";
 
 export type StageName = "discover" | "spec" | "build" | "review" | "ship";
 
@@ -60,6 +61,33 @@ export interface StageLineage {
   specialists: SpecialistExecution[];
 }
 
+export interface ArtifactEntry {
+  path: string;
+  kind: "artifact" | "log" | "metadata" | "delegate" | "stage";
+}
+
+export interface RunLedgerEntry {
+  id: string;
+  workflow: WorkflowName;
+  status: RunStatus;
+  createdAt: string;
+  updatedAt: string;
+  summary: string;
+  currentStage?: string | undefined;
+  activeSpecialists: string[];
+  finalPath: string;
+}
+
+export interface RunInspection {
+  run: RunRecord;
+  runDir: string;
+  routingPlan: RoutingPlan | null;
+  stageLineage: StageLineage | null;
+  recentEvents: RunEvent[];
+  finalBody: string;
+  artifacts: ArtifactEntry[];
+}
+
 export type RunEventType =
   | "starting"
   | "session"
@@ -104,7 +132,7 @@ export interface RunRecord {
   workflow: WorkflowName;
   createdAt: string;
   updatedAt: string;
-  status: "running" | "completed" | "failed";
+  status: RunStatus;
   cwd: string;
   gitBranch: string;
   codexVersion: string | null;
@@ -116,9 +144,12 @@ export interface RunRecord {
   stdoutPath: string;
   stderrPath: string;
   configSources: string[];
-  sessionId?: string;
-  lastActivity?: string;
-  error?: string;
+  sessionId?: string | undefined;
+  lastActivity?: string | undefined;
+  currentStage?: string | undefined;
+  activeSpecialists?: string[] | undefined;
+  summary?: string | undefined;
+  error?: string | undefined;
   inputs: {
     userPrompt: string;
     entrypoint?: "workflow" | "intent";

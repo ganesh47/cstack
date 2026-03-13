@@ -2,6 +2,7 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import { loadConfig } from "../config.js";
 import { runCodexExec } from "../codex.js";
+import { maybeOfferInteractiveInspect } from "../inspector.js";
 import { buildDiscoverPrompt } from "../prompt.js";
 import { detectCodexVersion, detectGitBranch, ensureRunDir, makeRunId, writeRunRecord } from "../run.js";
 import type { RunRecord } from "../types.js";
@@ -61,6 +62,8 @@ export async function runDiscover(cwd: string, userPrompt: string): Promise<void
     stdoutPath,
     stderrPath,
     configSources: sources,
+    currentStage: "discover",
+    summary: resolvedPrompt,
     inputs: {
       userPrompt: resolvedPrompt
     }
@@ -83,6 +86,7 @@ export async function runDiscover(cwd: string, userPrompt: string): Promise<void
 
     runRecord.status = result.code === 0 ? "completed" : "failed";
     runRecord.updatedAt = new Date().toISOString();
+    delete runRecord.currentStage;
     runRecord.codexCommand = result.command;
     if (result.sessionId) {
       runRecord.sessionId = result.sessionId;
@@ -115,9 +119,11 @@ export async function runDiscover(cwd: string, userPrompt: string): Promise<void
         `  ${path.relative(cwd, path.join(runDir, "run.json"))}`
       ].join("\n") + "\n"
     );
+    await maybeOfferInteractiveInspect(cwd, runId);
   } catch (error) {
     runRecord.status = "failed";
     runRecord.updatedAt = new Date().toISOString();
+    delete runRecord.currentStage;
     runRecord.error = error instanceof Error ? error.message : String(error);
     await writeRunRecord(runDir, runRecord);
     throw error;

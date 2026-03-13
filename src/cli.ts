@@ -15,8 +15,8 @@ function usage(): string {
     "  cstack discover <prompt>",
     "  cstack spec <prompt>",
     "  cstack update [--check] [--dry-run] [--yes] [--version <x>] [--channel stable]",
-    "  cstack runs",
-    "  cstack inspect [run-id]"
+    "  cstack runs [--active] [--workflow <name>] [--status <status>] [--recent <n>] [--json]",
+    "  cstack inspect [run-id] [--interactive]"
   ].join("\n");
 }
 
@@ -35,13 +35,13 @@ async function main(): Promise<void> {
       await runSpec(cwd, rest.join(" "));
       return;
     case "runs":
-      await runRuns(cwd);
+      await runRuns(cwd, rest);
       return;
     case "update":
       await runUpdateCommand(cwd, rest);
       return;
     case "inspect":
-      await runInspect(cwd, rest[0]);
+      await runInspect(cwd, rest);
       return;
     case undefined:
     case "--help":

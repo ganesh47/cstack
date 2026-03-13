@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { runsRoot } from "./paths.js";
-import type { RunRecord, WorkflowName } from "./types.js";
+import type { RunLedgerEntry, RunRecord, StageLineage, WorkflowName } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -64,6 +64,64 @@ export async function writeRunRecord(runDir: string, run: RunRecord): Promise<vo
   await fs.writeFile(path.join(runDir, "run.json"), `${JSON.stringify(run, null, 2)}\n`, "utf8");
 }
 
+export function runDirForId(cwd: string, runId: string): string {
+  return path.join(runsRoot(cwd), runId);
+}
+
+async function readJsonFile<T>(filePath: string): Promise<T | null> {
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
+function summarizePrompt(input: string, max = 72): string {
+  const compact = input.replace(/\s+/g, " ").trim();
+  if (!compact) {
+    return "(empty)";
+  }
+  if (compact.length <= max) {
+    return compact;
+  }
+  return `${compact.slice(0, max - 1)}…`;
+}
+
+export async function readStageLineage(cwd: string, runId: string): Promise<StageLineage | null> {
+  return readJsonFile<StageLineage>(path.join(runDirForId(cwd, runId), "stage-lineage.json"));
+}
+
+export async function buildRunLedgerEntry(cwd: string, run: RunRecord): Promise<RunLedgerEntry> {
+  const stageLineage = await readStageLineage(cwd, run.id);
+  const runningStage = stageLineage?.stages.find((stage) => stage.status === "running");
+  const activeSpecialists =
+    run.activeSpecialists && run.activeSpecialists.length > 0
+      ? run.activeSpecialists
+      : (stageLineage?.specialists
+          .filter((specialist) => specialist.status === "running")
+          .map((specialist) => specialist.name) ?? []);
+
+  return {
+    id: run.id,
+    workflow: run.workflow,
+    status: run.status,
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+    summary: run.summary ?? summarizePrompt(run.inputs.userPrompt),
+    currentStage: run.currentStage ?? runningStage?.name,
+    activeSpecialists,
+    finalPath: run.finalPath
+  };
+}
+
+export interface ListRunLedgerOptions {
+  activeOnly?: boolean;
+  status?: RunRecord["status"];
+  workflow?: WorkflowName;
+  recent?: number;
+}
+
 export async function listRuns(cwd: string): Promise<RunRecord[]> {
   const root = runsRoot(cwd);
   try {
@@ -91,8 +149,28 @@ export async function listRuns(cwd: string): Promise<RunRecord[]> {
   }
 }
 
+export async function listRunLedger(cwd: string, options: ListRunLedgerOptions = {}): Promise<RunLedgerEntry[]> {
+  let runs = await listRuns(cwd);
+
+  if (options.activeOnly) {
+    runs = runs.filter((run) => run.status === "running");
+  }
+  if (options.status) {
+    runs = runs.filter((run) => run.status === options.status);
+  }
+  if (options.workflow) {
+    runs = runs.filter((run) => run.workflow === options.workflow);
+  }
+
+  if (typeof options.recent === "number") {
+    runs = runs.slice(0, Math.max(options.recent, 0));
+  }
+
+  return Promise.all(runs.map((run) => buildRunLedgerEntry(cwd, run)));
+}
+
 export async function readRun(cwd: string, runId: string): Promise<RunRecord> {
-  const runFile = path.join(runsRoot(cwd), runId, "run.json");
+  const runFile = path.join(runDirForId(cwd, runId), "run.json");
   const raw = await fs.readFile(runFile, "utf8");
   return JSON.parse(raw) as RunRecord;
 }

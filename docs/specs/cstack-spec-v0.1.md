@@ -142,10 +142,43 @@ This means the external UX can be simple without collapsing the internal system 
 | Command | Purpose |
 | --- | --- |
 | `cstack <intent>` | Infer the likely workflow sequence from the task and route into one or more internal stages |
-| `cstack inspect <run-id>` | Show run metadata, linked Codex session ids, artifact paths, and delegate ledger |
+| `cstack runs` | Show the run ledger across historical and currently active runs, with filters for recent, active, failed, and workflow-specific views |
+| `cstack inspect <run-id>` | Show run metadata, linked Codex session ids, artifact paths, routing lineage, and delegate ledger |
+| `cstack inspect <run-id> --interactive` | Open a post-run interactive inspector over the saved artifacts for a run |
 | `cstack rerun <run-id>` | Re-execute a deterministic workflow from saved prompt and input materials, creating a new run id |
 | `cstack resume <run-id>` | Resolve the linked interactive Codex session from `session.json` and call `codex resume` |
 | `cstack fork <run-id> [--workflow <name>]` | Branch an interactive Codex session, create a child run, and record lineage |
+
+### Run ledger and post-run inspection
+
+The run surface should work at two levels:
+
+- `cstack runs` is the control-plane view across many runs
+- `cstack inspect <run-id>` is the deep inspection view into one run
+
+`cstack runs` should evolve from a static directory listing into a real ledger that includes:
+
+- completed runs
+- failed runs
+- in-progress runs that are actively updating status
+- workflow, intent, or prompt excerpt
+- current stage when known
+- active specialists when known
+- created and updated timestamps
+
+The default output should be human-readable, with `--json` available for scripting.
+
+The post-run interactive inspector should be TTY-only and optional. Its job is to answer artifact-grounded questions such as:
+
+- what was done
+- what was not done
+- why certain stages were deferred
+- which specialists ran
+- what each specialist found
+- what artifacts exist
+- what next actions are implied
+
+It should start as a wrapper-owned inspector, not as an automatic handoff into a new Codex conversation. If the user wants continued reasoning, the inspector may then surface explicit `resume` or `fork` actions.
 
 ### Workflow intent boundaries
 
@@ -403,6 +436,17 @@ Required files:
 
 Workflow-specific artifacts live under `artifacts/`.
 
+Recommended additional files for inferred and interactive runs:
+
+| File | Meaning |
+| --- | --- |
+| `routing-plan.json` | Inferred stage plan, rationale, selected specialists, and routing summary |
+| `stage-lineage.json` | Per-stage execution status plus specialist execution and disposition records |
+| `artifacts-index.json` | Artifact inventory used by `inspect` and the interactive inspector |
+| `inspector-notes.json` | Optional persisted inspector bookmarks, last viewed artifact, or user follow-up state |
+
+The run ledger should be derivable from these artifacts without a separate daemon or database. V1 may cache summaries for speed, but the durable source of truth remains the run directories on disk.
+
 ### Logs / transcripts / auditability
 
 Auditability matters more than completeness in v1.
@@ -411,6 +455,7 @@ Auditability matters more than completeness in v1.
 - Interactive workflows should always record launch parameters, linked session ids, and final summaries.
 - Full interactive transcript capture is best-effort and may be partial if Codex CLI does not expose a stable event stream.
 - Delegate records should be explicit about whether they are observed directly or leader-reported.
+- The post-run interactive inspector should answer from saved artifacts first and should distinguish observed facts from inferred guidance.
 
 This is enough to let a user inspect what was requested, what was observed, and what was decided.
 
@@ -528,6 +573,32 @@ Notes:
 8. `cstack` records observed events, session ids, delegate summaries, specialist reasons, and final output.
 9. Workflow-specific artifacts are written under `artifacts/`.
 10. `cstack` prints a short terminal summary: inferred plan if applicable, workflow, run id, status, key artifact paths, and next actions.
+11. If the terminal is interactive, `cstack` may offer an optional handoff into `cstack inspect <run-id> --interactive`.
+
+### Post-run interactive inspector lifecycle
+
+The post-run interactive inspector should follow a strict boundary:
+
+- it reads and explains the saved run state
+- it does not silently continue the original reasoning session
+- it may offer explicit escalation actions such as `resume` or `fork`
+
+The first version should support a small command set such as:
+
+- `summary`
+- `stages`
+- `specialists`
+- `artifacts`
+- `show final`
+- `show routing`
+- `show stage <name>`
+- `show specialist <name>`
+- `why deferred <stage>`
+- `what remains`
+- `resume`
+- `fork`
+
+This keeps the post-run experience useful without turning it into an unbounded second chat layer.
 
 ### Run ids and Codex session mapping
 
@@ -538,7 +609,9 @@ Notes:
 
 ### How users inspect, replay, and debug runs
 
+- `cstack runs` is the first stop when the user needs to find a run, compare active and historical runs, or spot stalled work.
 - `cstack inspect <run-id>` reads `run.json`, `session.json`, the artifact index, and the delegate ledger.
+- `cstack inspect <run-id> --interactive` opens an artifact-grounded terminal inspector for guided follow-up questions.
 - `cstack rerun <run-id>` reuses the saved normalized input and materialized prompt to create a fresh deterministic run.
 - Debugging starts with artifact inspection, not with rerunning blindly. Users should be able to compare `prompt.md`, `final.md`, and `events.jsonl` across runs.
 
@@ -582,6 +655,16 @@ Expected flow:
 - the engineer iterates with Codex, runs tests, and adjusts scope
 - later they use `cstack resume <run-id>` rather than remembering the raw Codex session id
 - if they want an alternative implementation branch, they use `cstack fork <run-id> --workflow build`
+
+### Example post-run interactive inspection
+
+- a user runs `cstack "Add SSO with audit logging"` in a TTY
+- `cstack` completes the deterministic stages and prints the run summary
+- the terminal offers `Inspect this run now? [Y/n]`
+- the user enters the interactive inspector instead of starting a new Codex conversation
+- they ask for `stages`, `show specialist audit-review`, and `what remains`
+- the inspector answers from `routing-plan.json`, `stage-lineage.json`, `final.md`, and the delegate artifacts
+- only after reviewing the saved state do they choose `resume` or `fork` if they want continued agent work
 
 ### Example multi-agent run with failure handling
 
@@ -676,6 +759,7 @@ This keeps the operator model coherent: one workflow, one leader, a small set of
 - Materialize prompts and normalized inputs
 - Create run directories with `run.json`, `prompt.md`, `final.md`, and workflow artifacts
 - Add `cstack inspect`
+- Add `cstack runs` as a real run ledger rather than a raw directory listing
 
 ### Milestone 2: interactive build with session lineage
 
@@ -683,6 +767,7 @@ This keeps the operator model coherent: one workflow, one leader, a small set of
 - Record `session.json`
 - Add `cstack resume` and `cstack fork`
 - Capture verification commands and change summaries
+- Add `cstack inspect <run-id> --interactive` as a wrapper-owned post-run inspector
 
 ### Milestone 3: review and ship workflows
 
@@ -711,10 +796,12 @@ This keeps the operator model coherent: one workflow, one leader, a small set of
 4. What is the smallest stable event schema `cstack` can count on from `codex exec --json`?
 5. Should `ship` remain a documentation-and-verification workflow, or should later versions own more release automation?
 6. How should artifact retention work for large repos with many runs: keep all runs, expire old runs, or archive only summaries?
+7. Should the interactive inspector remain purely artifact-grounded in v1, or should it gain an explicit Codex-backed “explain this run” mode later?
+8. How much live state should `cstack runs` expose for active runs before the wrapper can reliably observe every internal stage transition?
 
 ## 15. **Recommended Next Spec**
 
-The next spec should define the inferred-intent router, workflow manifest, and specialist activation contract in detail.
+The next spec should define the post-run interactive inspector, the run-ledger contract for active and historical runs, and the boundaries between artifact inspection versus resumed Codex reasoning.
 
 That spec should answer:
 
@@ -726,9 +813,11 @@ That spec should answer:
 - delegate ledger schema and acceptance states
 - routing-plan schema and stage inference rules
 - specialist activation reasons and artifact schema
+- run-ledger schema for active and historical runs
+- post-run inspector command set and persistence model
 
 Without that layer, implementation will drift into ad hoc process management.
 
 ## **Build Recommendation**
 
-Build the inferred front door next while preserving the explicit internal stages. The first slice should add `cstack <intent>`, a routing-plan artifact, one lead agent, and a bounded specialist library with explicit activation reasons. That validates the higher-level UX without collapsing the internal workflow contract.
+Build the run-experience layer next. The first slice should make `cstack runs` a real ledger for active and historical runs, add `cstack inspect <run-id> --interactive` as an artifact-grounded post-run console, and keep `resume` and `fork` as explicit escalation actions. That improves inspectability and user trust without turning the wrapper into an uncontrolled second chat runtime.

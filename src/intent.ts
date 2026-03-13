@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import { buildEvent, ProgressReporter } from "./progress.js";
 import { loadConfig } from "./config.js";
 import { runCodexExec } from "./codex.js";
+import { maybeOfferInteractiveInspect } from "./inspector.js";
 import { buildDiscoverPrompt, buildSpecPrompt, buildSpecialistPrompt, excerpt } from "./prompt.js";
 import { detectCodexVersion, detectGitBranch, ensureRunDir, makeRunId, writeRunRecord } from "./run.js";
 import type {
@@ -439,6 +440,9 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
     stdoutPath,
     stderrPath,
     configSources: sources,
+    currentStage: "routing",
+    activeSpecialists: [],
+    summary: resolvedIntent,
     inputs: {
       userPrompt: resolvedIntent,
       entrypoint: "intent",
@@ -474,6 +478,7 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
       await fs.writeFile(finalPath, finalSummary, "utf8");
       runRecord.status = "completed";
       runRecord.updatedAt = new Date().toISOString();
+      delete runRecord.currentStage;
       runRecord.lastActivity = "Dry run completed";
       await writeRunRecord(runDir, runRecord);
       await events.emit("completed", "Dry run completed");
@@ -489,6 +494,7 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
           `  ${path.relative(cwd, path.join(runDir, "run.json"))}`
         ].join("\n") + "\n"
       );
+      await maybeOfferInteractiveInspect(cwd, runId);
       return;
     }
 
@@ -509,6 +515,9 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
       }
 
       lineageStage.status = "running";
+      runRecord.currentStage = stageName;
+      runRecord.updatedAt = new Date().toISOString();
+      await writeRunRecord(runDir, runRecord);
       await writeJson(stageLineagePath, stageLineage);
       await events.emit("activity", `Running ${stageName} stage`);
 
@@ -557,6 +566,10 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
 
     const selectedSpecialists = routingPlan.specialists.filter((specialist) => specialist.selected);
     for (const specialist of selectedSpecialists) {
+      runRecord.currentStage = `specialist:${specialist.name}`;
+      runRecord.activeSpecialists = [specialist.name];
+      runRecord.updatedAt = new Date().toISOString();
+      await writeRunRecord(runDir, runRecord);
       await events.emit("activity", `Running specialist ${specialist.name}`);
       const result = await executeSpecialist({
         cwd,
@@ -577,6 +590,8 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
     await fs.writeFile(finalPath, finalSummary, "utf8");
     runRecord.status = "completed";
     runRecord.updatedAt = new Date().toISOString();
+    delete runRecord.currentStage;
+    runRecord.activeSpecialists = [];
     runRecord.lastActivity = "Intent run completed";
     await writeRunRecord(runDir, runRecord);
     await events.emit("completed", "Intent run completed");
@@ -593,9 +608,12 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
         `  ${path.relative(cwd, path.join(runDir, "run.json"))}`
       ].join("\n") + "\n"
     );
+    await maybeOfferInteractiveInspect(cwd, runId);
   } catch (error) {
     runRecord.status = "failed";
     runRecord.updatedAt = new Date().toISOString();
+    delete runRecord.currentStage;
+    runRecord.activeSpecialists = [];
     runRecord.error = error instanceof Error ? error.message : String(error);
     await writeRunRecord(runDir, runRecord);
     await events.emit("failed", runRecord.error);
