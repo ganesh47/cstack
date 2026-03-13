@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
@@ -51,21 +51,31 @@ describe("runDiscover", () => {
   });
 
   it("creates a completed discover run with findings artifact", async () => {
-    await runDiscover(repoDir, "Map the repo constraints for the next slice.");
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      await runDiscover(repoDir, "Map the repo constraints for the next slice.");
 
-    const runs = await listRuns(repoDir);
-    expect(runs).toHaveLength(1);
+      const runs = await listRuns(repoDir);
+      expect(runs).toHaveLength(1);
 
-    const run = await readRun(repoDir, runs[0]!.id);
-    const finalBody = await fs.readFile(run.finalPath, "utf8");
-    const artifactBody = await fs.readFile(path.join(path.dirname(run.finalPath), "artifacts", "findings.md"), "utf8");
-    const contextBody = await fs.readFile(run.contextPath, "utf8");
+      const run = await readRun(repoDir, runs[0]!.id);
+      const finalBody = await fs.readFile(run.finalPath, "utf8");
+      const artifactBody = await fs.readFile(path.join(path.dirname(run.finalPath), "artifacts", "findings.md"), "utf8");
+      const contextBody = await fs.readFile(run.contextPath, "utf8");
+      const eventsBody = await fs.readFile(run.eventsPath!, "utf8");
+      const consoleOutput = stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join("");
 
-    expect(run.workflow).toBe("discover");
-    expect(run.status).toBe("completed");
-    expect(contextBody).toContain("Delegation enabled: yes");
-    expect(contextBody).toContain("Delegation max agents: 2");
-    expect(finalBody).toContain("fake Codex response");
-    expect(artifactBody).toContain("Fake Spec");
+      expect(run.workflow).toBe("discover");
+      expect(run.status).toBe("completed");
+      expect(contextBody).toContain("Delegation enabled: yes");
+      expect(contextBody).toContain("Delegation max agents: 2");
+      expect(finalBody).toContain("fake Codex response");
+      expect(artifactBody).toContain("Fake Spec");
+      expect(eventsBody).toContain("\"type\":\"session\"");
+      expect(eventsBody).toContain("writing final output");
+      expect(consoleOutput).toContain("Session: fake-session-123");
+    } finally {
+      stdoutSpy.mockRestore();
+    }
   });
 });

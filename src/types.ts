@@ -1,5 +1,21 @@
 export type WorkflowName = "spec" | "discover";
 
+export type RunEventType =
+  | "starting"
+  | "session"
+  | "activity"
+  | "heartbeat"
+  | "completed"
+  | "failed";
+
+export interface RunEvent {
+  timestamp: string;
+  elapsedMs: number;
+  type: RunEventType;
+  message: string;
+  stream?: "stdout" | "stderr";
+}
+
 export interface CodexConfig {
   command?: string;
   model?: string;
@@ -36,10 +52,12 @@ export interface RunRecord {
   promptPath: string;
   finalPath: string;
   contextPath: string;
+  eventsPath?: string;
   stdoutPath: string;
   stderrPath: string;
   configSources: string[];
   sessionId?: string;
+  lastActivity?: string;
   error?: string;
   inputs: {
     userPrompt: string;

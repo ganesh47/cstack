@@ -10,6 +10,7 @@ Current implemented surface:
 - `inspect`
 - repo-local config in `.cstack/config.toml`
 - durable run artifacts in `.cstack/runs/<run-id>/`
+- live in-progress activity output while Codex is running
 
 ## Install
 
@@ -130,6 +131,16 @@ cstack runs
 cstack inspect
 ```
 
+While a run is active, `cstack` now prints live progress lines such as:
+
+```text
+[cstack discover <run-id> +0:00] Starting Codex run
+[cstack discover <run-id> +0:01] Session: <session-id>
+[cstack discover <run-id> +0:03] Activity (stdout): scanning repository context
+```
+
+This is an activity feed, not private chain-of-thought output. It shows what the wrapper can observe from the Codex process plus wrapper-generated heartbeat updates.
+
 Recommended workflow in an existing codebase:
 
 1. Start with `discover` to understand the repo shape, constraints, and likely hotspots.
@@ -184,6 +195,7 @@ Each run writes to `.cstack/runs/<run-id>/`.
 Current artifact set:
 
 - `run.json`
+- `events.jsonl`
 - `prompt.md`
 - `context.md`
 - `final.md`
@@ -191,6 +203,8 @@ Current artifact set:
 - `stderr.log`
 - `artifacts/spec.md` for `spec`
 - `artifacts/findings.md` for `discover`
+
+`events.jsonl` records the live progress feed so `cstack inspect` can show recent activity after the run has finished.
 
 ## Development
 
@@ -247,6 +261,7 @@ Implemented:
 - config loading
 - run creation and persistence
 - Codex exec adapter
+- live progress reporting and event logging
 - build, typecheck, and test pipeline
 
 Not implemented yet:

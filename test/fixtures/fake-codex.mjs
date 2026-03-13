@@ -18,6 +18,8 @@ for await (const chunk of process.stdin) {
 }
 
 await new Promise((resolve) => process.stderr.write("session id: fake-session-123\n", resolve));
+await new Promise((resolve) => process.stdout.write("scanning repository context\n", resolve));
+await new Promise((resolve) => setTimeout(resolve, 25));
 
 if (!finalPath) {
   process.stderr.write("missing final path\n");
@@ -38,4 +40,5 @@ await writeFile(
   "utf8"
 );
 
+await new Promise((resolve) => process.stdout.write("writing final output\n", resolve));
 process.stdout.write("completed\n");

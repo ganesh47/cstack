@@ -31,6 +31,7 @@ export async function runDiscover(cwd: string, userPrompt: string): Promise<void
   const contextPath = path.join(runDir, "context.md");
   const finalPath = path.join(runDir, "final.md");
   const artifactPath = path.join(runDir, "artifacts", "findings.md");
+  const eventsPath = path.join(runDir, "events.jsonl");
   const stdoutPath = path.join(runDir, "stdout.log");
   const stderrPath = path.join(runDir, "stderr.log");
   const [gitBranch, codexVersion] = await Promise.all([
@@ -56,6 +57,7 @@ export async function runDiscover(cwd: string, userPrompt: string): Promise<void
     promptPath,
     finalPath,
     contextPath,
+    eventsPath,
     stdoutPath,
     stderrPath,
     configSources: sources,
@@ -69,8 +71,11 @@ export async function runDiscover(cwd: string, userPrompt: string): Promise<void
   try {
     const result = await runCodexExec({
       cwd,
+      workflow: "discover",
+      runId,
       prompt,
       finalPath,
+      eventsPath,
       stdoutPath,
       stderrPath,
       config
@@ -81,6 +86,9 @@ export async function runDiscover(cwd: string, userPrompt: string): Promise<void
     runRecord.codexCommand = result.command;
     if (result.sessionId) {
       runRecord.sessionId = result.sessionId;
+    }
+    if (result.lastActivity) {
+      runRecord.lastActivity = result.lastActivity;
     }
     if (result.code !== 0) {
       runRecord.error = `codex exec exited with code ${result.code}${result.signal ? ` (${result.signal})` : ""}`;
@@ -103,6 +111,7 @@ export async function runDiscover(cwd: string, userPrompt: string): Promise<void
         `Artifacts:`,
         `  ${path.relative(cwd, finalPath)}`,
         `  ${path.relative(cwd, artifactPath)}`,
+        `  ${path.relative(cwd, eventsPath)}`,
         `  ${path.relative(cwd, path.join(runDir, "run.json"))}`
       ].join("\n") + "\n"
     );
