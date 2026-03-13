@@ -82,9 +82,9 @@ If that loop works for one engineer in one repo, the product is doing the right 
 ## 5. **Product Principles**
 
 1. `cstack` is a thin wrapper, not a new agent runtime. It should shell out to the installed `codex` binary in v1.
-2. Workflow beats roleplay. Users choose a job to do, not a fictional team to summon.
+2. Workflow beats roleplay. Users may start from a single high-level intent, but the system must still route that intent through explicit internal stages rather than a fictional cast of permanent personas.
 3. Artifacts are first-class. Every run must leave behind enough material to inspect, replay, and debug it.
-4. Single-agent is the default. Delegation must be justified by separable work, not by branding.
+4. A lead agent is the default. Delegation must be justified by separable work, not by branding.
 5. Deterministic configuration should define the run envelope; flexible prompting should define the task details.
 6. Local-first is a hard assumption. Repo context, config, prompt assets, and artifacts live in the repo or adjacent local state.
 7. The wrapper should be honest about what it can and cannot observe from Codex CLI.
@@ -105,6 +105,28 @@ If that loop works for one engineer in one repo, the product is doing the right 
 
 The minimum lovable workflow set for v1 is four workflows: `discover`, `spec`, `build`, and `review`. V1 should ship a fifth workflow, `ship`, because it is a small extension that closes the handoff loop without major runtime complexity.
 
+### Unified front door
+
+The product should expose a simple top-level entrypoint in addition to explicit workflow commands:
+
+| Entry | Meaning |
+| --- | --- |
+| `cstack <intent>` | Accept a natural-language task, infer the likely workflow sequence, show the inferred plan, and then execute it through explicit internal stages |
+| `cstack run <intent>` | Optional explicit alias for the same behavior if bare-argument CLI parsing becomes awkward |
+
+This is the recommended product shape because it preserves workflow discipline internally while reducing front-door UX friction. The important rule is that intent inference is not a replacement for workflows. It is a router onto them.
+
+The inferred entrypoint should:
+
+- classify the likely task shape
+- choose one stage or a sequence such as `discover -> spec -> build -> review -> ship`
+- print or persist the inferred plan before substantial mutation
+- choose a lead agent
+- decide whether specialist delegates are justified
+- record which stages actually ran and why
+
+This means the external UX can be simple without collapsing the internal system into a vague “just do the thing” runtime.
+
 ### Proposed top-level workflows
 
 | Workflow | Default Codex mode | Agent posture | Intent | Trigger | Inputs | Outputs | When not to use it |
@@ -119,6 +141,7 @@ The minimum lovable workflow set for v1 is four workflows: `discover`, `spec`, `
 
 | Command | Purpose |
 | --- | --- |
+| `cstack <intent>` | Infer the likely workflow sequence from the task and route into one or more internal stages |
 | `cstack inspect <run-id>` | Show run metadata, linked Codex session ids, artifact paths, and delegate ledger |
 | `cstack rerun <run-id>` | Re-execute a deterministic workflow from saved prompt and input materials, creating a new run id |
 | `cstack resume <run-id>` | Resolve the linked interactive Codex session from `session.json` and call `codex resume` |
@@ -138,12 +161,18 @@ The minimum lovable workflow set for v1 is four workflows: `discover`, `spec`, `
 
 | Role | Durable concept or temporary preset | Can edit code | Primary job |
 | --- | --- | --- | --- |
+| Intent Router | Durable workflow concept | No | Infer the workflow sequence, specialist needs, and capability attachments from the user request and repo context |
 | Leader | Durable workflow concept | Yes in `build`; no in `review` by default | Own the workflow, decide whether to delegate, synthesize outputs, and produce the final artifact |
 | Explorer | Temporary preset | No | Gather facts, map code, inspect risks, summarize a bounded area |
 | Implementer | Temporary preset | Yes, but only in bounded build tasks | Make code changes in a disjoint file scope and report exactly what changed |
 | Reviewer | Durable workflow concept, often implemented as a leader posture | No by default | Critique changes, rank risks, and recommend disposition |
+| Security Reviewer | Temporary specialist preset | No by default | Look for security flaws, misuse of secrets, auth gaps, and exploit paths |
+| DevSecOps Reviewer | Temporary specialist preset | No by default | Review CI/CD, supply chain, secret handling, runtime hardening, and operational guardrails |
+| Traceability Reviewer | Temporary specialist preset | No | Check linkage between intent, spec, implementation, tests, and release artifacts |
+| Audit Reviewer | Temporary specialist preset | No | Check auditability, compliance-facing evidence, logging completeness, and change record quality |
+| Release Pipeline Reviewer | Temporary specialist preset | No by default | Check release workflows, packaging, versioning, rollout steps, and failure handling |
 
-The agent model is intentionally small. The system needs durable workflow roles, not a large cast of named personalities. That keeps prompts stable, makes artifact inspection easier, and avoids false precision about agent specialization.
+The agent model is intentionally small at the durable-core level. The system needs a stable router and lead model, plus a bounded library of specialist presets that can be attached when justified. That keeps prompts stable, makes artifact inspection easier, and avoids false precision about agent specialization while still allowing high-value specialist reviews.
 
 ### When the primary agent delegates
 
@@ -154,6 +183,13 @@ The leader may delegate only when all of the following are true:
 - the merge or synthesis cost is lower than the expected time saved
 - the workflow policy allows delegation
 - the user has not forced single-agent mode
+
+The intent router may request specialists only when all of the following are true:
+
+- the task or repo context implies a meaningful risk domain
+- the specialist has a clear bounded review contract
+- the resulting output will materially change decisions or acceptance
+- the extra review cost is proportionate to the task
 
 The wrapper should suppress delegation entirely when:
 
@@ -190,11 +226,12 @@ The wrapper should persist this in `delegates/<delegate-id>/request.md` and `del
 
 | Workflow | Default topology | Notes |
 | --- | --- | --- |
-| `discover` | Leader + up to 3 explorers | Best use of parallelism in v1 because codebase slices are easy to separate |
-| `spec` | Leader only by default; optionally leader + up to 2 explorers | Use delegates only for cross-cutting questions such as API surface, infra constraints, or test impact |
-| `build` | Leader only by default; optionally leader + up to 2 delegates | One or both delegates may be implementers if file ownership is disjoint; otherwise use analysis-only delegates |
-| `review` | Reviewer leader only | Multi-agent review is deferred until telemetry and signal quality justify it |
-| `ship` | Leader only | Final checks should be quiet, deterministic, and cheap |
+| `intent` | Intent Router + one Leader | The router chooses stages, specialists, and capability packs before major execution |
+| `discover` | Leader + up to 3 explorers | Best use of parallelism because codebase slices are easy to separate |
+| `spec` | Leader only by default; optionally leader + up to 2 explorers or one specialist reviewer | Use delegates for cross-cutting questions such as API surface, infra constraints, security posture, or audit expectations |
+| `build` | Leader only by default; optionally leader + up to 2 delegates and one bounded specialist reviewer | One or both delegates may be implementers if file ownership is disjoint; specialists stay review-oriented unless explicitly authorized |
+| `review` | Reviewer leader plus up to 3 specialist reviewers | This is the main place where specialist review should become first-class when justified |
+| `ship` | Leader plus optional release-focused specialists | Final checks should stay disciplined, but release and audit specialists are often justified here |
 
 ### Safe parallel work in v1
 
@@ -206,6 +243,7 @@ Safe to parallelize:
 - test surface mapping
 - docs or migration note drafting on disjoint files
 - code changes in clearly separate file trees during `build`
+- bounded specialist critiques such as security, auditability, traceability, or release-pipeline checks
 
 Not safe to parallelize in v1:
 
@@ -213,6 +251,7 @@ Not safe to parallelize in v1:
 - release readiness decisions
 - final review ranking
 - architectural synthesis that depends on unresolved tradeoffs
+- unbounded specialist swarms on the same diff without a lead synthesis contract
 
 ### How the leader verifies and merges delegated work
 
@@ -228,15 +267,30 @@ Delegate output is advisory until the leader accepts it. The system should never
 
 ### Guardrails for fan-out, cost, and noise
 
-- Default delegate count: `0`
-- Recommended max total delegates: `3`
+- Default delegate count: `0` beyond the lead; the inferred front door may still create one router plus one lead by default
+- Recommended max total delegates: `4`
 - Recommended max editing delegates: `2`
 - Hard rule for v1: no nested delegation
 - Each workflow prompt should include a delegation budget and stopping rule
 - The wrapper should print planned delegation before the run when the workflow is deterministic
 - If delegates produce low-signal output, the leader should stop spawning more and continue single-agent
+- Specialist reviewers should be selected explicitly by reason, for example `security`, `devsecops`, `traceability`, `audit`, or `release-pipeline`
 
-The cost and latency tradeoff is simple in v1: use multiple agents only when the task is separable enough that parallelism saves more time than synthesis costs. Beyond three delegates, local coordination cost and artifact noise rise sharply for the primary user profile.
+The cost and latency tradeoff is simple in v1: use multiple agents only when the task is separable enough that parallelism saves more time than synthesis costs. The most credible multi-agent shape is one lead plus a few narrowly scoped specialists, not a large team by default.
+
+### Specialist library and activation rules
+
+The system should support a bounded library of specialist presets that the intent router or lead can activate deliberately:
+
+| Specialist | Typical trigger | Default output |
+| --- | --- | --- |
+| Security review | auth changes, secret handling, untrusted input, data exposure risk | `security-findings.md` |
+| DevSecOps review | CI/CD changes, container/runtime changes, supply-chain exposure, secret distribution | `devsecops-findings.md` |
+| Traceability review | regulated work, complex migrations, multi-stage changes, high handoff cost | `traceability-findings.md` |
+| Audit review | audit logging, compliance evidence, change accountability, evidence retention | `audit-findings.md` |
+| Release pipeline review | versioning, packaging, release automation, rollout safety, rollback readiness | `release-review.md` |
+
+These should not all run by default. They should be inferred or attached only when the task warrants them, and the run artifact must record why each one was selected.
 
 ## 8. **System Architecture**
 
@@ -464,15 +518,16 @@ Notes:
 
 ### Standard lifecycle
 
-1. User invokes a workflow command.
-2. `cstack` resolves config, workflow mode, capability packs, and delegation policy.
-3. `cstack` creates a run id and run directory.
-4. `cstack` materializes `input.json` and `prompt.md`.
-5. `cstack` invokes `codex exec`, `codex review`, or interactive `codex`.
-6. The leader agent executes, optionally delegating within the workflow policy.
-7. `cstack` records observed events, session ids, delegate summaries, and final output.
-8. Workflow-specific artifacts are written under `artifacts/`.
-9. `cstack` prints a short terminal summary: workflow, run id, status, key artifact paths, and next actions.
+1. User invokes either an explicit workflow command or `cstack <intent>`.
+2. If the user invoked the inferred front door, the intent router resolves the likely stage sequence, capability packs, and specialist candidates.
+3. `cstack` resolves config, workflow mode, capability packs, and delegation policy.
+4. `cstack` creates a run id and run directory.
+5. `cstack` materializes `input.json`, `prompt.md`, and the inferred plan if routing was involved.
+6. `cstack` invokes `codex exec`, `codex review`, or interactive `codex`.
+7. The leader agent executes, optionally delegating within the workflow policy.
+8. `cstack` records observed events, session ids, delegate summaries, specialist reasons, and final output.
+9. Workflow-specific artifacts are written under `artifacts/`.
+10. `cstack` prints a short terminal summary: inferred plan if applicable, workflow, run id, status, key artifact paths, and next actions.
 
 ### Run ids and Codex session mapping
 
@@ -489,12 +544,13 @@ Notes:
 
 ### Example end-to-end user flow
 
-1. A senior IC runs `cstack discover "Map billing entitlement checks"` and gets a saved context map with risk notes.
-2. They run `cstack spec "Add plan-based rate limits" --from <discover-run>` and get a scoped spec plus open questions.
-3. After reviewing the spec, they launch `cstack build --from-run <spec-run>` for the implementation session.
-4. They pause for another task and later continue with `cstack resume <build-run>`.
-5. When coding is done, they run `cstack review --from-run <build-run>` and save the findings alongside the build artifacts.
-6. If the branch is ready for handoff, they run `cstack ship --from-run <build-run> --from-run <review-run>` to produce the final checklist and summary.
+1. A senior IC runs `cstack "Add plan-based rate limits with audit logging and release safety checks"` instead of choosing a workflow manually.
+2. The intent router infers `discover -> spec -> build -> review -> ship` and prints that plan before execution.
+3. The router also infers that `audit` and `release-pipeline` specialists are justified, while `security` is optional and therefore not attached by default.
+4. `discover` and `spec` complete first and produce saved context and planning artifacts.
+5. `build` launches with a lead agent and only the bounded implementation delegates needed for disjoint file work.
+6. `review` runs with the lead reviewer plus the selected specialists and records exactly why those specialists were used.
+7. `ship` produces the final checklist and release-oriented summary, preserving lineage back to the inferred front door and every stage it ran.
 
 ### Example non-interactive run
 
@@ -532,30 +588,32 @@ Expected flow:
 Command:
 
 ```bash
-cstack discover "Map auth subsystem before introducing SSO" --delegate auto
+cstack "Introduce SSO with audit logging and hardened release checks"
 ```
 
 Expected topology:
 
-- leader agent owns the main run
-- delegate 1 explores request authentication flow
-- delegate 2 explores user/session storage
-- delegate 3 explores test coverage and deployment constraints
+- intent router infers `discover -> spec -> build -> review`
+- leader agent owns the main execution for each stage
+- specialist `security-review` checks auth and identity risks
+- specialist `audit-review` checks logging and evidence expectations
+- specialist `release-pipeline-review` checks rollout and rollback assumptions
 
 Artifacts:
 
-- `delegates/delegate-1/result.json`
-- `delegates/delegate-2/result.json`
-- `delegates/delegate-3/result.json`
+- `routing-plan.json`
+- `delegates/security-review/result.json`
+- `delegates/audit-review/result.json`
+- `delegates/release-pipeline-review/result.json`
 - `artifacts/context.md`
 - `artifacts/risks.md`
 
 Failure handling:
 
-- if delegate 2 stalls or returns low-signal output, the leader marks it `stalled` or `discarded`
-- the leader does not respawn delegates indefinitely
-- the final summary records that two delegate results were accepted and one was discarded
-- the main run still completes with a usable context map and an explicit confidence downgrade
+- if `audit-review` returns low-signal output, the leader marks it `discarded`
+- the leader does not keep spawning more specialists to compensate
+- the final summary records which specialist outputs were accepted, partially accepted, or discarded
+- the main run still completes, but with an explicit note that audit coverage was degraded
 
 ## 12. **Guardrails and Failure Handling**
 
@@ -574,10 +632,12 @@ Failure handling:
 ### Trust guardrails
 
 - Every workflow should declare whether it is single-agent first, delegate-optional, or single-agent only.
+- The inferred front door must record the planned stage sequence before major execution starts.
 - Delegation must be visible in artifacts, even if only through leader-reported summaries.
 - Runs are immutable; reruns create new run ids.
 - The wrapper should never hide whether a final answer came from one agent or a leader synthesizing delegates.
-- `review` and `ship` should stay quiet by default because trust matters more than speculative parallelism there.
+- Specialist reviewers must always record both their activation reason and their acceptance disposition.
+- `review` and `ship` should stay disciplined by default because trust matters more than speculative parallelism there.
 
 ### Idempotency concerns
 
@@ -636,10 +696,17 @@ This keeps the operator model coherent: one workflow, one leader, a small set of
 - Persist delegate ledgers
 - Support repo-configured capability packs for skills, MCP servers, shell, and web
 
+### Milestone 5: inferred intent router and specialist library
+
+- Add `cstack <intent>` as the primary front door
+- Persist inferred routing plans and stage lineage
+- Implement bounded specialist presets for security, DevSecOps, traceability, audit, and release-pipeline review
+- Record specialist selection reasons and acceptance states
+
 ## 14. **Open Questions**
 
 1. How much direct sub-agent telemetry can `cstack` reliably observe from Codex CLI versus infer from leader output?
-2. Should `review` stay entirely single-agent in v1, or is there a narrow delegated analysis path that improves signal without adding noise?
+2. Which specialist reviewers should be first-class in the earliest inferred-intent version, and which should remain opt-in?
 3. How much prompt override flexibility should repo config allow before workflow behavior becomes too fragmented across teams?
 4. What is the smallest stable event schema `cstack` can count on from `codex exec --json`?
 5. Should `ship` remain a documentation-and-verification workflow, or should later versions own more release automation?
@@ -647,7 +714,7 @@ This keeps the operator model coherent: one workflow, one leader, a small set of
 
 ## 15. **Recommended Next Spec**
 
-The next spec should define the workflow manifest and run artifact contract in detail.
+The next spec should define the inferred-intent router, workflow manifest, and specialist activation contract in detail.
 
 That spec should answer:
 
@@ -657,9 +724,11 @@ That spec should answer:
 - prompt manifest format and override rules
 - session lineage format for `resume`, `fork`, and `rerun`
 - delegate ledger schema and acceptance states
+- routing-plan schema and stage inference rules
+- specialist activation reasons and artifact schema
 
 Without that layer, implementation will drift into ad hoc process management.
 
 ## **Build Recommendation**
 
-Build `discover` and `spec` first as non-interactive `codex exec` wrappers with a strict run directory contract and `inspect` support. That slice validates the core product thesis, proves the artifact model, and avoids premature complexity around interactive sessions and delegation.
+Build the inferred front door next while preserving the explicit internal stages. The first slice should add `cstack <intent>`, a routing-plan artifact, one lead agent, and a bounded specialist library with explicit activation reasons. That validates the higher-level UX without collapsing the internal workflow contract.
