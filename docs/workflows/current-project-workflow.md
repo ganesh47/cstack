@@ -2,250 +2,181 @@
 
 ## Purpose
 
-This document is the working context for future development on `cstack`.
+This document is the practical working context for the current repo state.
 
 It answers:
 
-- what the spec says the product should become
-- what is actually implemented in `v0.12.0`
-- how we should work on the project from here without confusing spec intent with shipped behavior
-- what changed recently in git
+- what is actually shipped now
+- how to use the workflow stack coherently
+- which commands to prefer for common work
+- how the recent git history maps to the current product shape
 
-## Product Thesis
-
-The core spec in `docs/specs/cstack-spec-v0.1.md` positions `cstack` as a local-first workflow wrapper around Codex CLI:
-
-- runs should be artifact-backed and inspectable
-- the external front door can be intent-based
-- the internal execution model should stay workflow-based
-- delegation should stay bounded and justified
-- `discover -> spec -> build -> review -> ship` is the intended long-term path
-
-The current codebase is an early vertical slice of that model, not the full workflow set.
-
-## Current Reality In Code
+## Current Shipped Surface
 
 Implemented commands:
 
 - `cstack <intent>`
 - `cstack run <intent> [--dry-run]`
 - `cstack discover <prompt>`
-- `cstack spec <prompt>`
-- `cstack build <prompt>` and `cstack build --from-run <run-id>`
-- `cstack deliver <prompt>` and `cstack deliver --from-run <run-id>`
+- `cstack spec <prompt> [--from-run <run-id>]`
+- `cstack build <prompt> [--from-run <run-id>] [--exec] [--allow-dirty]`
+- `cstack review <prompt> [--from-run <run-id>]`
+- `cstack ship <prompt> [--from-run <run-id>] [--release] [--issue <n>] [--allow-dirty]`
+- `cstack deliver <prompt> [--from-run <run-id>] [--exec] [--release] [--issue <n>] [--allow-dirty]`
+- `cstack rerun <run-id>`
+- `cstack resume <run-id>`
+- `cstack fork <run-id> [--workflow <name>]`
 - `cstack runs`
 - `cstack inspect [run-id] [--interactive]`
 - `cstack update`
 
 Implemented behavior:
 
-- `discover` and `spec` execute through `codex exec`
-- `discover` supports a bounded research-team model with a research lead and optional delegated tracks
+- `discover` supports a bounded discover-team model with a Research Lead and optional delegated tracks
+- `spec` emits `spec.md`, `plan.json`, and `open-questions.md`
 - `build` records requested vs observed mode, session lineage, change summaries, and verification artifacts
-- `deliver` runs internal `build -> review -> ship` stages inside one durable run
-- `deliver` can attach bounded specialist review delegates and records their acceptance disposition
-- `deliver` records GitHub delivery evidence and fails closed when required PR, checks, Actions, issue, release, or security gates are blocked
-- each run persists prompts, context, logs, events, final output, and `run.json` under `.cstack/runs/<run-id>/`
-- discover-team artifacts live under `stages/discover/` so they stay distinct from intent-level specialist reviews
-- `intent` infers a stage plan and specialist set, executes `discover` and `spec`, and records later stages as deferred
-- specialist reviews are bounded follow-on runs saved under `delegates/`
-- `runs` provides a ledger view over saved run records
-- `inspect` provides both a one-shot summary and a TTY inspector over saved artifacts
-- `update` is a separate GitHub-release self-update workflow
+- `review` is a standalone critique workflow with verdict artifacts and bounded specialist reviewers
+- `ship` is a standalone GitHub-aware handoff and release-readiness workflow
+- `deliver` runs internal `build -> review -> ship` inside one durable run
+- `deliver` and `ship` can publish branches and create or update pull requests when repo policy enables it
+- `rerun` replays supported workflows into fresh run ids
+- `resume` and `fork` resolve run ids to Codex sessions
+- `intent` executes `discover` and `spec`, may attach specialist reviews, and records later execution recommendations explicitly
+- `runs` is the run ledger
+- `inspect` is the artifact-grounded inspector
 
-Not implemented yet, even though the spec defines them:
+## Recommended Operator Loop
 
-- `cstack review`
-- `cstack ship`
-- `cstack rerun`
-- `cstack resume`
-- `cstack fork`
+Use this order by default:
 
-Important implementation constraint:
+1. `cstack discover` when the codebase area or external context is unclear.
+2. `cstack spec` when you need an implementation-ready plan.
+3. `cstack build` when you want a focused implementation-only workflow.
+4. `cstack review` when you want a narrow critique pass.
+5. `cstack ship` when you want a narrow GitHub-complete handoff or release-readiness pass.
+6. `cstack deliver` when the work clearly spans implementation, critique, and GitHub-complete engineering delivery.
 
-- in `src/intent.ts`, only `discover` and `spec` are executable stages today
-- inferred `build`, `review`, and `ship` stages are intentionally written to lineage as `deferred`
-
-## How To Work On This Repo Now
-
-Use this as the default development loop while `review`, `ship`, `resume`, `fork`, and GTM are still being filled in around the shipped `deliver` umbrella workflow.
-
-### 1. Start From Spec, Then Confirm Against Code
-
-Read these first:
-
-- `docs/specs/cstack-spec-v0.1.md`
-- `README.md`
-- `src/cli.ts`
-- `src/intent.ts`
-- `src/inspector.ts`
-- `src/update.ts`
-
-Reason:
-
-- the spec is aspirational in places
-- the source and tests define the real current contract
-
-### 2. For Any New Feature, Decide Whether It Is:
-
-- a shipped-surface refinement
-- the next milestone from the spec
-- a doc-only clarification
-
-Recommended rule:
-
-- if the README claims it, tests should cover it
-- if the spec claims it but the README says it is deferred, treat it as planned work, not a regression
-
-### 3. Use The Existing Workflow Stack For Planning
-
-For repo exploration:
+Recommended commands:
 
 ```bash
-cstack discover "Map the command and artifact model for <area>"
+# Explore unfamiliar areas
+cstack discover "Map the billing retry pipeline and release touchpoints"
+
+# Turn context into a plan
+cstack spec --from-run <discover-run-id> "Design the billing retry cleanup"
+
+# Implement from planning context
+cstack build --from-run <spec-run-id>
+
+# Review the implementation directly
+cstack review --from-run <build-run-id> "Review billing cleanup for release safety"
+
+# Prepare GitHub-complete handoff
+cstack ship --from-run <review-run-id> --issue 123 "Ship billing cleanup"
+
+# Or run the umbrella path
+cstack deliver --from-run <spec-or-intent-run-id> --issue 123
 ```
 
-For turning that into execution scope:
+## Intent Front Door
 
-```bash
-cstack spec "Design the next vertical slice for <feature>"
-```
+`cstack <intent>` is the planning front door.
 
-For broader tasks:
+Current behavior:
 
-```bash
-cstack "Implement <feature> with <risk constraints>"
-```
+- infer a stage plan
+- persist `routing-plan.json`
+- run `discover`
+- run `spec`
+- attach bounded specialist reviews when justified
+- record later stages such as `build`, `review`, and `ship` as explicit follow-on work
 
-Current expectation for intent runs:
+Use `intent` when you want routing, planning, and inspectable recommendations.
+Use explicit workflows when you already know the narrow stage you want.
 
-- they should produce routing artifacts
-- they should execute `discover` and `spec`
-- they should preserve deferred lineage for later stages
-- they may attach specialist review artifacts when the heuristic selects them
+## Inspection and Continuation
 
-### 4. Use Deliver After Planning Artifacts
+Key inspector commands:
 
-The practical workflow target now is:
+- `summary`
+- `stages`
+- `specialists`
+- `artifacts`
+- `show research`
+- `show session`
+- `show verification`
+- `show review`
+- `show ship`
+- `show mutation`
+- `show github`
+- `show branch`
+- `show pr`
+- `show issues`
+- `show checks`
+- `show actions`
+- `show security`
+- `show release`
+- `what remains`
+- `resume`
+- `fork`
 
-1. use `discover` or `intent` to gather context
-2. use `spec` or the `intent`-generated spec stage artifact to shape the change
-3. launch `cstack deliver --from-run <spec-or-intent-run-id>` when the work clearly spans implementation, review, and GitHub-complete engineering delivery, including wrapper-owned branch/PR publication when repo policy enables it
-4. use `cstack build --from-run <spec-or-intent-run-id>` only when you intentionally want the narrower implementation-only workflow
-5. use `--release` for release-bearing delivery and `--issue <n>` when issue linkage should be explicit
-6. if the shell is non-interactive, expect the build stage to fall back to `exec` and record requested vs observed mode in `session.json`
-7. run `npm run typecheck`
-8. run `npm test`
-9. use `cstack runs` and `cstack inspect` to review saved workflow artifacts, especially `show mutation` and `show github` for deliver runs
+Continuation commands:
 
-### 5. Keep Artifacts First-Class
+- `cstack resume <run-id>` resolves the saved session and calls `codex resume`
+- `cstack fork <run-id>` resolves the saved session and calls `codex fork`
+- `cstack rerun <run-id>` replays supported workflows into a fresh run id
 
-When adding or changing workflows:
+## Safety Rules
 
-- preserve `.cstack/runs/<run-id>/` as the source of truth
-- prefer adding explicit files over relying on terminal-only behavior
-- keep `run.json`, `events.jsonl`, `final.md`, and workflow-specific artifacts coherent
-- update inspector behavior when new artifact types are introduced
-
-### 6. Treat Tests As Product Contract
-
-The most important tests for current product shape are:
-
-- `test/intent.test.ts`
-- `test/inspect.test.ts`
-- `test/runs.test.ts`
-- `test/update.test.ts`
-- `test/progress.test.ts`
-
-When extending the workflow model:
-
-- add tests first for run artifacts and CLI-visible behavior
-- verify inspector and ledger output when new lineage fields are introduced
-
-## Current Slice
-
-The most recently completed slices are:
-
-- `discover v2`
-- `build v1`
-- `deliver v3`
-
-## Recommended Next Milestones
-
-The cleanest next sequence is:
-
-1. add wrapper-native `resume` and `fork` on top of existing build-session lineage
-2. add standalone `review` and `ship` commands for narrower operator paths
-3. add GTM as a post-ship workflow
-4. add `rerun` after workflow contracts stabilize
-
-Why this order:
-
-- `deliver` now closes the main execution gap between planning and GitHub-scoped engineering completion, including branch push and PR publication when policy enables it
-- `resume` and `fork` now depend mostly on wrapper ergonomics because build-session lineage is already being recorded
-- standalone `review` and `ship` become cleaner once the umbrella path has fixed the artifact contracts
-- GTM is cleaner once engineering delivery artifacts are unified
-- `rerun` should come after the workflow artifacts stop shifting
+- treat `.cstack/runs/<run-id>/` as the durable source of truth
+- update inspector behavior whenever you introduce a new artifact family
+- `build`, `ship`, and `deliver` require a clean worktree unless `--allow-dirty` or repo policy allows otherwise
+- GitHub mutation and GitHub delivery evidence must remain reconstructable from artifacts alone
 
 ## Recent Git Timeline
 
-This is the condensed progression reconstructed from recent commits.
+Condensed progression:
 
-### Foundation
+- `7174b57`: initial `spec` workflow slice
+- `381ac24`: initial `discover` workflow
+- `4f1dfd9`: live workflow progress reporting
+- `97bf4f8`: TTY progress dashboard
+- `38f3021`: GitHub release workflow
+- `e278e91`: `cstack update`
+- `a08f7b3`: intent routing and specialist reviews
+- `9de455c`: run ledger and interactive inspector
+- `2e592a4`: richer dashboard and inspector
+- `v0.8.0`: discover research delegation
+- `v0.9.0`: build workflow and session lineage
+- `v0.10.0`: deliver umbrella workflow
+- `v0.11.0`: GitHub-complete deliver gating
+- `v0.12.0`: deliver GitHub mutation for branch and PR publication
 
-- `7174b57`: scaffolded the initial `spec` workflow slice
-- `381ac24`: added the `discover` workflow
-- `4f1dfd9`: added live workflow progress reporting
-- `97bf4f8`: added the TTY progress dashboard
+Current closure work completed after `v0.12.0`:
 
-### Release And Distribution
+- standalone `review`
+- standalone `ship`
+- wrapper-native `resume`
+- wrapper-native `fork`
+- wrapper-native `rerun`
+- explicit dirty-worktree consent for mutation workflows
+- active spec rewritten to match shipped behavior
 
-- `38f3021`: added GitHub release workflow
-- `c336124`: added dispatchable release-prep workflow
-- `1e3df54`: fixed release prep for the current package version
-- `80d7d01`: standardized on Node 24
-- `e278e91`: added `cstack update` as a GitHub-release self-updater
+## Working Rule
 
-### Workflow Expansion
+If a change affects:
 
-- `ca9da91`: expanded the spec to include intent routing and specialists
-- `a08f7b3`: implemented the intent router, inferred stages, and specialist reviews
-- `9de455c`: added the run ledger and interactive inspector
-- `80e0739`: refined the TTY UX direction in the spec
-- `2e592a4`: upgraded the TTY dashboard and inspector implementation
+- command surface
+- artifacts
+- GitHub mutation or delivery policy
+- inspection output
+- workflow continuation
 
-### Release Tags
+then update all of:
 
-- `v0.1.0`: release pipeline stabilization
-- `v0.2.0`: live progress reporting available
-- `v0.3.0`: TTY dashboard available
-- `v0.4.0`: self-update available
-- `v0.5.0`: intent routing and specialists available
-- `v0.6.0`: run ledger and inspector available
-- `v0.7.0`: richer dashboard and inspector available
-- `v0.8.0`: discover research delegation available
-- `v0.9.0`: build workflow and session lineage available
-- `v0.10.0`: deliver workflow available
-- `v0.11.0`: GitHub-complete deliver gating with fail-closed ship enforcement
-- `v0.12.0`: deliver can publish branches and create or update pull requests
+- `README.md`
+- `docs/specs/cstack-spec-v0.1.md`
+- this workflow guide
+- tests
 
-## Practical Read Of The Repo Today
-
-The project is no longer a simple `spec` wrapper. It now has three strong foundations:
-
-- artifact-backed deterministic runs
-- an intent router with bounded specialist follow-ups
-- an operator-oriented ledger and inspector
-
-The main missing pieces are execution continuation and narrower direct operator paths:
-
-- the product can already discover, plan, build, deliver, inspect, and update itself
-- it still lacks standalone `review`, `ship`, `resume`, and `fork` commands
-- GTM remains a later post-deliver workflow, not part of `deliver`
-
-That makes the next development question straightforward:
-
-- keep tightening the deliver-path operator UX, or
-- add the narrower follow-on commands and GTM workflow that now fit cleanly around it
-
-The spec and current code now point to `resume`/`fork`, then standalone `review` and `ship`, as the next highest-value workflow work.
+The repo is healthy when the code, tests, README, and active spec describe the same product.

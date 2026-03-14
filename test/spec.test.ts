@@ -5,6 +5,40 @@ import { promises as fs } from "node:fs";
 import { chmodSync } from "node:fs";
 import { runSpec } from "../src/commands/spec.js";
 import { listRuns, readRun } from "../src/run.js";
+import type { RunRecord } from "../src/types.js";
+
+async function seedDiscoverRun(repoDir: string): Promise<string> {
+  const runId = "2026-03-14T10-00-00-discover-billing-research";
+  const runDir = path.join(repoDir, ".cstack", "runs", runId);
+  await fs.mkdir(path.join(runDir, "artifacts"), { recursive: true });
+
+  const run: RunRecord = {
+    id: runId,
+    workflow: "discover",
+    createdAt: "2026-03-14T10:00:00.000Z",
+    updatedAt: "2026-03-14T10:00:05.000Z",
+    status: "completed",
+    cwd: repoDir,
+    gitBranch: "main",
+    codexVersion: "fake",
+    codexCommand: ["codex", "exec"],
+    promptPath: path.join(runDir, "prompt.md"),
+    finalPath: path.join(runDir, "final.md"),
+    contextPath: path.join(runDir, "context.md"),
+    stdoutPath: path.join(runDir, "stdout.log"),
+    stderrPath: path.join(runDir, "stderr.log"),
+    configSources: [],
+    summary: "Map billing cleanup",
+    inputs: {
+      userPrompt: "Map billing cleanup"
+    }
+  };
+
+  await fs.writeFile(path.join(runDir, "run.json"), `${JSON.stringify(run, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(runDir, "final.md"), "# Discovery\n\nBilling cleanup findings.\n", "utf8");
+  await fs.writeFile(path.join(runDir, "artifacts", "findings.md"), "# Discovery\n\nBilling cleanup findings.\n", "utf8");
+  return runId;
+}
 
 describe("runSpec", () => {
   let repoDir: string;
@@ -57,6 +91,10 @@ describe("runSpec", () => {
       const run = await readRun(repoDir, runs[0]!.id);
       const finalBody = await fs.readFile(run.finalPath, "utf8");
       const artifactBody = await fs.readFile(path.join(path.dirname(run.finalPath), "artifacts", "spec.md"), "utf8");
+      const plan = JSON.parse(await fs.readFile(path.join(path.dirname(run.finalPath), "artifacts", "plan.json"), "utf8")) as {
+        summary: string;
+      };
+      const openQuestions = await fs.readFile(path.join(path.dirname(run.finalPath), "artifacts", "open-questions.md"), "utf8");
       const eventsBody = await fs.readFile(run.eventsPath!, "utf8");
       const consoleOutput = stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join("");
 
@@ -67,6 +105,8 @@ describe("runSpec", () => {
       expect(run.lastActivity).toBe("Exit code 0");
       expect(finalBody).toContain("fake Codex response");
       expect(artifactBody).toContain("Fake Spec");
+      expect(plan.summary).toBeTruthy();
+      expect(openQuestions).toContain("# Open Questions");
       expect(eventsBody).toContain("\"type\":\"starting\"");
       expect(eventsBody).toContain("scanning repository context");
       expect(eventsBody).toContain("\"type\":\"completed\"");
@@ -75,5 +115,19 @@ describe("runSpec", () => {
     } finally {
       stdoutSpy.mockRestore();
     }
+  });
+
+  it("can link a spec run to an upstream run", async () => {
+    const discoverRunId = await seedDiscoverRun(repoDir);
+
+    await runSpec(repoDir, ["--from-run", discoverRunId]);
+
+    const runs = await listRuns(repoDir);
+    const run = runs.find((entry) => entry.workflow === "spec");
+    expect(run?.inputs.linkedRunId).toBe(discoverRunId);
+
+    const promptBody = await fs.readFile(run!.promptPath, "utf8");
+    expect(promptBody).toContain(discoverRunId);
+    expect(promptBody).toContain("Billing cleanup findings");
   });
 });

@@ -2,7 +2,12 @@
 import { runBuild } from "./commands/build.js";
 import { runDeliver } from "./commands/deliver.js";
 import { runDiscover } from "./commands/discover.js";
+import { runFork } from "./commands/fork.js";
 import { runIntentCommand } from "./commands/intent.js";
+import { runReview } from "./commands/review.js";
+import { runRerun } from "./commands/rerun.js";
+import { runResume } from "./commands/resume.js";
+import { runShip } from "./commands/ship.js";
 import { runSpec } from "./commands/spec.js";
 import { runRuns } from "./commands/runs.js";
 import { runInspect } from "./commands/inspect.js";
@@ -15,8 +20,13 @@ function usage(): string {
     "  cstack run <intent> [--dry-run]",
     "  cstack discover <prompt>",
     "  cstack spec <prompt>",
-    "  cstack build <prompt> [--from-run <run-id>] [--exec]",
+    "  cstack build <prompt> [--from-run <run-id>] [--exec] [--allow-dirty]",
+    "  cstack review <prompt> [--from-run <run-id>]",
+    "  cstack ship <prompt> [--from-run <run-id>] [--release] [--issue <n>] [--allow-dirty]",
     "  cstack deliver <prompt> [--from-run <run-id>] [--exec] [--release] [--issue <n>]",
+    "  cstack rerun <run-id>",
+    "  cstack resume <run-id>",
+    "  cstack fork <run-id> [--workflow <name>]",
     "  cstack update [--check] [--dry-run] [--yes] [--version <x>] [--channel stable]",
     "  cstack runs [--active] [--workflow <name>] [--status <status>] [--recent <n>] [--json]",
     "  cstack inspect [run-id] [--interactive]"
@@ -40,8 +50,23 @@ async function main(): Promise<void> {
     case "build":
       await runBuild(cwd, rest);
       return;
+    case "review":
+      await runReview(cwd, rest);
+      return;
+    case "ship":
+      await runShip(cwd, rest);
+      return;
     case "deliver":
       await runDeliver(cwd, rest);
+      return;
+    case "rerun":
+      await runRerun(cwd, rest);
+      return;
+    case "resume":
+      await runResume(cwd, rest);
+      return;
+    case "fork":
+      await runFork(cwd, rest);
       return;
     case "runs":
       await runRuns(cwd, rest);

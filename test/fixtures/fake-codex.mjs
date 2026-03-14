@@ -9,6 +9,17 @@ if (args.includes("--version")) {
   process.exit(0);
 }
 
+if (args[0] === "resume") {
+  await new Promise((resolve) => process.stdout.write(`resumed session ${args[1] ?? "unknown"}\n`, resolve));
+  process.exit(0);
+}
+
+if (args[0] === "fork") {
+  await new Promise((resolve) => process.stderr.write("session id: fake-fork-session-789\n", resolve));
+  await new Promise((resolve) => process.stdout.write(`forked session ${args[1] ?? "unknown"}\n`, resolve));
+  process.exit(0);
+}
+
 const finalIndex = args.indexOf("--output-last-message");
 const finalPath = finalIndex >= 0 ? args[finalIndex + 1] : undefined;
 const promptFromArgs = finalIndex >= 0 ? args.at(-1) : args.filter((arg) => !arg.startsWith("-")).at(-1);

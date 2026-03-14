@@ -1,4 +1,4 @@
-export type WorkflowName = "spec" | "discover" | "build" | "deliver" | "update" | "intent";
+export type WorkflowName = "spec" | "discover" | "build" | "review" | "ship" | "deliver" | "update" | "intent";
 export type RunStatus = "running" | "completed" | "failed";
 export type WorkflowMode = "exec" | "interactive";
 export type DeliverTargetMode = "merge-ready" | "release";
@@ -175,6 +175,7 @@ export interface CodexConfig {
 export interface WorkflowConfig {
   mode?: WorkflowMode;
   verificationCommands?: string[];
+  allowDirty?: boolean;
   delegation?: {
     enabled?: boolean;
     maxAgents?: number;
@@ -196,6 +197,8 @@ export interface CstackConfig {
     spec: WorkflowConfig;
     discover: WorkflowConfig;
     build: WorkflowConfig;
+    review: WorkflowConfig;
+    ship: WorkflowConfig;
     deliver: WorkflowConfig;
   };
   verification?: VerificationConfig;
@@ -481,6 +484,8 @@ export interface RunRecord {
   activeSpecialists?: string[] | undefined;
   summary?: string | undefined;
   error?: string | undefined;
+  rerunOfRunId?: string | undefined;
+  forkedFromRunId?: string | undefined;
   inputs: {
     userPrompt: string;
     entrypoint?: "workflow" | "intent";
@@ -495,5 +500,6 @@ export interface RunRecord {
     deliveryMode?: DeliverTargetMode;
     issueNumbers?: number[];
     dryRun?: boolean;
+    allowDirty?: boolean;
   };
 }

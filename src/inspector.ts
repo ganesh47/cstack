@@ -96,11 +96,23 @@ function renderSuggestedActions(inspection: RunInspection): string[] {
       }
     }
   }
+  if (inspection.run.workflow === "review") {
+    lines.push("- inspect the review verdict with `show review`");
+  }
+  if (inspection.run.workflow === "ship") {
+    lines.push("- inspect ship readiness with `show ship`");
+    if (inspection.githubMutationRecord) {
+      lines.push("- inspect GitHub mutation state with `show mutation`");
+    }
+    if (inspection.githubDeliveryRecord) {
+      lines.push("- inspect GitHub delivery evidence with `show github`");
+    }
+  }
   for (const stage of deferredStages.slice(0, 2)) {
     lines.push(`- inspect why ${stage.name} is ${stage.status}`);
   }
   if (inspection.run.sessionId) {
-    lines.push(`- resume with codex resume ${inspection.run.sessionId}`);
+    lines.push(`- resume with cstack resume ${inspection.run.id}`);
   }
   if (inspection.artifacts.some((artifact) => artifact.path === "routing-plan.json")) {
     lines.push("- review routing with `show routing`");
@@ -232,6 +244,8 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
   const deliverBuildVerificationPath = path.join(runDir, "stages", "build", "artifacts", "verification.json");
   const deliverReviewVerdictPath = path.join(runDir, "stages", "review", "artifacts", "verdict.json");
   const deliverShipRecordPath = path.join(runDir, "stages", "ship", "artifacts", "ship-record.json");
+  const reviewVerdictPath = path.join(runDir, "artifacts", "verdict.json");
+  const shipRecordPath = path.join(runDir, "artifacts", "ship-record.json");
   const githubDeliveryPath = path.join(runDir, "artifacts", "github-delivery.json");
   const githubMutationPath = path.join(runDir, "artifacts", "github-mutation.json");
   const [
@@ -253,10 +267,10 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     readJsonFile<StageLineage>(path.join(runDir, "stage-lineage.json")),
     readJsonFile<DiscoverResearchPlan>(path.join(runDir, "stages", "discover", "research-plan.json")),
     loadDiscoverDelegates(runDir),
-    readJsonFile<BuildSessionRecord>(run.workflow === "deliver" ? deliverBuildSessionPath : sessionPath),
-    readJsonFile<BuildVerificationRecord>(run.workflow === "deliver" ? deliverBuildVerificationPath : verificationPath),
-    readJsonFile<DeliverReviewVerdict>(deliverReviewVerdictPath),
-    readJsonFile<DeliverShipRecord>(deliverShipRecordPath),
+    readJsonFile<BuildSessionRecord>(run.workflow === "deliver" ? deliverBuildSessionPath : run.workflow === "build" ? sessionPath : ""),
+    readJsonFile<BuildVerificationRecord>(run.workflow === "deliver" ? deliverBuildVerificationPath : run.workflow === "build" ? verificationPath : ""),
+    readJsonFile<DeliverReviewVerdict>(run.workflow === "deliver" ? deliverReviewVerdictPath : run.workflow === "review" ? reviewVerdictPath : ""),
+    readJsonFile<DeliverShipRecord>(run.workflow === "deliver" ? deliverShipRecordPath : run.workflow === "ship" ? shipRecordPath : ""),
     readJsonFile<GitHubDeliveryRecord>(githubDeliveryPath),
     readJsonFile<GitHubMutationRecord>(githubMutationPath),
     walkArtifacts(runDir)
@@ -769,12 +783,12 @@ export async function handleInspectorCommand(cwd: string, inspection: RunInspect
   }
   if (trimmed === "resume") {
     return inspection.run.sessionId
-      ? `Resume this run with:\n\ncodex resume ${inspection.run.sessionId}`
+      ? `Resume this run with:\n\ncstack resume ${inspection.run.id}`
       : "This run has no recorded session id, so resume is unavailable.";
   }
   if (trimmed === "fork") {
     return inspection.run.sessionId
-      ? `Fork this run with:\n\ncodex fork ${inspection.run.sessionId}`
+      ? `Fork this run with:\n\ncstack fork ${inspection.run.id}`
       : "This run has no recorded session id, so fork is unavailable.";
   }
   if (trimmed === "help") {

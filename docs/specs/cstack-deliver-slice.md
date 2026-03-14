@@ -1,5 +1,12 @@
 # Deliver Slice v3
 
+Historical note:
+
+- This document records the original deliver-slice design.
+- The active shipped contract now lives in `docs/specs/cstack-spec-v0.1.md`.
+- Wrapper-native `resume`, `fork`, and `rerun` are now shipped.
+- `deliver` remains the umbrella workflow over explicit internal `build`, `review`, and `ship` stages.
+
 ## Goal
 
 Implement a first-class `cstack deliver` workflow as the umbrella execution phase for:
@@ -185,14 +192,13 @@ Useful artifact paths:
 - `stages/ship/artifacts/checks.json`
 - `stages/ship/artifacts/release.json`
 
-## Known Limitations
+## Historical Limitations In The Original Slice
 
 - `deliver` owns GitHub-complete engineering delivery, not GTM or broader launch execution
 - GitHub mutation is policy-driven; repos may enable observation-only delivery or wrapper-owned branch/PR publication
 - remote production deployment remains out of scope unless the repo explicitly defines it as a GitHub-driven release action
 - specialist review remains bounded and prompt-driven rather than a separate scheduler
 - wrapper-native GTM remains a later workflow after `deliver`
-- wrapper-native `resume` and `fork` are still recommendations, not first-class commands
 
 ## Acceptance For This Slice
 

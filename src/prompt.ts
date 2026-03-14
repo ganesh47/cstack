@@ -18,7 +18,7 @@ export function excerpt(input: string, lines = 24): string {
 async function buildWorkflowPrompt(options: {
   cwd: string;
   input: string;
-  workflow: "spec" | "discover" | "build" | "deliver";
+  workflow: "spec" | "discover" | "build" | "review" | "ship" | "deliver";
   config: CstackConfig;
 }): Promise<{ prompt: string; context: string }> {
   const { cwd, input, workflow, config } = options;

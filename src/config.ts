@@ -30,6 +30,25 @@ const DEFAULT_CONFIG: CstackConfig = {
     build: {
       mode: "interactive",
       verificationCommands: [],
+      allowDirty: false,
+      delegation: {
+        enabled: false,
+        maxAgents: 0
+      }
+    },
+    review: {
+      mode: "exec",
+      verificationCommands: [],
+      allowDirty: true,
+      delegation: {
+        enabled: true,
+        maxAgents: 3
+      }
+    },
+    ship: {
+      mode: "exec",
+      verificationCommands: [],
+      allowDirty: false,
       delegation: {
         enabled: false,
         maxAgents: 0
@@ -38,6 +57,7 @@ const DEFAULT_CONFIG: CstackConfig = {
     deliver: {
       mode: "interactive",
       verificationCommands: [],
+      allowDirty: false,
       delegation: {
         enabled: true,
         maxAgents: 4

@@ -38,6 +38,15 @@ export interface CodexInteractiveRunOptions {
   config: CstackConfig;
 }
 
+export interface CodexSubcommandResult {
+  code: number;
+  signal: NodeJS.Signals | null;
+  command: string[];
+  stdout: string;
+  stderr: string;
+  sessionId?: string;
+}
+
 function summarizeCommandLine(line: string): string | null {
   const toolMatch = line.match(/^(.+?) in .+ (succeeded|failed) in \d+ms:?$/);
   if (!toolMatch?.[1] || !toolMatch[2]) {
@@ -102,6 +111,51 @@ function resolveCommand(command: string, args: string[]): { file: string; args: 
     file: command,
     args
   };
+}
+
+export async function runCodexSubcommand(options: {
+  cwd: string;
+  subcommand: string;
+  args: string[];
+  config: CstackConfig;
+}): Promise<CodexSubcommandResult> {
+  const bin = options.config.codex.command || process.env.CSTACK_CODEX_BIN || "codex";
+  const invocation = resolveCommand(bin, [options.subcommand, ...options.args]);
+
+  return new Promise<CodexSubcommandResult>((resolve, reject) => {
+    const child = spawn(invocation.file, invocation.args, {
+      cwd: options.cwd,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      const text = chunk.toString("utf8");
+      stdout += text;
+      process.stdout.write(text);
+    });
+
+    child.stderr.on("data", (chunk: Buffer) => {
+      const text = chunk.toString("utf8");
+      stderr += text;
+      process.stderr.write(text);
+    });
+
+    child.on("error", reject);
+    child.on("close", (code, signal) => {
+      const sessionId = `${stdout}\n${stderr}`.match(/session id:\s*([^\s]+)/i)?.[1];
+      resolve({
+        code: code ?? 1,
+        signal,
+        command: [invocation.file, ...invocation.args],
+        stdout,
+        stderr,
+        ...(sessionId ? { sessionId } : {})
+      });
+    });
+  });
 }
 
 function stripCapturedControl(input: string): string {

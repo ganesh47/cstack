@@ -1,5 +1,13 @@
 # Build Slice v1
 
+Historical note:
+
+- This document records the original build-slice design.
+- The active shipped contract now lives in `docs/specs/cstack-spec-v0.1.md`.
+- Wrapper-native `resume`, `fork`, and `rerun` are now shipped.
+- Standalone `review` and `ship` are now shipped.
+- `intent` still plans through later execution stages explicitly rather than auto-launching them.
+
 ## Goal
 
 Implement the first usable `cstack build` workflow as the handoff from planning into execution.
@@ -24,10 +32,8 @@ Behavior:
 - default mode is `interactive`
 - if interactive mode is requested without a usable TTY, the wrapper falls back to `exec` and records both requested and observed mode
 
-Rejected in this slice:
+Rejected in the original slice:
 
-- wrapper-native `cstack resume`
-- wrapper-native `cstack fork`
 - automatic build execution from `cstack <intent>`
 - multi-agent build fan-out beyond what Codex itself may choose internally
 
@@ -76,7 +82,7 @@ Each build run should write:
 Purpose:
 
 - map the `cstack` run to the observed Codex interactive session
-- preserve enough lineage for future wrapper-native `resume` and `fork`
+- preserve enough lineage for wrapper-native `resume` and `fork`
 
 Recommended shape:
 
@@ -213,11 +219,10 @@ Exec runner:
 - still records `session.json` if a session id is emitted
 - is mainly for smaller batch-friendly build runs and tests
 
-## Known Limitations
+## Historical Limitations In The Original Slice
 
 - Codex interactive transcript capture is only best-effort
 - the wrapper may know the session id without knowing the full conversation history
-- wrapper-native `resume` and `fork` commands are deferred even though build artifacts prepare for them
 - automatic build execution from `intent` is deferred until the interactive boundary is proven stable
 
 ## Acceptance For This Slice

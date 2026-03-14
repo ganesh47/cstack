@@ -112,6 +112,35 @@ export async function detectDirtyWorktree(cwd: string): Promise<boolean> {
   }
 }
 
+export async function listDirtyWorktreeFiles(cwd: string): Promise<string[]> {
+  try {
+    const { stdout } = await execFileAsync("git", ["status", "--porcelain"], { cwd });
+    return stdout
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => line.slice(3).trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+export async function ensureCleanWorktreeForWorkflow(cwd: string, workflow: "build" | "ship" | "deliver", allowDirty: boolean): Promise<void> {
+  if (allowDirty) {
+    return;
+  }
+
+  const dirtyFiles = await listDirtyWorktreeFiles(cwd);
+  if (dirtyFiles.length === 0) {
+    return;
+  }
+
+  const preview = dirtyFiles.slice(0, 5).join(", ");
+  throw new Error(
+    `\`cstack ${workflow}\` requires a clean worktree unless \`--allow-dirty\` is set. Dirty files: ${preview}${dirtyFiles.length > 5 ? ", ..." : ""}`
+  );
+}
+
 function canUseInteractiveBuild(): boolean {
   return Boolean(process.stdin.isTTY && process.stdout.isTTY && process.stderr.isTTY);
 }

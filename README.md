@@ -8,7 +8,12 @@ Current implemented surface:
 - `discover`
 - `spec`
 - `build`
+- `review`
+- `ship`
 - `deliver`
+- `rerun`
+- `resume`
+- `fork`
 - `update`
 - `runs`
 - `inspect`
@@ -96,17 +101,28 @@ cstack discover "Map the current CLI surface and artifact model"
 
 # Generate a spec run
 cstack spec "Design a run artifact model for cstack"
+cstack spec --from-run <discover-run-id>
 
 # Launch a build run directly or from a saved planning run
 cstack build "Implement the queued billing retry cleanup"
 cstack build --from-run <run-id>
 cstack build --from-run <run-id> --exec
+cstack build --from-run <run-id> --allow-dirty
+
+# Run standalone review and ship workflows
+cstack review --from-run <build-run-id> "Review the billing retry cleanup"
+cstack ship --from-run <review-run-id> --issue 123 "Ship the billing retry cleanup"
 
 # Launch the umbrella delivery workflow across build, review, and ship
 cstack deliver "Implement the queued billing retry cleanup"
 cstack deliver --from-run <run-id>
 cstack deliver --from-run <run-id> --release --issue 123
 # with repo policy enabled, this can push a branch and open or update a PR
+
+# Continue, fork, or replay prior runs
+cstack resume <run-id>
+cstack fork <run-id> --workflow build
+cstack rerun <run-id>
 
 # Check for the latest stable GitHub release or apply it
 cstack update --check
@@ -134,15 +150,16 @@ What it does today:
 - accepts a natural-language task
 - infers an internal stage plan
 - persists `routing-plan.json` and `stage-lineage.json`
-- executes the currently implemented deterministic stages inside one orchestrated run
+- executes `discover` and `spec` inside one orchestrated run
 - attaches bounded specialist reviews when the intent suggests they are justified
 
-Current first-slice behavior:
+Current intent behavior:
 
 - `discover` and `spec` are executed automatically inside the intent run
-- `build`, `review`, and `ship` may still appear in the inferred plan
-- `build` is available as an explicit follow-on workflow and intent runs may recommend `cstack build --from-run <run-id>`
-- `deliver` is the preferred umbrella follow-on workflow when the inferred work clearly spans `build`, `review`, and `ship`
+- later stages such as `build`, `review`, and `ship` may still appear in the inferred plan
+- `build` is the focused implementation follow-on when you want a narrow execution workflow
+- `review` and `ship` are explicit follow-on workflows for narrower critique or handoff paths
+- `deliver` is the preferred umbrella follow-on workflow when the work clearly spans `build`, `review`, and `ship`
 - specialist reviews may run after the `spec` stage and are recorded under `delegates/`
 
 Examples:
@@ -294,6 +311,14 @@ maxAgents = 0
 [workflows.build]
 mode = "interactive"
 verificationCommands = ["npm test"]
+allowDirty = false
+
+[workflows.review]
+mode = "exec"
+
+[workflows.ship]
+mode = "exec"
+allowDirty = false
 
 [workflows.discover.delegation]
 enabled = true
@@ -382,6 +407,14 @@ maxAgents = 0
 [workflows.build]
 mode = "interactive"
 verificationCommands = ["npm test"]
+allowDirty = false
+
+[workflows.review]
+mode = "exec"
+
+[workflows.ship]
+mode = "exec"
+allowDirty = false
 
 [workflows.discover.delegation]
 enabled = true
@@ -423,8 +456,12 @@ Current artifact set:
 - `artifacts/build-transcript.log` for best-effort interactive build capture
 - `artifacts/change-summary.md` for `build`
 - `artifacts/verification.json` for `build`
+- `artifacts/findings.md`, `artifacts/findings.json`, and `artifacts/verdict.json` for `review`
+- `artifacts/ship-summary.md`, `artifacts/release-checklist.md`, `artifacts/unresolved.md`, and `artifacts/ship-record.json` for `ship`
 - `artifacts/delivery-report.md` for `deliver`
 - `artifacts/github-delivery.json` for GitHub-scoped deliver evidence
+- `artifacts/github-mutation.json` for `ship` and `deliver`
+- `artifacts/rerun.json` for rerun lineage
 - `stages/build/...`, `stages/review/...`, and `stages/ship/...` for deliver stage-local artifacts
 - `stages/ship/artifacts/github-state.json`, `pull-request.json`, `issues.json`, `checks.json`, `actions.json`, `security.json`, and `release.json` for deliver GitHub evidence
 - `stages/discover/artifacts/discovery-report.md` for discover-team synthesis
@@ -449,8 +486,22 @@ Build notes:
 - `build` is interactive by default and records the observed Codex session id in `session.json`
 - if `build` is requested in a non-TTY shell, `cstack` falls back to `exec` and records both requested and observed mode in `session.json`
 - `build --from-run <run-id>` links a prior `spec` or `intent` run into the build context without mutating the source run
+- `build` requires a clean worktree unless `--allow-dirty` or repo policy allows otherwise
 - verification commands are recorded even when they fail so inspection can explain what still remains
 - best-effort interactive transcripts are stored at `artifacts/build-transcript.log` when the interactive path is used
+
+Review notes:
+
+- `review` is a standalone critique workflow with `findings.md`, `findings.json`, and `verdict.json`
+- `review --from-run <run-id>` links an upstream build or deliver artifact into the critique context
+- bounded specialist reviewers may run when the prompt implies security, audit, traceability, DevSecOps, or release-pipeline risk
+
+Ship notes:
+
+- `ship` is a standalone GitHub-aware handoff and release-readiness workflow
+- `ship --from-run <review-run-id>` is the cleanest narrow path when build and review already happened separately
+- if linked review evidence is missing or blocked, `ship` records that as a blocker rather than pretending readiness
+- `ship` requires a clean worktree unless `--allow-dirty` or repo policy allows otherwise
 
 Deliver notes:
 
@@ -461,6 +512,7 @@ Deliver notes:
 - `deliver` fails closed when required GitHub evidence is missing or blocked
 - `deliver --release` switches the run into release-bearing mode and expects tag and release evidence
 - `deliver --issue <n>` links a specific GitHub issue into deliver evaluation
+- `deliver` requires a clean worktree unless `--allow-dirty` or repo policy allows otherwise
 - `cstack inspect <run-id>` supports `show review`, `show ship`, `show mutation`, and `show github` for deliver runs
 
 ## Development
@@ -515,7 +567,12 @@ Implemented:
 - `discover`
 - `spec`
 - `build`
+- `review`
+- `ship`
 - `deliver`
+- `rerun`
+- `resume`
+- `fork`
 - `update`
 - `runs`
 - `inspect`
@@ -529,11 +586,7 @@ Implemented:
 - live progress reporting and event logging
 - bounded discover-time research delegation with artifact provenance
 - GitHub-scoped deliver policy and evidence artifacts
+- standalone review and ship artifacts
+- wrapper-native session continuation and rerun wrappers
+- dirty-worktree consent for mutation workflows
 - build, typecheck, and test pipeline
-
-Not implemented yet:
-
-- standalone `review`
-- standalone `ship`
-- `cstack`-native `resume` and `fork` wrappers
-- GitHub issue sync helpers inside the CLI

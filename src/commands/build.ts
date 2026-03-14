@@ -2,6 +2,7 @@ import path from "node:path";
 import { loadConfig } from "../config.js";
 import { maybeOfferInteractiveInspect } from "../inspector.js";
 import {
+  ensureCleanWorktreeForWorkflow,
   resolveLinkedBuildContext,
   runBuildExecution
 } from "../build.js";
@@ -11,6 +12,7 @@ import type { RunRecord, WorkflowMode } from "../types.js";
 export interface BuildCliOptions {
   fromRunId?: string;
   requestedMode?: WorkflowMode;
+  allowDirty?: boolean;
 }
 
 async function readPromptFromStdin(): Promise<string> {
@@ -44,6 +46,10 @@ export function parseBuildArgs(args: string[]): { prompt: string; options: Build
       options.requestedMode = "exec";
       continue;
     }
+    if (arg === "--allow-dirty") {
+      options.allowDirty = true;
+      continue;
+    }
     if (arg.startsWith("-")) {
       throw new Error(`Unknown build option: ${arg}`);
     }
@@ -62,7 +68,7 @@ function defaultBuildPrompt(fromRunId?: string): string {
     : "";
 }
 
-export async function runBuild(cwd: string, args: string[] = []): Promise<void> {
+export async function runBuild(cwd: string, args: string[] = []): Promise<string> {
   const parsed = parseBuildArgs(args);
   const stdinPrompt = parsed.prompt || parsed.options.fromRunId ? "" : await readPromptFromStdin();
   const resolvedPrompt = (parsed.prompt || stdinPrompt || defaultBuildPrompt(parsed.options.fromRunId)).trim();
@@ -71,6 +77,8 @@ export async function runBuild(cwd: string, args: string[] = []): Promise<void> 
   }
 
   const { config, sources } = await loadConfig(cwd);
+  const allowDirty = parsed.options.allowDirty ?? config.workflows.build.allowDirty ?? false;
+  await ensureCleanWorktreeForWorkflow(cwd, "build", allowDirty);
   const linkedContext = parsed.options.fromRunId ? await resolveLinkedBuildContext(cwd, parsed.options.fromRunId) : undefined;
   const runId = makeRunId("build", resolvedPrompt);
   const runDir = await ensureRunDir(cwd, runId);
@@ -120,7 +128,8 @@ export async function runBuild(cwd: string, args: string[] = []): Promise<void> 
       entrypoint: "workflow",
       ...(linkedContext ? { linkedRunId: linkedContext.run.id } : {}),
       requestedMode,
-      verificationCommands
+      verificationCommands,
+      allowDirty
     }
   };
 
@@ -189,6 +198,7 @@ export async function runBuild(cwd: string, args: string[] = []): Promise<void> 
         .join("\n") + "\n"
     );
     await maybeOfferInteractiveInspect(cwd, runId);
+    return runId;
   } catch (error) {
     runRecord.status = "failed";
     runRecord.updatedAt = new Date().toISOString();

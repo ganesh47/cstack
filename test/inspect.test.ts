@@ -716,7 +716,7 @@ describe("inspect", () => {
     await expect(handleInspectorCommand(repoDir, inspection, "why deferred build")).resolves.toContain("first intent-runner slice");
     await expect(handleInspectorCommand(repoDir, inspection, "show specialist audit-review")).resolves.toContain("\"disposition\": \"accepted\"");
     await expect(handleInspectorCommand(repoDir, inspection, "show artifact artifacts/spec.md")).resolves.toContain("# Spec artifact");
-    await expect(handleInspectorCommand(repoDir, inspection, "resume")).resolves.toContain("codex resume fake-session-123");
+    await expect(handleInspectorCommand(repoDir, inspection, "resume")).resolves.toContain(`cstack resume ${runId}`);
     await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("Observed");
     await expect(handleInspectorCommand(repoDir, inspection, "f")).resolves.toContain("# Final");
   });

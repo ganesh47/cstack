@@ -2,6 +2,7 @@ import path from "node:path";
 import { loadConfig } from "../config.js";
 import { maybeOfferInteractiveInspect } from "../inspector.js";
 import { resolveLinkedBuildContext, runDeliverExecution } from "../deliver.js";
+import { ensureCleanWorktreeForWorkflow } from "../build.js";
 import { detectCodexVersion, detectGitBranch, ensureRunDir, makeRunId, writeRunRecord } from "../run.js";
 import type { DeliverTargetMode, RunRecord, WorkflowMode } from "../types.js";
 
@@ -10,6 +11,7 @@ export interface DeliverCliOptions {
   requestedMode?: WorkflowMode;
   deliveryMode?: DeliverTargetMode;
   issueNumbers?: number[];
+  allowDirty?: boolean;
 }
 
 async function readPromptFromStdin(): Promise<string> {
@@ -56,6 +58,10 @@ export function parseDeliverArgs(args: string[]): { prompt: string; options: Del
       index += 1;
       continue;
     }
+    if (arg === "--allow-dirty") {
+      options.allowDirty = true;
+      continue;
+    }
     if (arg.startsWith("-")) {
       throw new Error(`Unknown deliver option: ${arg}`);
     }
@@ -72,7 +78,7 @@ function defaultDeliverPrompt(fromRunId?: string): string {
   return fromRunId ? `Deliver the approved change described by upstream run ${fromRunId}.` : "";
 }
 
-export async function runDeliver(cwd: string, args: string[] = []): Promise<void> {
+export async function runDeliver(cwd: string, args: string[] = []): Promise<string> {
   const parsed = parseDeliverArgs(args);
   const stdinPrompt = parsed.prompt || parsed.options.fromRunId ? "" : await readPromptFromStdin();
   const resolvedPrompt = (parsed.prompt || stdinPrompt || defaultDeliverPrompt(parsed.options.fromRunId)).trim();
@@ -81,6 +87,8 @@ export async function runDeliver(cwd: string, args: string[] = []): Promise<void
   }
 
   const { config, sources } = await loadConfig(cwd);
+  const allowDirty = parsed.options.allowDirty ?? config.workflows.deliver.allowDirty ?? false;
+  await ensureCleanWorktreeForWorkflow(cwd, "deliver", allowDirty);
   const linkedContext = parsed.options.fromRunId ? await resolveLinkedBuildContext(cwd, parsed.options.fromRunId) : undefined;
   const runId = makeRunId("deliver", resolvedPrompt);
   const runDir = await ensureRunDir(cwd, runId);
@@ -132,6 +140,7 @@ export async function runDeliver(cwd: string, args: string[] = []): Promise<void
       requestedMode,
       verificationCommands,
       deliveryMode,
+      allowDirty,
       ...(issueNumbers.length > 0 ? { issueNumbers } : {})
     }
   };
@@ -223,6 +232,7 @@ export async function runDeliver(cwd: string, args: string[] = []): Promise<void
       ].join("\n") + "\n"
     );
     await maybeOfferInteractiveInspect(cwd, runId);
+    return runId;
   } catch (error) {
     runRecord.status = "failed";
     runRecord.updatedAt = new Date().toISOString();

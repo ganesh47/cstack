@@ -1,5 +1,11 @@
 # Spec: `cstack update`
 
+Historical note:
+
+- This document is a standalone design note, not part of the active shipped workflow contract.
+- The active shipped contract lives in `docs/specs/cstack-spec-v0.1.md`.
+- Any open questions in this file are historical design questions, not unfinished commitments in the active spec.
+
 ## 1. **One-Line Thesis**
 
 `cstack update` is a GitHub-release-aware self-update command that checks the latest stable release for this project, verifies its integrity locally, and installs the exact versioned tarball through `npm`.

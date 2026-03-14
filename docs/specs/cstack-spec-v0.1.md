@@ -1,1051 +1,469 @@
 # Spec v0.1: `cstack`
 
-## 1. **One-Line Thesis**
-
-`cstack` is a local-first workflow wrapper around Codex CLI that turns ad hoc prompting into replayable, artifact-backed engineering runs, using small-team delegation only when it reduces wall-clock time more than it increases coordination cost.
+## Thesis
 
-## 2. **Premise Check**
+`cstack` is a local-first workflow wrapper around Codex CLI. It turns ad hoc prompting into explicit engineering workflows with durable artifacts, inspectable lineage, bounded delegation, and GitHub-aware delivery.
 
-### What should be kept from the `gstack` idea
+The product is intentionally narrow:
 
-| Keep | Why it matters in `cstack` |
-| --- | --- |
-| Small workflow surface | Users need a short list of repeatable entrypoints, not a framework with dozens of verbs. |
-| Opinionated workflow framing | The product value is not raw model access; it is a clearer starting posture for common engineering work. |
-| Strong stopping conditions | Each workflow should have a defined output contract so runs do not sprawl. |
-| Local-first execution | Repo context, shell access, patches, and artifacts are strongest when the tool runs beside the code. |
-| Artifact-heavy runs | Trust comes from saved prompts, outputs, and run metadata, not terminal scrollback. |
-| Prompt assets checked into the repo | Teams need versioned workflow behavior they can inspect and override. |
+- Codex remains the reasoning and editing engine.
+- `cstack` owns workflow selection, prompt framing, artifact contracts, lineage, inspection, and GitHub-facing delivery policy.
+- GTM and market-launch work are explicitly out of scope for the active product contract.
 
-### What must change for Codex CLI
+## Product Contract
 
-| Change | Decision |
-| --- | --- |
-| Skills are not the primary UX | The product surface is a wrapper CLI plus workflow manifests, not a skill directory exposed directly to users. |
-| GitHub is the delivery control plane for `cstack` | For this product, engineering-complete delivery should assume GitHub is the system of record for branches, pull requests, checks, reviews, tags, releases, and issue linkage. |
-| Delegation is already native | `cstack` should define delegation policy and reporting, not invent fake agent theater. |
-| Review, resume, and fork already exist | V1 should wrap `codex review`, `codex resume`, and `codex fork` instead of rebuilding them. |
-| Deterministic and guided modes must be separate | `codex exec` is the default for repeatable workflows; interactive `codex` is the default for longer build sessions. |
-| Browser tooling is not day-one | Web research and MCP fit as optional capability packs. A custom browser runtime is deferred until Codex-native paths prove insufficient. |
+The active contract is the shipped surface in this repository. The spec must not promise commands or workflow behavior that the product does not implement.
 
-### What should be rejected entirely
+Current top-level commands:
 
-- A large cast of permanent named personas.
-- Claude-specific packaging or terminology as the product mental model.
-- Hidden orchestration that spawns agents without clear user-facing records.
-- A daemonized control plane for v1.
-- “Autonomous company” positioning or long-running remote agent clusters.
-- Prompt accumulation from many unrelated skills, MCP tools, and role files without a workflow-level contract.
+- `cstack <intent>`
+- `cstack run <intent> [--dry-run]`
+- `cstack discover <prompt>`
+- `cstack spec <prompt> [--from-run <run-id>]`
+- `cstack build <prompt> [--from-run <run-id>] [--exec] [--allow-dirty]`
+- `cstack review <prompt> [--from-run <run-id>]`
+- `cstack ship <prompt> [--from-run <run-id>] [--release] [--issue <n>] [--allow-dirty]`
+- `cstack deliver <prompt> [--from-run <run-id>] [--exec] [--release] [--issue <n>] [--allow-dirty]`
+- `cstack rerun <run-id>`
+- `cstack resume <run-id>`
+- `cstack fork <run-id> [--workflow <name>]`
+- `cstack runs [--active] [--workflow <name>] [--status <status>] [--recent <n>] [--json]`
+- `cstack inspect [run-id] [--interactive]`
+- `cstack update [--check] [--dry-run] [--yes] [--version <x>] [--channel stable]`
 
-## 3. **Problem Statement**
+## Principles
 
-An engineer can already prompt Codex CLI directly. That is not enough for the job `cstack` is meant to solve.
+1. Workflows are explicit even when the front door is intent-based.
+2. Artifacts are first-class and outrank terminal scrollback.
+3. Delegation is bounded, justified, and inspectable.
+4. GitHub is the engineering control plane for delivery, not a passive remote.
+5. Dirty-worktree repo mutation requires explicit operator consent.
+6. The wrapper must distinguish requested behavior from observed behavior when Codex or GitHub telemetry is partial.
+7. The active spec is a shipped contract, not a roadmap.
 
-Manual prompting fails in predictable ways:
+## Workflow Surface
 
-- the prompt framing is inconsistent across runs and across engineers
-- the artifact trail is weak or missing
-- terminal output is transient and hard to audit
-- interactive sessions are powerful but easy to lose track of
-- delegation can help, but without policy it becomes noisy, expensive, and hard to trust
-- there is no standard way to move from discovery to spec to build to review while keeping state and intent coherent
+### `discover`
 
-`cstack` should exist because it standardizes the outer workflow while leaving reasoning and execution inside Codex. The value is not “more intelligence.” The value is a repeatable operator model:
+Purpose:
 
-- deterministic run envelopes
-- stable artifact contracts
-- explicit workflow selection
-- clear rules for when to stay single-agent versus when to use a small team
-- inspectable linkage between prompts, Codex sessions, delegated work, and final output
+- gather repo context
+- map constraints and likely change boundaries
+- optionally perform bounded external and risk research
 
-The product succeeds if a user can stop manually re-explaining their working style to Codex and instead start each run from a known workflow with known outputs.
+Execution model:
 
-## 4. **Target Users and Jobs To Be Done**
+- `codex exec`
+- Research Lead first
+- optional delegated discover tracks:
+  - `repo-explorer`
+  - `external-researcher`
+  - `risk-researcher`
 
-| User | Jobs to be done | Pain today | What `cstack` should improve |
-| --- | --- | --- | --- |
-| Senior IC | Understand a codebase area, plan a change, implement it, review it, and leave an artifact trail | Context assembly is repetitive; good prompts are not reusable enough; interactive runs are hard to replay | Faster setup, better run records, conservative delegation for bounded parallel work |
-| Founder / technical lead | Turn vague product intent into a scoped spec and implementation run | Prompting is high leverage but inconsistent; output quality depends too much on operator discipline | Repeatable workflows with clear artifacts and reviewable plans |
-| Small team | Share repo-local AI workflows without building a platform team | Every engineer invents a different prompt stack; review and handoff are inconsistent | Repo-owned prompt packs, config, and run artifacts that others can inspect and reuse |
+Key artifacts:
 
-### Week-one success for a single engineer
+- `artifacts/findings.md`
+- `stages/discover/research-plan.json`
+- `stages/discover/artifacts/discovery-report.md`
+- optional `stages/discover/delegates/<track>/request.md`
+- optional `stages/discover/delegates/<track>/result.json`
+- optional `stages/discover/delegates/<track>/sources.json`
 
-Success in week one is modest and concrete:
+### `spec`
 
-- they run `discover` on an unfamiliar area and get a saved context map
-- they run `spec` and receive an implementation-ready plan with open questions called out
-- they launch `build` from that spec, resume it later, and optionally fork it for an alternative approach
-- they run `review` and get a saved critique rather than a one-off chat response
-- they can inspect every run on disk without relying on memory
+Purpose:
 
-If that loop works for one engineer in one repo, the product is doing the right first job.
+- convert a request or upstream discovery artifact into an implementation-ready plan
 
-## 5. **Product Principles**
+Execution model:
 
-1. `cstack` is a thin wrapper, not a new agent runtime. It should shell out to the installed `codex` binary in v1.
-2. Workflow beats roleplay. Users may start from a single high-level intent, but the system must still route that intent through explicit internal stages rather than a fictional cast of permanent personas.
-3. Artifacts are first-class. Every run must leave behind enough material to inspect, replay, and debug it.
-4. A lead agent is the default. Delegation must be justified by separable work, not by branding.
-5. Deterministic configuration should define the run envelope; flexible prompting should define the task details.
-6. Local-first is a hard assumption. Repo context, config, prompt assets, and artifacts live in the repo or adjacent local state.
-7. The wrapper should be honest about what it can and cannot observe from Codex CLI.
-8. The product should degrade gracefully when delegation, MCP, or structured event capture is unavailable.
+- `codex exec`
+- single-agent by default
 
-### Deterministic configuration vs flexible prompting
+Inputs:
 
-| Deterministic in v1 | Flexible in v1 |
-| --- | --- |
-| Workflow names and modes | Task description |
-| Prompt skeletons and artifact contracts | Acceptance criteria supplied by the user |
-| Delegation caps and default topology | Extra repo context files or run references |
-| Output schemas for structured workflows | Optional workflow-specific instructions |
-| Allowed capability packs per workflow | User choice to force single-agent or allow delegation |
-| Run directory layout | Human-written notes attached to the run |
+- direct prompt, or
+- `--from-run <run-id>` to link to an upstream artifact
 
-## 6. **V1 Product Surface**
+Key artifacts:
 
-The minimum lovable operator-facing workflow set for v1 is three workflows: `discover`, `spec`, and `deliver`. `deliver` is the umbrella execution workflow after planning, and it preserves explicit internal `build`, `review`, and `ship` stage boundaries rather than flattening them away.
+- `artifacts/spec.md`
+- `artifacts/plan.json`
+- `artifacts/open-questions.md`
+- `final.md`
 
-### Unified front door
+### `build`
 
-The product should expose a simple top-level entrypoint in addition to explicit workflow commands:
+Purpose:
 
-| Entry | Meaning |
-| --- | --- |
-| `cstack <intent>` | Accept a natural-language task, infer the likely workflow sequence, show the inferred plan, and then execute it through explicit internal stages |
-| `cstack run <intent>` | Optional explicit alias for the same behavior if bare-argument CLI parsing becomes awkward |
+- execute an implementation task with session lineage and recorded verification
 
-This is the recommended product shape because it preserves workflow discipline internally while reducing front-door UX friction. The important rule is that intent inference is not a replacement for workflows. It is a router onto them.
+Execution model:
 
-The inferred entrypoint should:
+- interactive `codex` by default
+- falls back to `codex exec` when no TTY is available
+- `--exec` forces deterministic non-interactive mode
 
-- classify the likely task shape
-- choose one stage or a sequence such as `discover -> spec -> build -> review -> ship`
-- print or persist the inferred plan before substantial mutation
-- choose a lead agent
-- decide whether specialist delegates are justified
-- record which stages actually ran and why
+Inputs:
 
-This means the external UX can be simple without collapsing the internal system into a vague “just do the thing” runtime.
+- direct prompt, or
+- `--from-run <run-id>` to link upstream planning context
 
-### Proposed top-level workflows
+Safety:
 
-| Workflow | Default Codex mode | Agent posture | Intent | Trigger | Inputs | Outputs | When not to use it |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `cstack discover` | `codex exec` | Research Lead first; bounded research tracks optional | Map code, dependencies, constraints, and risks before planning or coding | New repo area, unclear ownership, incident triage, design kickoff | Question, path scope, optional files, optional prior run ids | `stages/discover/research-plan.json`, `stages/discover/artifacts/discovery-report.md`, `artifacts/findings.md`, optional `stages/discover/delegates/<track>/...`, `final.md` | Do not use it when the task is already well-scoped and the needed context is obvious |
-| `cstack spec` | `codex exec` | Single-agent first, delegate-optional | Convert intent into an implementation-ready spec and execution plan | Feature request, refactor proposal, migration plan, bug-fix plan | Goal, acceptance criteria, constraints, linked `discover` run, optional schema | `spec.md`, `plan.json`, `open-questions.md`, `final.md` | Do not use it for trivial edits that can be implemented faster than they can be specified |
-| `cstack deliver` | Mixed: interactive `codex` for build, `codex review` or `codex exec` for review, GitHub-aware `codex exec` plus shell/API calls for ship | Delivery Lead with bounded sub-stage leads and optional specialists | Carry an approved task through implementation, critique, wrapper-owned GitHub mutation when policy allows it, GitHub validation, and engineering-complete release execution inside one durable run | Approved spec, clear implementation task, founder handoff, release preparation | Task or prior run id, constraints, verification commands, review policy, GitHub repo and branch policy, checklist template, release policy | `stage-lineage.json`, `stages/build/...`, `stages/review/...`, `stages/ship/...`, `artifacts/delivery-report.md`, GitHub mutation and evidence artifacts, `final.md` | Do not use it when only one sub-stage is needed and the narrower explicit workflow is clearer |
-| `cstack build` | Interactive `codex` | Delegate-optional | Execute an approved task with repo-aware editing and verification | Approved spec, bounded task, debugging or implementation session | Task or spec run id, constraints, target paths, test commands, delegation mode | `session.json`, `change-summary.md`, `verification.json`, `final.md` | Do not use it for pure critique or when a non-interactive batch run is required |
-| `cstack review` | `codex review` or `codex exec` | Single-agent by default | Critique changes, surface risks, and recommend next actions | Before merge, after build, before handoff | Git diff, branch, run id, review policy, optional severity thresholds | `findings.md`, `findings.json`, `verdict.json`, `final.md` | Do not use it as a replacement for implementation or as a general planning step |
-| `cstack ship` | `codex exec` plus shell | Single-agent only | Prepare a branch for handoff or release with final checks and artifacts | Ready-to-merge branch, release candidate, founder handoff | Branch or diff, linked run ids, checklist template, verification commands | `ship-summary.md`, `release-checklist.md`, `unresolved.md`, `final.md` | Do not use it for deployment orchestration or CI/CD automation beyond local prep |
+- `build` requires a clean worktree unless `--allow-dirty` is set or repo policy enables dirty operation
 
-`deliver` is the default post-spec operator path. `build`, `review`, and `ship` remain explicit sub-stage contracts and may continue to exist as direct commands for narrower use.
+Key artifacts:
 
-### GitHub-Scoped Delivery Guarantee
+- `session.json`
+- `artifacts/change-summary.md`
+- `artifacts/verification.json`
+- `artifacts/build-transcript.log` when interactive transcript capture is observed
+- `final.md`
 
-For `cstack`, `deliver` should be defined as the workflow that finishes the engineering lifecycle inside the repository and GitHub, stopping only at GTM or broader market launch work.
+### `review`
 
-Under this assumption, GitHub is the system of record for:
+Purpose:
 
-- branches
-- pull requests
-- code review decisions
-- required checks and GitHub Actions runs
-- tags and GitHub Releases
-- linked issues, milestones, and project state when used by the repo
+- critique a change or linked run
+- surface risks, findings, and next actions
 
-`deliver` must not report a run as `completed` unless all required GitHub-scoped gates are satisfied and the run artifacts contain evidence for them.
+Execution model:
 
-At minimum, a successful `deliver` run should prove:
+- `codex exec`
+- Review Lead plus bounded specialist reviewers when the prompt justifies them
 
-- the implementation defined by the approved spec was applied or intentionally rejected with a recorded reason
-- when repo policy enables wrapper-owned GitHub mutation, the wrapper created or reused a delivery branch, pushed it, and created or updated the pull request with saved mutation evidence
-- required verification commands passed
-- required review and specialist findings were resolved, accepted with rationale, or downgraded with explicit policy justification
-- the GitHub branch and pull request state match repo policy
-- required GitHub checks completed successfully
-- versioning, changelog, and packaging policy were satisfied when the task is release-bearing
-- a GitHub Release exists when the workflow target is a release rather than only a merge-ready change
-- no unresolved blocking findings remain in the saved artifacts
+Inputs:
 
-This guarantee is intentionally narrower than business launch. `deliver` owns engineering completion. GTM, announcements, enablement, and market-facing launch work remain a later workflow.
+- direct prompt, or
+- `--from-run <run-id>` to link build or deliver context
 
-### Support commands that are not workflows
+Key artifacts:
 
-| Command | Purpose |
-| --- | --- |
-| `cstack <intent>` | Infer the likely workflow sequence from the task and route into one or more internal stages |
-| `cstack runs` | Show the run ledger across historical and currently active runs, with filters for recent, active, failed, and workflow-specific views |
-| `cstack inspect <run-id>` | Show run metadata, linked Codex session ids, artifact paths, routing lineage, and delegate ledger |
-| `cstack inspect <run-id> --interactive` | Open a post-run interactive inspector over the saved artifacts for a run |
-| `cstack rerun <run-id>` | Re-execute a deterministic workflow from saved prompt and input materials, creating a new run id |
-| `cstack resume <run-id>` | Resolve the linked interactive Codex session from `session.json` and call `codex resume` |
-| `cstack fork <run-id> [--workflow <name>]` | Branch an interactive Codex session, create a child run, and record lineage |
+- `artifacts/findings.md`
+- `artifacts/findings.json`
+- `artifacts/verdict.json`
+- `stage-lineage.json`
+- optional `delegates/<specialist>/...`
+- `final.md`
 
-### Run ledger and post-run inspection
+### `ship`
 
-The run surface should work at two levels:
+Purpose:
 
-- `cstack runs` is the control-plane view across many runs
-- `cstack inspect <run-id>` is the deep inspection view into one run
+- produce final engineering handoff or release-readiness artifacts
+- evaluate GitHub delivery state
+- optionally mutate branch / commit / pull-request state when repo policy enables it
 
-`cstack runs` should evolve from a static directory listing into a real ledger that includes:
+Execution model:
 
-- completed runs
-- failed runs
-- in-progress runs that are actively updating status
-- workflow, intent, or prompt excerpt
-- current stage when known
-- active specialists when known
-- created and updated timestamps
+- `codex exec` for ship synthesis
+- `git`, `gh`, and GitHub APIs for mutation and evidence collection
 
-The default output should be human-readable, with `--json` available for scripting.
+Inputs:
 
-The post-run interactive inspector should be TTY-only and optional. Its job is to answer artifact-grounded questions such as:
+- direct prompt, or
+- `--from-run <run-id>` to link review, build, or deliver context
+- `--release` for release-bearing delivery
+- `--issue <n>` to bind issue linkage explicitly
 
-- what was done
-- what was not done
-- why certain stages were deferred
-- which specialists ran
-- what each specialist found
-- what artifacts exist
-- what next actions are implied
+Safety:
 
-It should start as a wrapper-owned inspector, not as an automatic handoff into a new Codex conversation. If the user wants continued reasoning, the inspector may then surface explicit `resume` or `fork` actions.
+- `ship` requires a clean worktree unless `--allow-dirty` is set or repo policy enables dirty operation
+- if review evidence is missing or blocked, `ship` may run but must mark readiness `blocked`
 
-### TTY UX direction
+Key artifacts:
 
-The terminal UX should become more engaging by being clearer and more stateful, not by becoming decorative.
+- `artifacts/ship-summary.md`
+- `artifacts/release-checklist.md`
+- `artifacts/unresolved.md`
+- `artifacts/ship-record.json`
+- `artifacts/github-mutation.json`
+- `artifacts/github-delivery.json`
+- `artifacts/github-state.json`
+- `artifacts/pull-request.json`
+- `artifacts/issues.json`
+- `artifacts/checks.json`
+- `artifacts/actions.json`
+- `artifacts/security.json`
+- `artifacts/release.json`
+- `artifacts/pull-request-body.md`
+- `stage-lineage.json`
+- `final.md`
 
-V1.1 should make two explicit choices:
+### `deliver`
 
-- use an enhanced ANSI layout first
-- defer a heavier full-screen ncurses/TUI approach unless the lighter layout proves insufficient
+Purpose:
 
-The goal is an operator console feel:
+- carry a linked or direct task through internal `build -> review -> ship` inside one durable run
 
-- explicit state instead of raw log tailing
-- bounded panes instead of endless scroll
-- visible separation between observed facts and inferred next actions
-- compact shortcuts in the inspector without hiding the typed command model
+Execution model:
 
-The product should not add:
+- build stage: interactive `codex` by default, `exec` fallback or `--exec`
+- review stage: `codex exec` plus bounded specialist reviewers
+- ship stage: `codex exec` plus GitHub mutation and delivery evidence collection
 
-- fake thought-trace UI
-- spinner theater without state value
-- an unbounded second chat inside the inspector
-- full-screen terminal complexity unless the simpler layout fails to deliver clarity
+Inputs:
 
-### Workflow intent boundaries
+- direct prompt, or
+- `--from-run <run-id>`
+- `--release`
+- `--issue <n>`
 
-- `discover` is for context gathering, not for deciding implementation details prematurely.
-- `spec` is for shaping work and tradeoffs, not for editing code.
-- `build` is for editing and validating code, not for broad repo archaeology.
-- `review` is for critique, not for silent code rewriting.
-- `ship` is for last-mile GitHub completion and release execution, not for GTM or remote production operations outside the repo's declared automation.
+Safety:
 
-## 7. **Agent Model**
+- `deliver` requires a clean worktree unless `--allow-dirty` is set or repo policy enables dirty operation
+- GitHub completion is fail-closed
 
-### Roles in v1
+Key artifacts:
 
-| Role | Durable concept or temporary preset | Can edit code | Primary job |
-| --- | --- | --- | --- |
-| Intent Router | Durable workflow concept | No | Infer the workflow sequence, specialist needs, and capability attachments from the user request and repo context |
-| Leader | Durable workflow concept | Yes in `build`; no in `review` by default | Own the workflow, decide whether to delegate, synthesize outputs, and produce the final artifact |
-| Explorer | Temporary preset | No | Gather facts, map code, inspect risks, summarize a bounded area |
-| Implementer | Temporary preset | Yes, but only in bounded build tasks | Make code changes in a disjoint file scope and report exactly what changed |
-| Reviewer | Durable workflow concept, often implemented as a leader posture | No by default | Critique changes, rank risks, and recommend disposition |
-| Security Reviewer | Temporary specialist preset | No by default | Look for security flaws, misuse of secrets, auth gaps, and exploit paths |
-| DevSecOps Reviewer | Temporary specialist preset | No by default | Review CI/CD, supply chain, secret handling, runtime hardening, and operational guardrails |
-| Traceability Reviewer | Temporary specialist preset | No | Check linkage between intent, spec, implementation, tests, and release artifacts |
-| Audit Reviewer | Temporary specialist preset | No | Check auditability, compliance-facing evidence, logging completeness, and change record quality |
-| Release Pipeline Reviewer | Temporary specialist preset | No by default | Check release workflows, packaging, versioning, rollout steps, and failure handling |
+- `stage-lineage.json`
+- `stages/build/...`
+- `stages/review/...`
+- `stages/ship/...`
+- `artifacts/delivery-report.md`
+- `artifacts/github-mutation.json`
+- `artifacts/github-delivery.json`
+- `final.md`
 
-The agent model is intentionally small at the durable-core level. The system needs a stable router and lead model, plus a bounded library of specialist presets that can be attached when justified. That keeps prompts stable, makes artifact inspection easier, and avoids false precision about agent specialization while still allowing high-value specialist reviews.
+## Intent Routing
 
-### When the primary agent delegates
+`cstack <intent>` and `cstack run <intent>` are routing front doors, not vague autonomous runtime commands.
 
-The leader may delegate only when all of the following are true:
+Current intent behavior:
 
-- the work splits into independent subtasks
-- each subtask has a bounded output contract
-- the merge or synthesis cost is lower than the expected time saved
-- the workflow policy allows delegation
-- the user has not forced single-agent mode
+- infer a stage plan
+- persist `routing-plan.json`
+- persist `stage-lineage.json`
+- execute `discover`
+- execute `spec`
+- attach bounded specialist reviews when the heuristic selects them
+- record later recommended stages such as `build`, `review`, or `ship` as deferred follow-on work
 
-The intent router may request specialists only when all of the following are true:
+This is an explicit product choice. The active intent contract is:
 
-- the task or repo context implies a meaningful risk domain
-- the specialist has a clear bounded review contract
-- the resulting output will materially change decisions or acceptance
-- the extra review cost is proportionate to the task
+- plan and execute deterministic planning stages
+- preserve downstream stage intent in lineage
+- recommend explicit `build` or `deliver` follow-ons when later execution is warranted
 
-The wrapper should suppress delegation entirely when:
+It is not the active contract for intent runs to auto-execute every inferred stage.
 
-- the task is small enough for one agent to finish quickly
-- the problem is ambiguous and needs one coherent line of reasoning first
-- the work touches overlapping files with high merge risk
-- the workflow is `review` or `ship`
-- Codex-native delegation is unavailable or unobservable enough to make the run untrustworthy
+## GitHub-Scoped Engineering Delivery
 
-### Delegation contract
+GitHub is the engineering control plane for `ship` and `deliver`.
 
-Every delegate request in v1 should specify:
+When repo policy enables GitHub delivery enforcement, the wrapper evaluates:
 
-- objective
-- scope boundaries
-- allowed files or path prefix
-- mode: `analyze` or `edit`
-- required output schema
-- max expected duration
-- acceptance rule for the leader
+- branch state
+- pull request state
+- review approval state
+- linked issues
+- required checks
+- required GitHub Actions workflows
+- release-bearing requirements such as tag and GitHub Release existence
+- security gates such as Dependabot or code-scanning alerts when configured
 
-Every delegate response should return, at minimum:
+When repo policy enables GitHub mutation, the wrapper may:
 
-- `status`: `completed`, `failed`, `stalled`, or `discarded`
-- short summary
-- files inspected or changed
-- commands run
-- findings or patch summary
-- confidence and unresolved issues
+- create a delivery branch
+- create a commit for the current deliver or ship change set
+- push the branch
+- create or update the pull request
+- watch required checks
 
-The wrapper should persist this in `delegates/<delegate-id>/request.md` and `delegates/<delegate-id>/result.json` when that data is available from the run. If full delegate telemetry is not available from Codex CLI, the leader must emit a delegate ledger into the final artifact.
+The wrapper does not currently promise to:
 
-### Default topologies by workflow
+- merge pull requests automatically
+- close issues automatically
+- perform GTM or launch work
+- orchestrate remote production deployment beyond repo-declared GitHub release automation
 
-| Workflow | Default topology | Notes |
-| --- | --- | --- |
-| `intent` | Intent Router + one Leader | The router chooses stages, specialists, and capability packs before major execution |
-| `discover` | Research Lead by default; optionally up to 3 bounded research tracks | Best use of parallelism because repo discovery, external research, and risk scanning can often be separated cleanly |
-| `spec` | Leader only by default; optionally leader + up to 2 explorers or one specialist reviewer | Use delegates for cross-cutting questions such as API surface, infra constraints, security posture, or audit expectations |
-| `build` | Leader only by default; optionally leader + up to 2 delegates and one bounded specialist reviewer | One or both delegates may be implementers if file ownership is disjoint; specialists stay review-oriented unless explicitly authorized |
-| `review` | Reviewer leader plus up to 3 specialist reviewers | This is the main place where specialist review should become first-class when justified |
-| `ship` | Leader plus optional release-focused specialists | Final checks should stay disciplined, but release, audit, and pipeline specialists are often justified here because this stage owns GitHub-complete delivery evidence |
+### Completion Rule
 
-### Safe parallel work in v1
+`ship` and `deliver` must fail closed when required GitHub-scoped gates are unsatisfied.
 
-Safe to parallelize:
+A successful GitHub-complete engineering delivery run means:
 
-- repo area discovery by directory or subsystem
-- dependency and configuration inventory
-- API contract tracing
-- test surface mapping
-- external documentation or standards research with explicit source capture
-- bounded risk sweeps over security, compliance, auditability, or operational concerns
-- docs or migration note drafting on disjoint files
-- code changes in clearly separate file trees during `build`
-- bounded specialist critiques such as security, auditability, traceability, or release-pipeline checks
+- implementation artifacts exist
+- verification status supports the run
+- review status supports the run
+- required GitHub gates are ready
+- unresolved blocking items are empty
 
-Not safe to parallelize in v1:
+The guarantee is repo-policy-complete, not universal. Repos choose which GitHub gates are required through configuration.
 
-- overlapping edits in the same module
-- release readiness decisions
-- final review ranking
-- architectural synthesis that depends on unresolved tradeoffs
-- unbounded specialist swarms on the same diff without a lead synthesis contract
+## Support Commands
 
-### How the leader verifies and merges delegated work
+### `rerun`
 
-The leader is responsible for:
+`cstack rerun <run-id>` re-executes a previously recorded workflow using its saved normalized inputs and writes a fresh run with a new id.
 
-- reading delegate outputs before accepting them
-- inspecting touched files or diffs
-- running or requesting verification commands for accepted edits
-- explicitly marking each delegate result as accepted, partially accepted, or discarded
-- summarizing that disposition in the main run artifact
+Current supported rerun workflows:
 
-Delegate output is advisory until the leader accepts it. The system should never imply that parallel work was merged blindly.
+- `discover`
+- `spec`
+- `build`
+- `review`
+- `ship`
+- `deliver`
+- `intent`
 
-### Discover v2 bounded research team
+The new run records `rerunOfRunId` and writes `artifacts/rerun.json`.
 
-`discover` is the first workflow where richer bounded delegation should become first-class.
+### `resume`
 
-The recommended topology is:
+`cstack resume <run-id>` resolves the saved Codex session from the run and calls `codex resume <session-id>`.
 
-- `Research Lead`
-- `repo-explorer`
-- optional `external-researcher`
-- optional `risk-researcher`
+This is a wrapper-owned ergonomic command. It does not create a new workflow run by itself.
 
-Each track stays analyze-only in this workflow.
+### `fork`
 
-The `Research Lead` should:
+`cstack fork <run-id> [--workflow <name>]` resolves the saved Codex session and calls `codex fork <session-id>`.
 
-- decide whether delegation is justified for the current discover request
-- select at most three bounded tracks
-- choose which capability packs are requested for the run
-- synthesize one final discovery artifact from accepted track outputs
-- record which track outputs were accepted, partially accepted, or discarded
+When a child session id is observed, the wrapper records that observation back into the parent session metadata. `--workflow` records intended follow-on workflow context when provided.
 
-Track roles:
+## Run Ledger and Inspection
 
-- `repo-explorer`: inspect local code, config, tests, architecture, ownership clues, and likely change boundaries
-- `external-researcher`: gather external facts such as official docs, standards, APIs, libraries, or release notes with explicit citations
-- `risk-researcher`: inspect security, compliance, auditability, operational, or rollout concerns implied by the request
+### `runs`
 
-Discover fan-out should be suppressed when:
+`cstack runs` is the run ledger over saved run directories.
 
-- the prompt is small and clearly local
-- the request is already well-scoped enough for one coherent pass
-- web research is implied but the workflow capability policy does not allow it
-- earlier delegate output is low-signal enough that more fan-out would add noise
+It supports:
 
-Discover activation heuristics should stay simple in the first slice:
+- `--active`
+- `--workflow <name>`
+- `--status <status>`
+- `--recent <n>`
+- `--json`
 
-- always prefer single-agent for short, obviously local repo archaeology prompts
-- add `repo-explorer` first when delegation is enabled and the prompt spans multiple subsystems
-- add `external-researcher` only when the request depends on unstable or external facts and web research is allowed
-- add `risk-researcher` only when the request implies a concrete risk domain such as auth, compliance, audit, rollout, runtime, or secret handling
+### `inspect`
 
-The first implementation should avoid a general-purpose swarm runtime. It should be a bounded discover-team model only.
+`cstack inspect <run-id>` reads saved artifacts and renders an artifact-grounded summary.
 
-### Guardrails for fan-out, cost, and noise
+`cstack inspect <run-id> --interactive` opens a TTY inspector over the saved run state.
 
-- Default delegate count: `0` beyond the lead; the inferred front door may still create one router plus one lead by default
-- Recommended max total delegates: `4`
-- Recommended max editing delegates: `2`
-- Hard rule for v1: no nested delegation
-- Each workflow prompt should include a delegation budget and stopping rule
-- The wrapper should print planned delegation before the run when the workflow is deterministic
-- If delegates produce low-signal output, the leader should stop spawning more and continue single-agent
-- Specialist reviewers should be selected explicitly by reason, for example `security`, `devsecops`, `traceability`, `audit`, or `release-pipeline`
+The inspector is artifact-grounded. It does not silently continue Codex reasoning. It may surface explicit escalation commands such as `resume` or `fork`.
 
-The cost and latency tradeoff is simple in v1: use multiple agents only when the task is separable enough that parallelism saves more time than synthesis costs. The most credible multi-agent shape is one lead plus a few narrowly scoped specialists, not a large team by default.
+Current inspector views include:
 
-### Build v1 minimal slice
+- summary
+- stages
+- specialists
+- artifacts
+- routing
+- research
+- session
+- verification
+- review
+- ship
+- GitHub mutation and delivery views
+- delegate and artifact drilldowns
+- `what remains`
 
-The first usable `build` slice should be deliberately narrow.
+## Artifacts and Storage
 
-Command surface:
-
-- `cstack build <prompt>`
-- `cstack build --from-run <run-id>`
-- `cstack build --from-run <run-id> --exec`
-
-Behavior:
-
-- interactive `codex` is the default when a TTY is available
-- `--exec` is the explicit deterministic fallback for batch-friendly or non-TTY use
-- when interactive mode is requested without a usable TTY, the wrapper may fall back to `exec`, but it must record both requested and observed mode in `session.json`
-- linked runs may come from `spec`, `intent`, or earlier workflow artifacts, but the wrapper should prefer the most implementation-ready artifact available
-- after the main build execution, the wrapper should record verification results and run a bounded synthesis pass so the artifact trail stays inspectable
-
-The first slice does not need to solve the full lifecycle of `resume`, `fork`, or parallel implementation delegates. It does need to leave enough lineage for those commands to become real wrappers later.
-
-### Specialist library and activation rules
-
-The system should support a bounded library of specialist presets that the intent router or lead can activate deliberately:
-
-| Specialist | Typical trigger | Default output |
-| --- | --- | --- |
-| Security review | auth changes, secret handling, untrusted input, data exposure risk | `security-findings.md` |
-| DevSecOps review | CI/CD changes, container/runtime changes, supply-chain exposure, secret distribution | `devsecops-findings.md` |
-| Traceability review | regulated work, complex migrations, multi-stage changes, high handoff cost | `traceability-findings.md` |
-| Audit review | audit logging, compliance evidence, change accountability, evidence retention | `audit-findings.md` |
-| Release pipeline review | versioning, packaging, release automation, rollout safety, rollback readiness | `release-review.md` |
-
-These should not all run by default. They should be inferred or attached only when the task warrants them, and the run artifact must record why each one was selected.
-
-## 8. **System Architecture**
-
-### Wrapper CLI
-
-V1 should be a local CLI wrapper that shells out to the installed `codex` binary. A TypeScript implementation is a reasonable default because it is well-suited to child process management, JSON handling, and repo-local packaging.
-
-The wrapper owns:
-
-- CLI argument parsing
-- workflow selection
-- prompt assembly
-- config resolution
-- run id generation
-- artifact directory creation
-- session lineage tracking
-- best-effort event capture
-- inspect, rerun, resume, and fork UX
-
-### Prompt / skill packs
-
-Prompt assets should be owned in two layers:
-
-| Layer | Owner | Purpose |
-| --- | --- | --- |
-| Built-in workflow templates | `cstack` | Stable base prompts, output contracts, and delegation policy per workflow |
-| Repo-local overrides | Repository | Team-specific conventions, coding standards, preferred commands, and MCP allowlists |
-
-To avoid prompt soup, each workflow should assemble prompts from a small manifest:
-
-- base workflow template
-- repo context block
-- task block
-- optional capability pack references
-- output contract block
-
-V1 should allow only manifest-declared capability packs such as:
-
-- `skill:<name>`
-- `mcp:<server>`
-- `shell`
-- `web`
-
-The wrapper should not concatenate arbitrary role files by default.
-
-### Orchestration runtime
-
-The orchestration layer should stay thin:
-
-- decide run mode: `exec` or interactive
-- materialize prompts
-- attach artifact contract instructions
-- invoke Codex
-- capture outputs
-- map run ids to Codex sessions
-- record declared delegation policy and observed delegate summaries
-
-What it should not do in v1:
-
-- schedule long-running remote workers
-- perform its own code merge engine
-- maintain a separate memory graph
-- replace Codex-native reasoning or review
-
-### Config model
-
-V1 should use a repo-local config file at `.cstack/config.yml`.
-
-Rough schema:
-
-| Key | Type | Purpose |
-| --- | --- | --- |
-| `version` | string | Config version |
-| `project.name` | string | Human-readable project label |
-| `codex.bin` | string | Path override for `codex` binary |
-| `artifacts.root` | string | Default run root, default `.cstack/runs` |
-| `workflows.<name>.mode` | enum | `exec` or `interactive` default |
-| `workflows.<name>.delegation` | object | `allowed`, `default`, `max_total`, `max_editors` |
-| `workflows.<name>.capabilities` | list | Allowed capability packs |
-| `prompts.override_dir` | string | Repo-local prompt override path |
-| `review.severity_threshold` | string | Default output filtering and exit behavior |
-| `verification.default_commands` | list | Default test or lint commands for build and ship |
-
-### State / artifact storage
-
-Each run should create an immutable directory:
+Run directories live under:
 
 ```text
 .cstack/runs/<run-id>/
-  run.json
-  input.json
-  prompt.md
-  final.md
-  events.jsonl
-  session.json
-  delegates/
-  artifacts/
 ```
 
-Required files:
+Every run stores at least:
 
-| File | Meaning |
-| --- | --- |
-| `run.json` | Workflow name, timestamps, cwd, git branch, config snapshot, parent run id |
-| `input.json` | Normalized user inputs and selected options |
-| `prompt.md` | Fully materialized prompt sent to Codex |
-| `final.md` | Final top-level response from Codex |
-| `events.jsonl` | Best-effort event log for machine-readable runs |
-| `session.json` | Primary Codex session id, fork lineage, and interactive metadata |
+- `run.json`
+- `prompt.md`
+- `context.md`
+- `final.md`
+- `stdout.log`
+- `stderr.log`
+- `events.jsonl` when available
+- workflow-specific artifacts under `artifacts/`
 
-Workflow-specific artifacts live under `artifacts/`.
+Additional workflow-owned files include:
 
-Recommended additional files for discover-team runs:
+- `routing-plan.json` for intent runs
+- `stage-lineage.json` for multi-stage or stage-oriented runs
+- `session.json` for build sessions and nested deliver build sessions
+- `delegates/` for specialist or discover-track outputs
 
-| File | Meaning |
-| --- | --- |
-| `stages/discover/research-plan.json` | Discover-only track selection, capability decisions, activation rationale, and limits |
-| `stages/discover/delegates/<track>/request.md` | Bounded request issued to that discover track |
-| `stages/discover/delegates/<track>/result.json` | Structured result plus leader disposition for that track |
-| `stages/discover/delegates/<track>/sources.json` | Explicit provenance for external or local sources cited by that track |
-| `stages/discover/artifacts/discovery-report.md` | Research-lead synthesis across accepted track outputs |
+Runs are immutable. `rerun` creates a new run id rather than mutating prior run state.
 
-Recommended additional files for inferred and interactive runs:
+## Config Contract
 
-| File | Meaning |
-| --- | --- |
-| `routing-plan.json` | Inferred stage plan, rationale, selected specialists, and routing summary |
-| `stage-lineage.json` | Per-stage execution status plus specialist execution and disposition records |
-| `artifacts-index.json` | Artifact inventory used by `inspect` and the interactive inspector |
-| `inspector-notes.json` | Optional persisted inspector bookmarks, last viewed artifact, or user follow-up state |
-
-Recommended additional files for build runs:
-
-| File | Meaning |
-| --- | --- |
-| `session.json` | Build session lineage, launch mode, source run linkage, transcript path, and observed session id when available |
-| `artifacts/change-summary.md` | Post-build change summary synthesized from the repo state, linked artifacts, and build session output |
-| `artifacts/verification.json` | Verification commands run, status per command, and overall verification verdict |
-| `artifacts/build-transcript.log` | Best-effort interactive transcript or inline session capture when available |
-| `artifacts/github-mutation.json` | Requested and observed GitHub branch / commit / pull-request mutation state for `deliver` |
-| `artifacts/github-delivery.json` | GitHub-scoped delivery evidence including branch, PR, review, checks, tag, release, and linked issue state for `deliver` |
-
-The run ledger should be derivable from these artifacts without a separate daemon or database. V1 may cache summaries for speed, but the durable source of truth remains the run directories on disk.
-
-### Logs / transcripts / auditability
-
-Auditability matters more than completeness in v1.
-
-- `codex exec` workflows should record `events.jsonl` when possible.
-- Interactive workflows should always record launch parameters, linked session ids, and final summaries.
-- GitHub-mutating workflows should always record both the requested GitHub actions and the observed resulting state.
-- Wrapper-owned branch publish and pull-request mutation should be preserved as first-class artifacts, not reconstructed indirectly from later PR state.
-- Full interactive transcript capture is best-effort and may be partial if Codex CLI does not expose a stable event stream.
-- Delegate records should be explicit about whether they are observed directly or leader-reported.
-- The post-run interactive inspector should answer from saved artifacts first and should distinguish observed facts from inferred guidance.
-- Discover-team runs should distinguish local findings from external findings and should expose source provenance clearly in inspection views.
-- Build runs should record both requested session behavior and observed session metadata, because Codex CLI session telemetry may be incomplete in some environments.
-
-### Active-run TTY dashboard
-
-When running in a TTY, the wrapper should prefer a bounded dashboard over an endlessly growing event log.
-
-That dashboard should show:
-
-- run id
-- workflow
-- run status
-- elapsed time
-- explicit stage plan
-- current stage highlighted
-- specialist status strip
-- bounded recent-activity pane
-- artifact or next-action hints when relevant
-
-The dashboard may summarize observed process activity, but it must not imply access to private chain-of-thought or invisible model state.
-
-Non-TTY environments should continue to receive plain line-oriented output.
-
-### Inspector console presentation
-
-The interactive inspector should present itself as a structured console rather than a raw REPL dump.
-
-The default experience should include:
-
-- a compact home view
-- view-oriented navigation for summary, stages, specialists, artifacts, routing, and final output
-- lightweight shortcuts in addition to typed commands
-- an explicit visual split between:
-  - observed
-  - inferred guidance
-
-The first implementation may stay ANSI-first and line-oriented under the hood, but the rendered experience should feel intentional and bounded.
-
-This is enough to let a user inspect what was requested, what was observed, and what was decided.
-
-## 9. **Codex CLI Integration Assumptions**
-
-### What the wrapper relies on from Codex CLI
-
-V1 assumes the local `codex` installation provides:
-
-- interactive `codex` sessions
-- `codex exec` for deterministic runs
-- `codex exec --json` for structured output capture where available
-- `codex exec --output-schema` for schema-constrained final messages
-- `codex exec --output-last-message` for saved final output
-- `codex review`
-- `codex resume`
-- `codex fork`
-- repo-aware execution, shell access, patch-based editing, and native sub-agents
-
-### What is implemented outside Codex CLI
-
-`cstack` owns:
-
-- workflow definitions
-- prompt materialization
-- repo-local config and overrides
-- artifact layout
-- session and run lineage
-- replay and inspection UX
-- delegation policy and reporting contract
-
-Codex owns:
-
-- reasoning
-- tool selection
-- code editing
-- spawned agent execution
-- review logic
-
-### Where the boundaries are fragile
-
-- Codex may not expose complete sub-agent telemetry to the wrapper.
-- Interactive transcripts may not be fully machine-readable.
-- Session id extraction and event formats may change across Codex versions.
-- Schema-constrained output applies to final messages, not necessarily the full internal workflow.
-- MCP and tool availability can differ by environment.
-
-V1 should treat these boundaries as unstable and store both the requested behavior and the observed behavior.
-
-### When the wrapper should use interactive `codex` vs `codex exec`
-
-| Use case | Default |
-| --- | --- |
-| `discover` | `codex exec` |
-| `spec` | `codex exec` |
-| `review` | `codex review` first, then `codex exec` only when a custom output contract is needed |
-| `ship` | `codex exec` plus local verification commands, GitHub CLI or API calls, and release automation hooks |
-| `build` | Interactive `codex` by default |
-
-`build` should support `--exec` for small, batch-friendly tasks, but guided interactive execution is the default because implementation usually benefits from iterative clarification, retries, and session continuity.
-
-V1 should shell out to Codex CLI rather than attempt deeper runtime integration. That keeps the system practical to build, easier to debug, and aligned with upstream improvements.
-
-## 10. **Repo and File Layout Proposal**
+Repo-local config lives at:
 
 ```text
-.
-├── .cstack/
-│   ├── config.yml
-│   ├── prompts/
-│   │   ├── discover.md
-│   │   ├── spec.md
-│   │   ├── build.md
-│   │   ├── review.md
-│   │   └── ship.md
-│   └── runs/
-│       └── <run-id>/
-│           ├── run.json
-│           ├── input.json
-│           ├── prompt.md
-│           ├── final.md
-│           ├── events.jsonl
-│           ├── session.json
-│           ├── artifacts/
-│           └── delegates/
-├── src/
-│   ├── cli/
-│   ├── workflows/
-│   ├── codex/
-│   ├── artifacts/
-│   ├── config/
-│   └── prompts/
-└── docs/
-    └── specs/
-        └── cstack-spec-v0.1.md
+.cstack/config.toml
 ```
 
-Notes:
-
-- `.cstack/` is repo-local operating state and should be gitignored by default except for prompt overrides and config if the team wants them versioned.
-- Built-in prompt assets belong in `src/prompts/`; repo overrides belong in `.cstack/prompts/`.
-- Runs are immutable. Re-execution creates a new run id and points back to the source run through lineage metadata.
-
-## 11. **Execution Lifecycle**
+The wrapper loads user config first, then repo config, with repo config taking precedence.
 
-### Standard lifecycle
+Current workflow config areas:
 
-1. User invokes either an explicit workflow command or `cstack <intent>`.
-2. If the user invoked the inferred front door, the intent router resolves the likely stage sequence, capability packs, and specialist candidates.
-3. `cstack` resolves config, workflow mode, capability packs, and delegation policy.
-4. `cstack` creates a run id and run directory.
-5. `cstack` materializes `input.json`, `prompt.md`, and the inferred plan if routing was involved.
-6. `cstack` invokes `codex exec`, `codex review`, or interactive `codex`.
-7. The leader agent executes, optionally delegating within the workflow policy.
-8. `cstack` records observed events, session ids, delegate summaries, specialist reasons, and final output.
-9. Workflow-specific artifacts are written under `artifacts/`.
-10. `cstack` prints a short terminal summary: inferred plan if applicable, workflow, run id, status, key artifact paths, and next actions.
-11. If the terminal is interactive, `cstack` may offer an optional handoff into `cstack inspect <run-id> --interactive`.
+- `[codex]`
+- `[workflows.spec]`
+- `[workflows.discover]`
+- `[workflows.build]`
+- `[workflows.review]`
+- `[workflows.ship]`
+- `[workflows.deliver]`
+- `[verification]`
 
-For `deliver`, the lifecycle is stricter:
+Important repo-policy knobs include:
 
-1. `build` must finish with saved implementation and verification artifacts.
-2. `review` must produce a verdict plus specialist dispositions when specialists were activated.
-3. `ship` must verify GitHub state, required checks, and release-bearing artifacts.
-4. `deliver` must fail closed if any required GitHub-scoped gate is unsatisfied.
-5. Only then may the top-level run be marked `completed`.
+- workflow mode
+- delegation enablement and caps
+- discover web-research policy
+- dirty-worktree allowance
+- verification commands
+- GitHub delivery policy for ship and deliver
 
-### Post-run interactive inspector lifecycle
+## Delegation Policy
 
-The post-run interactive inspector should follow a strict boundary:
+Delegation is bounded and workflow-specific.
 
-- it reads and explains the saved run state
-- it does not silently continue the original reasoning session
-- it may offer explicit escalation actions such as `resume` or `fork`
+Current durable patterns:
 
-The first version should support a small command set such as:
+- discover: Research Lead plus up to three bounded research tracks
+- intent: specialist reviews after planning when heuristics justify them
+- review: Review Lead plus up to three bounded specialist reviewers
+- deliver: delivery-owned review specialists inside the review stage
 
-- `summary`
-- `stages`
-- `specialists`
-- `artifacts`
-- `show final`
-- `show routing`
-- `show stage <name>`
-- `show specialist <name>`
-- `why deferred <stage>`
-- `what remains`
-- `resume`
-- `fork`
+Delegation should be suppressed when:
 
-This keeps the post-run experience useful without turning it into an unbounded second chat layer.
+- the task is small enough for a single coherent pass
+- overlapping edits create high merge risk
+- the workflow is safety-critical and benefits more from synthesis discipline than parallelism
 
-The inspector should also support a small shortcut layer for the most common views, for example:
+Every delegated output must be attributable in artifacts.
 
-- `1` summary
-- `2` stages
-- `3` specialists
-- `4` artifacts
-- `f` final
-- `r` routing
-- `q` exit
+## Dirty Worktree Safety
 
-Typed commands remain the canonical control surface. Shortcuts are an acceleration layer, not a replacement.
+`build`, `ship`, and `deliver` are mutation-capable workflows.
 
-### Run ids and Codex session mapping
+Default rule:
 
-- `run_id` is generated by `cstack` and is stable for the local artifact directory.
-- `codex_session_id` is whatever Codex reports for the primary session.
-- `session.json` maps the two and records `parent_run_id`, `forked_from_run_id`, and child session ids when known.
-- `resume` always starts from a `run_id`; the wrapper resolves the Codex session for the user.
+- they require a clean worktree
 
-### How users inspect, replay, and debug runs
+Override rule:
 
-- `cstack runs` is the first stop when the user needs to find a run, compare active and historical runs, or spot stalled work.
-- `cstack inspect <run-id>` reads `run.json`, `session.json`, the artifact index, and the delegate ledger.
-- `cstack inspect <run-id> --interactive` opens an artifact-grounded terminal inspector for guided follow-up questions.
-- `cstack rerun <run-id>` reuses the saved normalized input and materialized prompt to create a fresh deterministic run.
-- Debugging starts with artifact inspection, not with rerunning blindly. Users should be able to compare `prompt.md`, `final.md`, and `events.jsonl` across runs.
+- the operator may pass `--allow-dirty`, or
+- repo policy may set `allowDirty = true`
 
-### Example end-to-end user flow
+This rule exists to prevent the wrapper from silently sweeping unrelated edits into GitHub mutation flows.
 
-1. A senior IC runs `cstack "Add plan-based rate limits with audit logging and release safety checks"` instead of choosing a workflow manually.
-2. The intent router infers `discover -> spec -> build -> review -> ship` and prints that plan before execution.
-3. The router also infers that `audit` and `release-pipeline` specialists are justified, while `security` is optional and therefore not attached by default.
-4. `discover` and `spec` complete first and produce saved context and planning artifacts.
-5. `build` launches with a lead agent and only the bounded implementation delegates needed for disjoint file work.
-6. `review` runs with the lead reviewer plus the selected specialists and records exactly why those specialists were used.
-7. `ship` produces the final checklist and release-oriented summary, preserving lineage back to the inferred front door and every stage it ran.
+## Non-Goals
 
-### Example non-interactive run
+The active product contract does not include:
 
-Command:
+- GTM, launch marketing, enablement, or support readiness
+- autonomous long-running remote agent clusters
+- opaque swarm orchestration
+- automatic PR merge or issue closure
+- deployment orchestration beyond repo-declared GitHub release automation
 
-```bash
-cstack spec "Add org-scoped API keys with audit logging" --from discover-20260313-120400
-```
+## Closure Statement
 
-Expected flow:
+This active spec is complete when the repository matches the command surface and behavior defined above.
 
-- `cstack` chooses `codex exec`
-- prompt includes the linked discovery artifact, acceptance criteria, and the `spec` output contract
-- output artifacts include `artifacts/spec.md`, `artifacts/plan.json`, and `artifacts/open-questions.md`
-- the terminal summary points to the run id and recommends either `cstack build --from-run <run-id>` or `cstack inspect <run-id>`
-
-### Example interactive run
-
-Command:
-
-```bash
-cstack build --from-run spec-20260313-121015
-```
-
-Expected flow:
-
-- `cstack` launches interactive `codex` with the spec artifact embedded into the initial prompt
-- `session.json` stores the requested launch mode, linked source run, transcript location, and the returned Codex session id when observed
-- the engineer iterates with Codex, runs tests, and adjusts scope
-- after the session exits, `cstack` records verification results and synthesizes `artifacts/change-summary.md` plus `final.md`
-- later they use `cstack resume <run-id>` rather than remembering the raw Codex session id
-- if they want an alternative implementation branch, they use `cstack fork <run-id> --workflow build`
-
-### Example first-slice build limitations
-
-- interactive launch should require a TTY unless `--exec` is set
-- transcript capture is best-effort and may vary by platform
-- `resume` and `fork` may still be wrapper recommendations rather than first-class commands in the first build slice
-- verification commands should be recorded faithfully, but the wrapper should not pretend that a passing verification set proves semantic correctness
-
-### Example post-run interactive inspection
-
-- a user runs `cstack "Add SSO with audit logging"` in a TTY
-- `cstack` completes the deterministic stages and prints the run summary
-- the terminal offers `Inspect this run now? [Y/n]`
-- the user enters the interactive inspector instead of starting a new Codex conversation
-- they ask for `stages`, `show specialist audit-review`, and `what remains`
-- the inspector answers from `routing-plan.json`, `stage-lineage.json`, `final.md`, and the delegate artifacts
-- only after reviewing the saved state do they choose `resume` or `fork` if they want continued agent work
-
-### Example multi-agent run with failure handling
-
-Command:
-
-```bash
-cstack "Introduce SSO with audit logging and hardened release checks"
-```
-
-Expected topology:
-
-- intent router infers `discover -> spec -> build -> review`
-- leader agent owns the main execution for each stage
-- specialist `security-review` checks auth and identity risks
-- specialist `audit-review` checks logging and evidence expectations
-- specialist `release-pipeline-review` checks rollout and rollback assumptions
-
-Artifacts:
-
-- `routing-plan.json`
-- `delegates/security-review/result.json`
-- `delegates/audit-review/result.json`
-- `delegates/release-pipeline-review/result.json`
-- `artifacts/context.md`
-- `artifacts/risks.md`
-
-Failure handling:
-
-- if `audit-review` returns low-signal output, the leader marks it `discarded`
-- the leader does not keep spawning more specialists to compensate
-- the final summary records which specialist outputs were accepted, partially accepted, or discarded
-- the main run still completes, but with an explicit note that audit coverage was degraded
-
-## 12. **Guardrails and Failure Handling**
-
-### Failure modes and responses
-
-| Failure mode | Expected response |
-| --- | --- |
-| Codex binary missing or incompatible | Fail fast before run creation is finalized; write an error record if the run directory already exists |
-| Delegation unavailable | Continue in single-agent mode and record `delegation_mode: degraded` |
-| Delegate stalls or fails | Mark delegate status, stop fan-out growth, continue with leader synthesis if enough signal exists |
-| Dirty worktree with conflicting edits | Warn early; `build` and `ship` should require explicit confirmation flags to proceed |
-| Structured output parse failure | Preserve raw `final.md`, record schema mismatch in `run.json`, and avoid pretending the artifact is valid |
-| MCP server unavailable | Remove the capability pack for that run, log the downgrade, and continue if the workflow still makes sense |
-| Verification commands fail | Record failure in `verification.json`; do not silently upgrade the run status to success |
-
-### Trust guardrails
-
-- Every workflow should declare whether it is single-agent first, delegate-optional, or single-agent only.
-- The inferred front door must record the planned stage sequence before major execution starts.
-- Delegation must be visible in artifacts, even if only through leader-reported summaries.
-- Runs are immutable; reruns create new run ids.
-- The wrapper should never hide whether a final answer came from one agent or a leader synthesizing delegates.
-- Specialist reviewers must always record both their activation reason and their acceptance disposition.
-- `review` and `ship` should stay disciplined by default because trust matters more than speculative parallelism there.
-
-### Idempotency concerns
-
-- `discover`, `spec`, and `review` are replayable but not guaranteed to be byte-for-byte identical because Codex is nondeterministic.
-- Idempotency in v1 means stable inputs, stable artifact shape, and stable lineage, not identical model text.
-- `build` is inherently stateful because the repo changes. Replay for `build` means fork, resume, or rerun with a new run id and explicit parent linkage.
-
-### How orchestration degrades
-
-If delegation or structured events do not work, `cstack` should still provide value as:
-
-- workflow router
-- prompt materializer
-- run recorder
-- session index
-
-That is the correct degradation path for v1.
-
-### MCP, local skills, and external tools without prompt soup
-
-V1 should treat these as workflow-scoped capability packs, not free-floating prompt attachments.
-
-- A workflow manifest declares which packs are allowed.
-- Repo config decides which packs are enabled by default.
-- The user can opt in to additional allowed packs per run.
-- The prompt should name capabilities explicitly and briefly.
-- The artifact record should state which packs were requested and which were actually available.
-
-For discover-team runs specifically:
-
-- web research should be an explicit capability, not an implicit default
-- if web research is disallowed or unavailable, the run should record that downgrade in `research-plan.json`
-- external findings should cite sources and retrieval timing when useful
-
-This keeps the operator model coherent: one workflow, one leader, a small set of tools, a saved artifact trail.
-
-## 13. **MVP Milestones**
-
-### Milestone 1: deterministic runner and artifact contract
-
-- Implement `cstack discover` and `cstack spec`
-- Materialize prompts and normalized inputs
-- Create run directories with `run.json`, `prompt.md`, `final.md`, and workflow artifacts
-- Add `cstack inspect`
-- Add `cstack runs` as a real run ledger rather than a raw directory listing
-
-### Milestone 2: interactive build with session lineage
-
-- Implement `cstack build`
-- Record `session.json`
-- Add `cstack resume` and `cstack fork`
-- Capture verification commands and change summaries
-- Add `cstack inspect <run-id> --interactive` as a wrapper-owned post-run inspector
-- Upgrade the TTY inspector into a view-oriented ANSI console with shortcuts
-
-### Milestone 3: deliver umbrella workflow and standalone review/ship follow-ons
-
-- Ship `deliver` as the umbrella execution workflow over internal `build`, `review`, and `ship`
-- Preserve explicit stage-local artifacts and lineage
-- Harden `deliver` so success means GitHub-complete engineering delivery rather than local release readiness only
-- Follow with standalone `review` and `ship` entrypoints for narrower operator paths
-
-### Milestone 4: bounded delegation and capability packs
-
-- Add workflow-level delegation policy
-- Persist delegate ledgers
-- Add discover-only bounded research tracks and leader synthesis
-- Support repo-configured capability packs for skills, MCP servers, shell, and web
-
-### Milestone 5: inferred intent router and specialist library
-
-- Add `cstack <intent>` as the primary front door
-- Persist inferred routing plans and stage lineage
-- Implement bounded specialist presets for security, DevSecOps, traceability, audit, and release-pipeline review
-- Record specialist selection reasons and acceptance states
-
-### Milestone 6: richer TTY run experience
-
-- Upgrade active-run progress into a bounded ANSI dashboard
-- Show stage and specialist status strips during active runs
-- Add a more intentional inspector home view and view shortcuts
-- Preserve clean non-TTY fallback behavior
-
-## 14. **Open Questions**
-
-1. How much direct sub-agent telemetry can `cstack` reliably observe from Codex CLI versus infer from leader output?
-2. Which specialist reviewers should be first-class in the earliest inferred-intent version, and which should remain opt-in?
-3. How much prompt override flexibility should repo config allow before workflow behavior becomes too fragmented across teams?
-4. What is the smallest stable event schema `cstack` can count on from `codex exec --json`?
-5. Which GitHub actions should `deliver` require by default before it can mark a run `completed`, and which should remain repo-policy configurable?
-6. How should artifact retention work for large repos with many runs: keep all runs, expire old runs, or archive only summaries?
-7. Should the interactive inspector remain purely artifact-grounded in v1, or should it gain an explicit Codex-backed “explain this run” mode later?
-8. How much live state should `cstack runs` expose for active runs before the wrapper can reliably observe every internal stage transition?
-9. At what point, if any, should `cstack` move from enhanced ANSI layouts to a heavier full-screen TUI?
-
-## 15. **Recommended Next Spec**
-
-The next spec should define session continuation and post-delivery workflows in detail, including wrapper-native `resume` and `fork`, standalone `review` and `ship` commands, and the boundary between GitHub-complete `deliver` and a later GTM workflow.
-
-That spec should answer:
-
-- exact CLI grammar and flags for each workflow
-- JSON/YAML schema for `.cstack/config.yml`
-- artifact schema per workflow
-- prompt manifest format and override rules
-- session lineage format for `resume`, `fork`, and `rerun`
-- delegate ledger schema and acceptance states
-- routing-plan schema and stage inference rules
-- specialist activation reasons and artifact schema
-- run-ledger schema for active and historical runs
-- post-run inspector command set and persistence model
-- active-run dashboard layout and update contract
-- inspector shortcut map and view model
-
-Without that layer, implementation will drift into ad hoc process management.
-
-## **Build Recommendation**
-
-Build the richer TTY layer next. The first slice should keep the run ledger and artifact-grounded inspector intact, but upgrade the terminal experience into an ANSI-first operator console with clearer stage/specialist state, a bounded activity pane, and shortcut-driven inspection views. That improves usability without committing the product to a brittle full-screen TUI too early.
+Anything not described here belongs in historical slice docs, workflow notes, or future planning, not in the active shipped contract.

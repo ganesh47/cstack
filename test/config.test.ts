@@ -54,6 +54,14 @@ allowWeb = true
 [workflows.build]
 mode = "exec"
 verificationCommands = ["npm test"]
+allowDirty = true
+
+[workflows.review]
+mode = "exec"
+
+[workflows.ship]
+mode = "exec"
+allowDirty = true
 
 [workflows.deliver]
 mode = "exec"
@@ -103,6 +111,10 @@ blockSeverities = ["medium", "high", "critical"]
     expect(config.workflows.discover.research?.allowWeb).toBe(true);
     expect(config.workflows.build.mode).toBe("exec");
     expect(config.workflows.build.verificationCommands).toEqual(["npm test"]);
+    expect(config.workflows.build.allowDirty).toBe(true);
+    expect(config.workflows.review.mode).toBe("exec");
+    expect(config.workflows.ship.mode).toBe("exec");
+    expect(config.workflows.ship.allowDirty).toBe(true);
     expect(config.workflows.deliver.mode).toBe("exec");
     expect(config.workflows.deliver.verificationCommands).toEqual(["npm run release:check"]);
     expect(config.workflows.deliver.delegation?.enabled).toBe(true);
@@ -134,6 +146,11 @@ blockSeverities = ["medium", "high", "critical"]
     const { config, sources } = await loadConfig(repoDir);
 
     expect(sources).toHaveLength(0);
+    expect(config.workflows.build.allowDirty).toBe(false);
+    expect(config.workflows.review.mode).toBe("exec");
+    expect(config.workflows.review.allowDirty).toBe(true);
+    expect(config.workflows.ship.mode).toBe("exec");
+    expect(config.workflows.ship.allowDirty).toBe(false);
     expect(config.workflows.deliver.github?.enabled).toBe(false);
     expect(config.workflows.deliver.github?.mode).toBe("merge-ready");
     expect(config.workflows.deliver.github?.pushBranch).toBe(false);

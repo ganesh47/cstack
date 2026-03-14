@@ -17,7 +17,7 @@ async function readPromptFromStdin(): Promise<string> {
   return chunks.join("").trim();
 }
 
-export async function runDiscover(cwd: string, userPrompt: string): Promise<void> {
+export async function runDiscover(cwd: string, userPrompt: string): Promise<string> {
   const resolvedPrompt = userPrompt.trim() || (await readPromptFromStdin());
   if (!resolvedPrompt) {
     throw new Error("`cstack discover` requires a prompt.");
@@ -118,6 +118,7 @@ export async function runDiscover(cwd: string, userPrompt: string): Promise<void
       ].join("\n") + "\n"
     );
     await maybeOfferInteractiveInspect(cwd, runId);
+    return runId;
   } catch (error) {
     runRecord.status = "failed";
     runRecord.updatedAt = new Date().toISOString();

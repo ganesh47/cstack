@@ -89,6 +89,7 @@ describe("runDeliver", () => {
         "",
         "[workflows.deliver]",
         'mode = "interactive"',
+        "allowDirty = true",
         'verificationCommands = ["node -e \\"process.stdout.write(\'deliver verify ok\')\\""]',
         "",
         "[workflows.deliver.github]",

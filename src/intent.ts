@@ -395,7 +395,7 @@ function buildFinalSummary(intent: string, routingPlan: RoutingPlan, stageLineag
   ].join("\n") + "\n";
 }
 
-export async function runIntent(cwd: string, intent: string, options: IntentCommandOptions): Promise<void> {
+export async function runIntent(cwd: string, intent: string, options: IntentCommandOptions): Promise<string> {
   const resolvedIntent = intent.trim();
   if (!resolvedIntent) {
     throw new Error("`cstack <intent>` requires a task description.");
@@ -512,7 +512,7 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
         ].join("\n") + "\n"
       );
       await maybeOfferInteractiveInspect(cwd, runId);
-      return;
+      return runId;
     }
 
     let discoverFindings = "";
@@ -646,6 +646,7 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
       ].join("\n") + "\n"
     );
     await maybeOfferInteractiveInspect(cwd, runId);
+    return runId;
   } catch (error) {
     runRecord.status = "failed";
     runRecord.updatedAt = new Date().toISOString();
