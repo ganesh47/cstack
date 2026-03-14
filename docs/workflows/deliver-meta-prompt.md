@@ -12,6 +12,7 @@ This is not a brainstorming-only task. Execute the work:
 - keep specs and docs aligned with implementation
 - implement the operator-facing `deliver` workflow
 - preserve explicit internal `build`, `review`, and `ship` stage artifacts
+- make `deliver` satisfy the GitHub-scoped engineering completion guarantee
 - add or update tests
 - validate locally
 - commit in small logical steps
@@ -23,6 +24,7 @@ This is not a brainstorming-only task. Execute the work:
 Keep the work aligned to the current product shape:
 
 - `cstack` is a local-first wrapper around Codex CLI
+- GitHub is the engineering control plane for `deliver`
 - workflows are explicit even when the front door is intent-based
 - artifacts are first-class
 - delegation must stay bounded and justified
@@ -39,7 +41,7 @@ Minimum product outcome:
 - `deliver` creates one durable run with internal `build`, `review`, and `ship` stages
 - the build stage records session lineage and verification
 - the review stage records findings and a verdict
-- the ship stage records release-readiness artifacts
+- the ship stage records GitHub delivery evidence and release-bearing artifacts when applicable
 - `inspect` can explain the umbrella run and the nested stage artifacts
 - `intent` can recommend `cstack deliver --from-run <run-id>` when later execution stages are implied
 
@@ -48,6 +50,7 @@ Minimum product outcome:
 - keep `build`, `review`, and `ship` distinct internally even if `deliver` is one top-level command
 - preserve current `discover`, `spec`, `build`, `intent`, `runs`, and `inspect` behavior
 - do not regress the discover-v2 or build-v1 slices
+- `deliver` must fail closed when required GitHub evidence is missing or blocked
 - preserve reconstructable artifact lineage
 - keep specialist review bounded and inspectable
 - avoid fake swarm behavior with no observable outputs
@@ -60,12 +63,14 @@ Design and implement `deliver` around these responsibilities:
 - run internal `build -> review -> ship`
 - use interactive build by default when a TTY is available, with honest exec fallback
 - attach bounded specialist review only when justified
+- evaluate GitHub PR, issue, check, Actions, release, and security state when policy requires them
 - persist stage-local prompts, contexts, finals, events, and artifacts
 - write top-level stage lineage and a final deliver summary
 
 At minimum, artifacts should cover:
 - `.cstack/runs/<run-id>/stage-lineage.json`
 - `.cstack/runs/<run-id>/artifacts/delivery-report.md`
+- `.cstack/runs/<run-id>/artifacts/github-delivery.json`
 - `.cstack/runs/<run-id>/stages/build/...`
 - `.cstack/runs/<run-id>/stages/review/...`
 - `.cstack/runs/<run-id>/stages/ship/...`

@@ -44,6 +44,7 @@ Implemented behavior:
 - `build` records requested vs observed mode, session lineage, change summaries, and verification artifacts
 - `deliver` runs internal `build -> review -> ship` stages inside one durable run
 - `deliver` can attach bounded specialist review delegates and records their acceptance disposition
+- `deliver` records GitHub delivery evidence and fails closed when required PR, checks, Actions, issue, release, or security gates are blocked
 - each run persists prompts, context, logs, events, final output, and `run.json` under `.cstack/runs/<run-id>/`
 - discover-team artifacts live under `stages/discover/` so they stay distinct from intent-level specialist reviews
 - `intent` infers a stage plan and specialist set, executes `discover` and `spec`, and records later stages as deferred
@@ -129,12 +130,13 @@ The practical workflow target now is:
 
 1. use `discover` or `intent` to gather context
 2. use `spec` or the `intent`-generated spec stage artifact to shape the change
-3. launch `cstack deliver --from-run <spec-or-intent-run-id>` when the work clearly spans implementation, review, and release readiness
+3. launch `cstack deliver --from-run <spec-or-intent-run-id>` when the work clearly spans implementation, review, and GitHub-complete engineering delivery
 4. use `cstack build --from-run <spec-or-intent-run-id>` only when you intentionally want the narrower implementation-only workflow
-5. if the shell is non-interactive, expect the build stage to fall back to `exec` and record requested vs observed mode in `session.json`
-6. run `npm run typecheck`
-7. run `npm test`
-8. use `cstack runs` and `cstack inspect` to review saved workflow artifacts
+5. use `--release` for release-bearing delivery and `--issue <n>` when issue linkage should be explicit
+6. if the shell is non-interactive, expect the build stage to fall back to `exec` and record requested vs observed mode in `session.json`
+7. run `npm run typecheck`
+8. run `npm test`
+9. use `cstack runs` and `cstack inspect` to review saved workflow artifacts, especially `show github` for deliver runs
 
 ### 5. Keep Artifacts First-Class
 
@@ -166,7 +168,7 @@ The most recently completed slices are:
 
 - `discover v2`
 - `build v1`
-- `deliver v1`
+- `deliver v2`
 
 ## Recommended Next Milestones
 
@@ -179,7 +181,7 @@ The cleanest next sequence is:
 
 Why this order:
 
-- `deliver` already closes the main execution gap between planning and local release readiness
+- `deliver` already closes the main execution gap between planning and GitHub-scoped engineering completion
 - `resume` and `fork` now depend mostly on wrapper ergonomics because build-session lineage is already being recorded
 - standalone `review` and `ship` become cleaner once the umbrella path has fixed the artifact contracts
 - GTM is cleaner once engineering delivery artifacts are unified

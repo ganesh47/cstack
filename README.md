@@ -105,6 +105,7 @@ cstack build --from-run <run-id> --exec
 # Launch the umbrella delivery workflow across build, review, and ship
 cstack deliver "Implement the queued billing retry cleanup"
 cstack deliver --from-run <run-id>
+cstack deliver --from-run <run-id> --release --issue 123
 
 # Check for the latest stable GitHub release or apply it
 cstack update --check
@@ -206,6 +207,9 @@ Useful inspector commands:
 - `show research`
 - `show session`
 - `show verification`
+- `show review`
+- `show ship`
+- `show github`
 - `show delegate <track>`
 - `show sources <track>`
 - `show stage <name>`
@@ -418,7 +422,9 @@ Current artifact set:
 - `artifacts/change-summary.md` for `build`
 - `artifacts/verification.json` for `build`
 - `artifacts/delivery-report.md` for `deliver`
+- `artifacts/github-delivery.json` for GitHub-scoped deliver evidence
 - `stages/build/...`, `stages/review/...`, and `stages/ship/...` for deliver stage-local artifacts
+- `stages/ship/artifacts/github-state.json`, `pull-request.json`, `issues.json`, `checks.json`, `actions.json`, `security.json`, and `release.json` for deliver GitHub evidence
 - `stages/discover/artifacts/discovery-report.md` for discover-team synthesis
 - `stages/discover/research-plan.json` for discover-team activation, capability, and track decisions
 - `stages/discover/delegates/<track>/request.md` for discover-team delegated research requests
@@ -448,8 +454,11 @@ Deliver notes:
 
 - `deliver` is the operator-facing umbrella workflow over internal `build`, `review`, and `ship` stages
 - stage-local artifacts live under `stages/build`, `stages/review`, and `stages/ship`
-- `deliver` owns local release readiness and handoff artifacts, not remote deployment orchestration
-- `cstack inspect <run-id>` supports `show review` and `show ship` for deliver runs
+- `deliver` now evaluates GitHub-scoped engineering completion, including PR, checks, Actions, issue linkage, release evidence, and security gates when policy requires them
+- `deliver` fails closed when required GitHub evidence is missing or blocked
+- `deliver --release` switches the run into release-bearing mode and expects tag and release evidence
+- `deliver --issue <n>` links a specific GitHub issue into deliver evaluation
+- `cstack inspect <run-id>` supports `show review`, `show ship`, and `show github` for deliver runs
 
 ## Development
 
@@ -516,6 +525,7 @@ Implemented:
 - interactive post-run inspection
 - live progress reporting and event logging
 - bounded discover-time research delegation with artifact provenance
+- GitHub-scoped deliver policy and evidence artifacts
 - build, typecheck, and test pipeline
 
 Not implemented yet:
