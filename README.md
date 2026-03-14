@@ -14,6 +14,7 @@ Current implemented surface:
 - durable run artifacts in `.cstack/runs/<run-id>/`
 - inferred routing plans and stage lineage for intent runs
 - bounded specialist reviews for security, DevSecOps, traceability, audit, and release-pipeline concerns
+- bounded discover-time research delegation with a research lead and optional repo, external, and risk tracks
 - run ledger views across active and historical runs
 - interactive post-run inspection for artifact-grounded follow-up in TTYs
 - live in-progress activity output while Codex is running
@@ -269,6 +270,10 @@ maxAgents = 0
 [workflows.discover.delegation]
 enabled = true
 maxAgents = 2
+
+[workflows.discover.research]
+enabled = true
+allowWeb = false
 EOF
 ```
 
@@ -348,13 +353,18 @@ maxAgents = 0
 [workflows.discover.delegation]
 enabled = true
 maxAgents = 2
+
+[workflows.discover.research]
+enabled = true
+allowWeb = false
 ```
 
 Notes:
 
 - `command` can point at the installed `codex` binary or a script path for testing.
 - `sandbox`, `profile`, `model`, and `extraArgs` are passed through to `codex exec`.
-- delegation settings are currently recorded in prompt context and will become active policy in later slices.
+- discover delegation settings are now used to bound discover-time research fan-out.
+- discover web research stays opt-in through `[workflows.discover.research].allowWeb`.
 
 ## Run Artifacts
 
@@ -374,10 +384,22 @@ Current artifact set:
 - `artifacts-index.json` or equivalent artifact inventory derived by the inspector
 - `artifacts/spec.md` for `spec`
 - `artifacts/findings.md` for `discover`
+- `stages/discover/artifacts/discovery-report.md` for discover-team synthesis
+- `stages/discover/research-plan.json` for discover-team activation, capability, and track decisions
+- `stages/discover/delegates/<track>/request.md` for discover-team delegated research requests
+- `stages/discover/delegates/<track>/result.json` for discover-team delegated research results
+- `stages/discover/delegates/<track>/sources.json` for discover-team source provenance
 - `delegates/<specialist>/request.md` for specialist reviews in intent runs
 - `delegates/<specialist>/result.json` for specialist reviews in intent runs
 
 `events.jsonl` records the live progress feed so `cstack inspect` can show recent activity after the run has finished. The interactive inspector also derives its artifact inventory from the saved run directory.
+
+Discover-team notes:
+
+- `repo-explorer` stays local to the repo
+- `external-researcher` is only activated when the prompt implies external or unstable facts and web research is allowed
+- `risk-researcher` is only activated when the prompt implies a concrete risk domain
+- the research lead synthesizes the final discover output; delegated tracks remain advisory until accepted
 
 ## Development
 
@@ -441,6 +463,7 @@ Implemented:
 - run ledger filtering and JSON output
 - interactive post-run inspection
 - live progress reporting and event logging
+- bounded discover-time research delegation with artifact provenance
 - build, typecheck, and test pipeline
 
 Not implemented yet:
@@ -448,6 +471,5 @@ Not implemented yet:
 - automatic execution of `build`
 - automatic execution of `review`
 - automatic execution of `ship`
-- active multi-agent delegation policy
 - `cstack`-native `resume` and `fork` wrappers
 - GitHub issue sync helpers inside the CLI

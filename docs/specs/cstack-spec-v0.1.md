@@ -131,7 +131,7 @@ This means the external UX can be simple without collapsing the internal system 
 
 | Workflow | Default Codex mode | Agent posture | Intent | Trigger | Inputs | Outputs | When not to use it |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `cstack discover` | `codex exec` | Single-agent first, delegate-optional | Map code, dependencies, constraints, and risks before planning or coding | New repo area, unclear ownership, incident triage, design kickoff | Question, path scope, optional files, optional prior run ids | `context.md`, `facts.json`, `risks.md`, `final.md` | Do not use it when the task is already well-scoped and the needed context is obvious |
+| `cstack discover` | `codex exec` | Research Lead first; bounded research tracks optional | Map code, dependencies, constraints, and risks before planning or coding | New repo area, unclear ownership, incident triage, design kickoff | Question, path scope, optional files, optional prior run ids | `stages/discover/research-plan.json`, `stages/discover/artifacts/discovery-report.md`, `artifacts/findings.md`, optional `stages/discover/delegates/<track>/...`, `final.md` | Do not use it when the task is already well-scoped and the needed context is obvious |
 | `cstack spec` | `codex exec` | Single-agent first, delegate-optional | Convert intent into an implementation-ready spec and execution plan | Feature request, refactor proposal, migration plan, bug-fix plan | Goal, acceptance criteria, constraints, linked `discover` run, optional schema | `spec.md`, `plan.json`, `open-questions.md`, `final.md` | Do not use it for trivial edits that can be implemented faster than they can be specified |
 | `cstack build` | Interactive `codex` | Delegate-optional | Execute an approved task with repo-aware editing and verification | Approved spec, bounded task, debugging or implementation session | Task or spec run id, constraints, target paths, test commands, delegation mode | `session.json`, `change-summary.md`, `verification.json`, `final.md` | Do not use it for pure critique or when a non-interactive batch run is required |
 | `cstack review` | `codex review` or `codex exec` | Single-agent by default | Critique changes, surface risks, and recommend next actions | Before merge, after build, before handoff | Git diff, branch, run id, review policy, optional severity thresholds | `findings.md`, `findings.json`, `verdict.json`, `final.md` | Do not use it as a replacement for implementation or as a general planning step |
@@ -283,7 +283,7 @@ The wrapper should persist this in `delegates/<delegate-id>/request.md` and `del
 | Workflow | Default topology | Notes |
 | --- | --- | --- |
 | `intent` | Intent Router + one Leader | The router chooses stages, specialists, and capability packs before major execution |
-| `discover` | Leader + up to 3 explorers | Best use of parallelism because codebase slices are easy to separate |
+| `discover` | Research Lead by default; optionally up to 3 bounded research tracks | Best use of parallelism because repo discovery, external research, and risk scanning can often be separated cleanly |
 | `spec` | Leader only by default; optionally leader + up to 2 explorers or one specialist reviewer | Use delegates for cross-cutting questions such as API surface, infra constraints, security posture, or audit expectations |
 | `build` | Leader only by default; optionally leader + up to 2 delegates and one bounded specialist reviewer | One or both delegates may be implementers if file ownership is disjoint; specialists stay review-oriented unless explicitly authorized |
 | `review` | Reviewer leader plus up to 3 specialist reviewers | This is the main place where specialist review should become first-class when justified |
@@ -297,6 +297,8 @@ Safe to parallelize:
 - dependency and configuration inventory
 - API contract tracing
 - test surface mapping
+- external documentation or standards research with explicit source capture
+- bounded risk sweeps over security, compliance, auditability, or operational concerns
 - docs or migration note drafting on disjoint files
 - code changes in clearly separate file trees during `build`
 - bounded specialist critiques such as security, auditability, traceability, or release-pipeline checks
@@ -320,6 +322,49 @@ The leader is responsible for:
 - summarizing that disposition in the main run artifact
 
 Delegate output is advisory until the leader accepts it. The system should never imply that parallel work was merged blindly.
+
+### Discover v2 bounded research team
+
+`discover` is the first workflow where richer bounded delegation should become first-class.
+
+The recommended topology is:
+
+- `Research Lead`
+- `repo-explorer`
+- optional `external-researcher`
+- optional `risk-researcher`
+
+Each track stays analyze-only in this workflow.
+
+The `Research Lead` should:
+
+- decide whether delegation is justified for the current discover request
+- select at most three bounded tracks
+- choose which capability packs are requested for the run
+- synthesize one final discovery artifact from accepted track outputs
+- record which track outputs were accepted, partially accepted, or discarded
+
+Track roles:
+
+- `repo-explorer`: inspect local code, config, tests, architecture, ownership clues, and likely change boundaries
+- `external-researcher`: gather external facts such as official docs, standards, APIs, libraries, or release notes with explicit citations
+- `risk-researcher`: inspect security, compliance, auditability, operational, or rollout concerns implied by the request
+
+Discover fan-out should be suppressed when:
+
+- the prompt is small and clearly local
+- the request is already well-scoped enough for one coherent pass
+- web research is implied but the workflow capability policy does not allow it
+- earlier delegate output is low-signal enough that more fan-out would add noise
+
+Discover activation heuristics should stay simple in the first slice:
+
+- always prefer single-agent for short, obviously local repo archaeology prompts
+- add `repo-explorer` first when delegation is enabled and the prompt spans multiple subsystems
+- add `external-researcher` only when the request depends on unstable or external facts and web research is allowed
+- add `risk-researcher` only when the request implies a concrete risk domain such as auth, compliance, audit, rollout, runtime, or secret handling
+
+The first implementation should avoid a general-purpose swarm runtime. It should be a bounded discover-team model only.
 
 ### Guardrails for fan-out, cost, and noise
 
@@ -459,6 +504,16 @@ Required files:
 
 Workflow-specific artifacts live under `artifacts/`.
 
+Recommended additional files for discover-team runs:
+
+| File | Meaning |
+| --- | --- |
+| `stages/discover/research-plan.json` | Discover-only track selection, capability decisions, activation rationale, and limits |
+| `stages/discover/delegates/<track>/request.md` | Bounded request issued to that discover track |
+| `stages/discover/delegates/<track>/result.json` | Structured result plus leader disposition for that track |
+| `stages/discover/delegates/<track>/sources.json` | Explicit provenance for external or local sources cited by that track |
+| `stages/discover/artifacts/discovery-report.md` | Research-lead synthesis across accepted track outputs |
+
 Recommended additional files for inferred and interactive runs:
 
 | File | Meaning |
@@ -479,6 +534,7 @@ Auditability matters more than completeness in v1.
 - Full interactive transcript capture is best-effort and may be partial if Codex CLI does not expose a stable event stream.
 - Delegate records should be explicit about whether they are observed directly or leader-reported.
 - The post-run interactive inspector should answer from saved artifacts first and should distinguish observed facts from inferred guidance.
+- Discover-team runs should distinguish local findings from external findings and should expose source provenance clearly in inspection views.
 
 ### Active-run TTY dashboard
 
@@ -819,6 +875,12 @@ V1 should treat these as workflow-scoped capability packs, not free-floating pro
 - The prompt should name capabilities explicitly and briefly.
 - The artifact record should state which packs were requested and which were actually available.
 
+For discover-team runs specifically:
+
+- web research should be an explicit capability, not an implicit default
+- if web research is disallowed or unavailable, the run should record that downgrade in `research-plan.json`
+- external findings should cite sources and retrieval timing when useful
+
 This keeps the operator model coherent: one workflow, one leader, a small set of tools, a saved artifact trail.
 
 ## 13. **MVP Milestones**
@@ -850,6 +912,7 @@ This keeps the operator model coherent: one workflow, one leader, a small set of
 
 - Add workflow-level delegation policy
 - Persist delegate ledgers
+- Add discover-only bounded research tracks and leader synthesis
 - Support repo-configured capability packs for skills, MCP servers, shell, and web
 
 ### Milestone 5: inferred intent router and specialist library
