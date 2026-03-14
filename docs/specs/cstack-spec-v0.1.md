@@ -388,12 +388,12 @@ Command surface:
 - `cstack build <prompt>`
 - `cstack build --from-run <run-id>`
 - `cstack build --from-run <run-id> --exec`
-- `cstack build ... --verify "<command>"` repeatable
 
 Behavior:
 
 - interactive `codex` is the default when a TTY is available
 - `--exec` is the explicit deterministic fallback for batch-friendly or non-TTY use
+- when interactive mode is requested without a usable TTY, the wrapper may fall back to `exec`, but it must record both requested and observed mode in `session.json`
 - linked runs may come from `spec`, `intent`, or earlier workflow artifacts, but the wrapper should prefer the most implementation-ready artifact available
 - after the main build execution, the wrapper should record verification results and run a bounded synthesis pass so the artifact trail stays inspectable
 

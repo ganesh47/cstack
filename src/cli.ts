@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import path from "node:path";
+import { runBuild } from "./commands/build.js";
 import { runDiscover } from "./commands/discover.js";
 import { runIntentCommand } from "./commands/intent.js";
 import { runSpec } from "./commands/spec.js";
@@ -14,6 +14,7 @@ function usage(): string {
     "  cstack run <intent> [--dry-run]",
     "  cstack discover <prompt>",
     "  cstack spec <prompt>",
+    "  cstack build <prompt> [--from-run <run-id>] [--exec]",
     "  cstack update [--check] [--dry-run] [--yes] [--version <x>] [--channel stable]",
     "  cstack runs [--active] [--workflow <name>] [--status <status>] [--recent <n>] [--json]",
     "  cstack inspect [run-id] [--interactive]"
@@ -33,6 +34,9 @@ async function main(): Promise<void> {
       return;
     case "spec":
       await runSpec(cwd, rest.join(" "));
+      return;
+    case "build":
+      await runBuild(cwd, rest);
       return;
     case "runs":
       await runRuns(cwd, rest);

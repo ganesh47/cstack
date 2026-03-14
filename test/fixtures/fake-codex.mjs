@@ -11,20 +11,17 @@ if (args.includes("--version")) {
 
 const finalIndex = args.indexOf("--output-last-message");
 const finalPath = finalIndex >= 0 ? args[finalIndex + 1] : undefined;
+const promptFromArgs = finalIndex >= 0 ? args.at(-1) : args.filter((arg) => !arg.startsWith("-")).at(-1);
 
 let prompt = "";
 for await (const chunk of process.stdin) {
   prompt += chunk.toString("utf8");
 }
+prompt = prompt.trim() || (promptFromArgs ?? "");
 
 await new Promise((resolve) => process.stderr.write("session id: fake-session-123\n", resolve));
 await new Promise((resolve) => process.stdout.write("scanning repository context\n", resolve));
 await new Promise((resolve) => setTimeout(resolve, 25));
-
-if (!finalPath) {
-  process.stderr.write("missing final path\n");
-  process.exit(2);
-}
 
 let body;
 if (prompt.includes("track in a bounded `cstack discover` research run")) {
@@ -93,6 +90,16 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
     null,
     2
   );
+} else if (prompt.includes("## Build execution contract")) {
+  body = [
+    "# Build Summary",
+    "",
+    "Implemented the requested change in the fake Codex fixture.",
+    "",
+    prompt.includes("Linked run:")
+      ? "Linked context included."
+      : "Linked context missing."
+  ].join("\n");
 } else {
   body = [
     "# Fake Spec",
@@ -105,7 +112,16 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
   ].join("\n");
 }
 
-await writeFile(finalPath, `${body}\n`, "utf8");
+const resolvedFinalPath =
+  finalPath ??
+  prompt.match(/write a concise markdown summary to:\s*(.+)$/im)?.[1]?.trim();
+
+if (!resolvedFinalPath) {
+  process.stderr.write("missing final path\n");
+  process.exit(2);
+}
+
+await writeFile(resolvedFinalPath, `${body}\n`, "utf8");
 
 await new Promise((resolve) => process.stdout.write("writing final output\n", resolve));
 process.stdout.write("completed\n");

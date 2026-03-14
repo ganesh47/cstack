@@ -50,6 +50,10 @@ maxAgents = 2
 
 [workflows.discover.research]
 allowWeb = true
+
+[workflows.build]
+mode = "exec"
+verificationCommands = ["npm test"]
 `,
       "utf8"
     );
@@ -61,6 +65,8 @@ allowWeb = true
     expect(config.workflows.spec.delegation?.maxAgents).toBe(2);
     expect(config.workflows.discover.research?.enabled).toBe(true);
     expect(config.workflows.discover.research?.allowWeb).toBe(true);
+    expect(config.workflows.build.mode).toBe("exec");
+    expect(config.workflows.build.verificationCommands).toEqual(["npm test"]);
     expect(sources).toHaveLength(2);
   });
 });

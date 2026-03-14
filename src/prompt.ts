@@ -6,7 +6,8 @@ import type {
   DiscoverResearchPlan,
   DiscoverTrackName,
   RoutingPlan,
-  SpecialistName
+  SpecialistName,
+  WorkflowMode
 } from "./types.js";
 
 export function excerpt(input: string, lines = 24): string {
@@ -16,7 +17,7 @@ export function excerpt(input: string, lines = 24): string {
 async function buildWorkflowPrompt(options: {
   cwd: string;
   input: string;
-  workflow: "spec" | "discover";
+  workflow: "spec" | "discover" | "build";
   config: CstackConfig;
 }): Promise<{ prompt: string; context: string }> {
   const { cwd, input, workflow, config } = options;
@@ -81,6 +82,74 @@ export async function buildSpecPrompt(cwd: string, input: string, config: Cstack
 
 export async function buildDiscoverPrompt(cwd: string, input: string, config: CstackConfig): Promise<{ prompt: string; context: string }> {
   return buildWorkflowPrompt({ cwd, input, workflow: "discover", config });
+}
+
+export async function buildBuildPrompt(options: {
+  cwd: string;
+  input: string;
+  config: CstackConfig;
+  mode: WorkflowMode;
+  finalArtifactPath: string;
+  linkedArtifactPath?: string;
+  linkedArtifactBody?: string;
+  linkedRunId?: string;
+  linkedWorkflow?: string;
+  verificationCommands: string[];
+  dirtyWorktree: boolean;
+}): Promise<{ prompt: string; context: string }> {
+  const {
+    cwd,
+    input,
+    config,
+    mode,
+    finalArtifactPath,
+    linkedArtifactPath,
+    linkedArtifactBody,
+    linkedRunId,
+    linkedWorkflow,
+    verificationCommands,
+    dirtyWorktree
+  } = options;
+  const { prompt, context } = await buildWorkflowPrompt({ cwd, input, workflow: "build", config });
+
+  return {
+    prompt: [
+      prompt,
+      "",
+      "## Build execution contract",
+      "- implement the requested change in the repository when justified",
+      "- stay within the scope of the task and linked upstream artifact",
+      "- be explicit about files changed, tests run, and remaining risks",
+      "- keep the final response concise and implementation-oriented",
+      ...(mode === "interactive"
+        ? [`- before exiting, write a concise markdown summary to: ${finalArtifactPath}`]
+        : ["- the wrapper will capture your final response into the run artifacts"]),
+      "",
+      "## Linked upstream run",
+      linkedRunId ? `- run: ${linkedRunId}` : "- none",
+      linkedWorkflow ? `- workflow: ${linkedWorkflow}` : "- workflow: none",
+      linkedArtifactPath ? `- artifact: ${linkedArtifactPath}` : "- artifact: none",
+      "",
+      "## Linked artifact excerpt",
+      linkedArtifactBody ? excerpt(linkedArtifactBody, 40) : "(none)",
+      "",
+      "## Wrapper verification commands",
+      ...(verificationCommands.length > 0 ? verificationCommands.map((command) => `- ${command}`) : ["- none requested"]),
+      "",
+      "## Working tree state",
+      dirtyWorktree ? "- dirty worktree detected; avoid touching unrelated files" : "- worktree appears clean"
+    ].join("\n"),
+    context: [
+      context,
+      `Requested mode: ${mode}`,
+      `Final artifact path: ${finalArtifactPath}`,
+      linkedRunId ? `Linked run: ${linkedRunId}` : "Linked run: none",
+      linkedWorkflow ? `Linked workflow: ${linkedWorkflow}` : "Linked workflow: none",
+      linkedArtifactPath ? `Linked artifact: ${linkedArtifactPath}` : "Linked artifact: none",
+      `Verification commands: ${verificationCommands.join(" | ") || "none"}`,
+      `Dirty worktree: ${dirtyWorktree ? "yes" : "no"}`
+    ].join("\n")
+  };
 }
 
 function discoverTrackTitle(name: DiscoverTrackName): string {

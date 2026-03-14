@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { createWriteStream } from "node:fs";
+import { createWriteStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { buildEvent, ProgressReporter } from "./progress.js";
 import type { CstackConfig } from "./types.js";
@@ -24,6 +24,18 @@ export interface CodexRunResult {
   command: string[];
   sessionId?: string;
   lastActivity?: string;
+}
+
+export interface CodexInteractiveRunOptions {
+  cwd: string;
+  workflow: WorkflowName;
+  runId: string;
+  prompt: string;
+  transcriptPath: string;
+  eventsPath: string;
+  stdoutPath: string;
+  stderrPath: string;
+  config: CstackConfig;
 }
 
 function summarizeCommandLine(line: string): string | null {
@@ -92,6 +104,18 @@ function resolveCommand(command: string, args: string[]): { file: string; args: 
   };
 }
 
+function stripCapturedControl(input: string): string {
+  return input
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "")
+    .replace(/\r/g, "\n")
+    .replace(/[\u0000-\u0008\u000b-\u001a\u001c-\u001f\u007f]/g, "")
+    .replace(/\n{3,}/g, "\n\n");
+}
+
+async function appendEvent(eventsPath: string, event: RunEvent): Promise<void> {
+  await fs.appendFile(path.resolve(eventsPath), `${JSON.stringify(event)}\n`, "utf8");
+}
+
 export function buildCodexExecArgs(options: CodexRunOptions): string[] {
   const args = [
     "exec",
@@ -115,6 +139,29 @@ export function buildCodexExecArgs(options: CodexRunOptions): string[] {
     args.push(...options.config.codex.extraArgs);
   }
   args.push("-");
+  return args;
+}
+
+export function buildCodexInteractiveArgs(options: {
+  cwd: string;
+  prompt: string;
+  config: CstackConfig;
+}): string[] {
+  const args = ["-C", options.cwd, "--skip-git-repo-check"];
+
+  if (options.config.codex.model) {
+    args.push("--model", options.config.codex.model);
+  }
+  if (options.config.codex.profile) {
+    args.push("--profile", options.config.codex.profile);
+  }
+  if (options.config.codex.sandbox) {
+    args.push("--sandbox", options.config.codex.sandbox);
+  }
+  if (options.config.codex.extraArgs?.length) {
+    args.push(...options.config.codex.extraArgs);
+  }
+  args.push(options.prompt);
   return args;
 }
 
@@ -254,6 +301,80 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
       reporter?.close();
       await closeStreams();
       resolve(result);
+    });
+  });
+}
+
+export async function runCodexInteractive(options: CodexInteractiveRunOptions): Promise<CodexRunResult> {
+  const args = buildCodexInteractiveArgs(options);
+  const bin = options.config.codex.command || process.env.CSTACK_CODEX_BIN || "codex";
+  const invocation = resolveCommand(bin, args);
+  const scriptArgs = ["-q", "-F", path.resolve(options.transcriptPath), invocation.file, ...invocation.args];
+  const startedAt = Date.now();
+  const reporter = new ProgressReporter(options.workflow, options.runId);
+
+  await fs.mkdir(path.dirname(path.resolve(options.transcriptPath)), { recursive: true });
+  await fs.writeFile(path.resolve(options.eventsPath), "", "utf8");
+  await fs.writeFile(path.resolve(options.stdoutPath), "", "utf8");
+  await fs.writeFile(path.resolve(options.stderrPath), "", "utf8");
+
+  const emit = async (type: RunEvent["type"], message: string) => {
+    const event = buildEvent(type, Date.now() - startedAt, message);
+    await appendEvent(options.eventsPath, event);
+    reporter.emit(event);
+  };
+
+  return new Promise<CodexRunResult>((resolve, reject) => {
+    const child = spawn("script", scriptArgs, {
+      cwd: options.cwd,
+      stdio: "inherit"
+    });
+
+    void emit("starting", `Running interactive codex build in ${options.cwd}`);
+
+    child.on("error", async (error) => {
+      reporter.close();
+      await fs.writeFile(path.resolve(options.stderrPath), `${String(error)}\n`, "utf8");
+      reject(error);
+    });
+
+    child.on("close", async (code, signal) => {
+      const exitCode = code ?? 1;
+      const transcriptRaw = await fs.readFile(path.resolve(options.transcriptPath), "utf8").catch(() => "");
+      const transcript = stripCapturedControl(transcriptRaw).trim();
+      const sessionId = transcript.match(/session id:\s*([^\s]+)/i)?.[1];
+      const transcriptLines = transcript
+        .split(/\n+/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+      const lastActivity =
+        [...transcriptLines].reverse().map((line) => summarizeActivityLine(line)).find(Boolean) ??
+        (exitCode === 0 ? "Interactive build completed" : "Interactive build failed");
+
+      await fs.writeFile(
+        path.resolve(options.stdoutPath),
+        transcript ? `${transcript}\n` : "No interactive transcript was captured.\n",
+        "utf8"
+      );
+      await fs.writeFile(
+        path.resolve(options.stderrPath),
+        exitCode === 0 ? "" : `Interactive codex exited with code ${exitCode}${signal ? ` (${signal})` : ""}\n`,
+        "utf8"
+      );
+
+      if (sessionId) {
+        await emit("session", sessionId);
+      }
+      await emit(exitCode === 0 ? "completed" : "failed", `Exit code ${exitCode}${signal ? ` (${signal})` : ""}`);
+      reporter.close();
+
+      resolve({
+        code: exitCode,
+        signal,
+        command: ["script", ...scriptArgs],
+        ...(sessionId ? { sessionId } : {}),
+        lastActivity
+      });
     });
   });
 }

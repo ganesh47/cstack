@@ -3,6 +3,8 @@ import { promises as fs } from "node:fs";
 import readline from "node:readline/promises";
 import type {
   ArtifactEntry,
+  BuildSessionRecord,
+  BuildVerificationRecord,
   DiscoverDelegateResult,
   DiscoverResearchPlan,
   RoutingPlan,
@@ -66,6 +68,10 @@ function renderSuggestedActions(inspection: RunInspection): string[] {
   const lines: string[] = [];
   const deferredStages = inspection.stageLineage?.stages.filter((stage) => stage.status === "deferred" || stage.status === "skipped") ?? [];
 
+  if (inspection.run.workflow === "build") {
+    lines.push("- review change summary with `show artifact artifacts/change-summary.md`");
+    lines.push("- inspect verification with `show verification`");
+  }
   for (const stage of deferredStages.slice(0, 2)) {
     lines.push(`- inspect why ${stage.name} is ${stage.status}`);
   }
@@ -137,6 +143,16 @@ async function loadDiscoverDelegates(runDir: string): Promise<DiscoverDelegateRe
   }
 }
 
+function renderVerificationSummary(record: BuildVerificationRecord | null): string {
+  if (!record) {
+    return "not recorded";
+  }
+  if (record.status === "not-run" && record.notes) {
+    return `${record.status} (${record.notes})`;
+  }
+  return record.status;
+}
+
 export async function loadRunInspection(cwd: string, runId?: string): Promise<RunInspection> {
   const targetId = runId ?? (await listRuns(cwd))[0]?.id;
   if (!targetId) {
@@ -145,12 +161,14 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
 
   const run = await readRun(cwd, targetId);
   const runDir = runDirForId(cwd, targetId);
-  const [recentEvents, routingPlan, stageLineage, discoverResearchPlan, discoverDelegates, artifacts] = await Promise.all([
+  const [recentEvents, routingPlan, stageLineage, discoverResearchPlan, discoverDelegates, sessionRecord, verificationRecord, artifacts] = await Promise.all([
     readRecentEvents(run.eventsPath),
     readJsonFile<RoutingPlan>(path.join(runDir, "routing-plan.json")),
     readJsonFile<StageLineage>(path.join(runDir, "stage-lineage.json")),
     readJsonFile<DiscoverResearchPlan>(path.join(runDir, "stages", "discover", "research-plan.json")),
     loadDiscoverDelegates(runDir),
+    readJsonFile<BuildSessionRecord>(path.join(runDir, "session.json")),
+    readJsonFile<BuildVerificationRecord>(path.join(runDir, "artifacts", "verification.json")),
     walkArtifacts(runDir)
   ]);
 
@@ -166,6 +184,8 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     stageLineage,
     discoverResearchPlan,
     discoverDelegates,
+    sessionRecord,
+    verificationRecord,
     recentEvents,
     finalBody,
     artifacts
@@ -255,6 +275,9 @@ export function renderInspectionSummary(cwd: string, inspection: RunInspection):
       run.eventsPath ? `- events: ${path.relative(cwd, run.eventsPath)}` : undefined,
       run.sessionId ? `- session: ${run.sessionId}` : undefined,
       run.lastActivity ? `- last activity: ${run.lastActivity}` : undefined,
+      inspection.sessionRecord ? `- mode: requested ${inspection.sessionRecord.requestedMode}, observed ${inspection.sessionRecord.mode}` : undefined,
+      inspection.sessionRecord?.linkedRunId ? `- linked run: ${inspection.sessionRecord.linkedRunId}` : undefined,
+      inspection.verificationRecord ? `- verification: ${renderVerificationSummary(inspection.verificationRecord)}` : undefined,
       "",
       "Plan",
       `- stages: ${renderStageStrip(inspection)}`,
@@ -283,6 +306,22 @@ export function renderInspectionSummary(cwd: string, inspection: RunInspection):
 function renderArtifacts(inspection: RunInspection): string {
   const artifactLines = inspection.artifacts.map((artifact) => `- ${artifact.path} (${artifact.kind})`);
   return ["Artifacts:", ...(artifactLines.length > 0 ? artifactLines : ["- none found"])].join("\n");
+}
+
+function renderSession(inspection: RunInspection): string {
+  if (!inspection.sessionRecord) {
+    return "No build session record was recorded for this run.";
+  }
+
+  return `${JSON.stringify(inspection.sessionRecord, null, 2)}\n`;
+}
+
+function renderVerification(inspection: RunInspection): string {
+  if (!inspection.verificationRecord) {
+    return "No verification record was recorded for this run.";
+  }
+
+  return `${JSON.stringify(inspection.verificationRecord, null, 2)}\n`;
 }
 
 function renderStages(inspection: RunInspection): string {
@@ -404,6 +443,8 @@ function helpText(): string {
     "- show final",
     "- show routing",
     "- show research",
+    "- show session",
+    "- show verification",
     "- show delegate <track>",
     "- show sources <track>",
     "- show stage <name>",
@@ -451,6 +492,12 @@ export async function handleInspectorCommand(cwd: string, inspection: RunInspect
       "",
       renderDiscoverDelegates(inspection)
     ].join("\n");
+  }
+  if (trimmed === "show session") {
+    return renderSession(inspection);
+  }
+  if (trimmed === "show verification") {
+    return renderVerification(inspection);
   }
   if (trimmed === "what remains") {
     return renderWhatRemains(inspection);

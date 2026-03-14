@@ -22,6 +22,7 @@ Behavior:
 - `cstack build --from-run <run-id>` links a prior `spec` or `intent` run into the build context
 - `cstack build --exec` uses `codex exec` as a conservative non-interactive fallback
 - default mode is `interactive`
+- if interactive mode is requested without a usable TTY, the wrapper falls back to `exec` and records both requested and observed mode
 
 Rejected in this slice:
 
@@ -66,6 +67,7 @@ Each build run should write:
 - `stdout.log`
 - `stderr.log`
 - `session.json`
+- `artifacts/build-transcript.log` when the interactive path is used
 - `artifacts/change-summary.md`
 - `artifacts/verification.json`
 
@@ -80,17 +82,25 @@ Recommended shape:
 
 ```json
 {
-  "runId": "2026-03-14T12-00-00-build-example",
   "workflow": "build",
-  "mode": "interactive",
+  "requestedMode": "interactive",
+  "mode": "exec",
   "sessionId": "uuid-or-session-token",
-  "parentRunId": "optional-upstream-run-id",
-  "sourceRunId": "optional-linked-run-id",
-  "sourceWorkflow": "spec",
-  "requestedAt": "2026-03-14T12:00:00.000Z",
-  "observedAt": "2026-03-14T12:00:05.000Z",
+  "linkedRunId": "optional-linked-run-id",
+  "linkedRunWorkflow": "spec",
+  "linkedArtifactPath": "/abs/path/to/artifacts/spec.md",
+  "startedAt": "2026-03-14T12:00:00.000Z",
+  "endedAt": "2026-03-14T12:00:05.000Z",
+  "transcriptPath": "/abs/path/to/artifacts/build-transcript.log",
+  "codexCommand": ["codex", "exec", "..."],
   "resumeCommand": "codex resume <session-id>",
-  "forkCommand": "codex fork <session-id>"
+  "forkCommand": "codex fork <session-id>",
+  "observability": {
+    "sessionIdObserved": true,
+    "transcriptObserved": false,
+    "finalArtifactObserved": true,
+    "fallbackReason": "Interactive build requested but no TTY was available, so cstack fell back to exec mode."
+  }
 }
 ```
 
@@ -177,7 +187,8 @@ Why:
 Useful commands should include:
 
 - `show artifact artifacts/change-summary.md`
-- `show artifact artifacts/verification.json`
+- `show verification`
+- `show session`
 - `resume`
 - `fork`
 
@@ -192,7 +203,7 @@ Interactive runner:
 
 - invokes bare `codex`
 - passes the initial build prompt
-- captures stdout/stderr logs
+- captures a best-effort transcript through `script`
 - extracts `session id:` when observed
 - records `session.json`
 

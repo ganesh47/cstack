@@ -26,7 +26,18 @@ const DEFAULT_CONFIG: CstackConfig = {
         enabled: true,
         allowWeb: false
       }
+    },
+    build: {
+      mode: "interactive",
+      verificationCommands: [],
+      delegation: {
+        enabled: false,
+        maxAgents: 0
+      }
     }
+  },
+  verification: {
+    defaultCommands: []
   }
 };
 

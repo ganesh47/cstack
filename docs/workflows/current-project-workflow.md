@@ -129,9 +129,10 @@ Because `review/ship` are not real commands yet, the practical workflow target i
 2. use `spec` or the `intent`-generated spec stage artifact to shape the change
 3. launch `cstack build --from-run <spec-or-intent-run-id>` or `cstack build "<task>"`
 4. record `session.json`, `artifacts/change-summary.md`, and `artifacts/verification.json`
-5. run `npm run typecheck`
-6. run `npm test`
-7. use `cstack runs` and `cstack inspect` to review saved workflow artifacts
+5. if the shell is non-interactive, expect build to fall back to `exec` and record requested vs observed mode in `session.json`
+6. run `npm run typecheck`
+7. run `npm test`
+8. use `cstack runs` and `cstack inspect` to review saved workflow artifacts
 
 ### 5. Keep Artifacts First-Class
 

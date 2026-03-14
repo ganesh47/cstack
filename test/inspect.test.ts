@@ -250,6 +250,97 @@ async function seedIntentRun(repoDir: string): Promise<string> {
   return runId;
 }
 
+async function seedBuildRun(repoDir: string): Promise<string> {
+  const runId = "2026-03-14T11-00-00-build-billing-cleanup";
+  const runDir = path.join(repoDir, ".cstack", "runs", runId);
+  await fs.mkdir(path.join(runDir, "artifacts"), { recursive: true });
+
+  const run: RunRecord = {
+    id: runId,
+    workflow: "build",
+    createdAt: "2026-03-14T11:00:00.000Z",
+    updatedAt: "2026-03-14T11:00:30.000Z",
+    status: "completed",
+    cwd: repoDir,
+    gitBranch: "main",
+    codexVersion: "fake",
+    codexCommand: ["codex", "exec"],
+    promptPath: path.join(runDir, "prompt.md"),
+    finalPath: path.join(runDir, "final.md"),
+    contextPath: path.join(runDir, "context.md"),
+    eventsPath: path.join(runDir, "events.jsonl"),
+    stdoutPath: path.join(runDir, "stdout.log"),
+    stderrPath: path.join(runDir, "stderr.log"),
+    configSources: [],
+    sessionId: "fake-session-789",
+    lastActivity: "Build run completed",
+    summary: "Implement billing cleanup",
+    inputs: {
+      userPrompt: "Implement billing cleanup",
+      linkedRunId: "2026-03-14T10-00-00-spec-billing-retry",
+      requestedMode: "interactive",
+      observedMode: "exec",
+      verificationCommands: ["npm test"]
+    }
+  };
+
+  await fs.writeFile(path.join(runDir, "run.json"), `${JSON.stringify(run, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(runDir, "final.md"), "# Build Summary\n\nDone.\n", "utf8");
+  await fs.writeFile(path.join(runDir, "artifacts", "change-summary.md"), "# Build Summary\n\nDone.\n", "utf8");
+  await fs.writeFile(
+    path.join(runDir, "session.json"),
+    `${JSON.stringify(
+      {
+        workflow: "build",
+        requestedMode: "interactive",
+        mode: "exec",
+        startedAt: "2026-03-14T11:00:00.000Z",
+        endedAt: "2026-03-14T11:00:30.000Z",
+        sessionId: "fake-session-789",
+        linkedRunId: "2026-03-14T10-00-00-spec-billing-retry",
+        linkedRunWorkflow: "spec",
+        linkedArtifactPath: path.join(repoDir, ".cstack", "runs", "2026-03-14T10-00-00-spec-billing-retry", "artifacts", "spec.md"),
+        codexCommand: ["codex", "exec"],
+        resumeCommand: "codex resume fake-session-789",
+        forkCommand: "codex fork fake-session-789",
+        observability: {
+          sessionIdObserved: true,
+          transcriptObserved: false,
+          finalArtifactObserved: true,
+          fallbackReason: "Interactive build requested but no TTY was available, so cstack fell back to exec mode."
+        }
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(runDir, "artifacts", "verification.json"),
+    `${JSON.stringify(
+      {
+        status: "passed",
+        requestedCommands: ["npm test"],
+        results: [
+          {
+            command: "npm test",
+            exitCode: 0,
+            status: "passed",
+            durationMs: 1250,
+            stdoutPath: path.join(runDir, "artifacts", "verification", "1.stdout.log"),
+            stderrPath: path.join(runDir, "artifacts", "verification", "1.stderr.log")
+          }
+        ]
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  return runId;
+}
+
 describe("inspect", () => {
   let repoDir: string;
   let runId: string;
@@ -307,5 +398,16 @@ describe("inspect", () => {
     await expect(handleInspectorCommand(repoDir, inspection, "show delegate repo-explorer")).resolves.toContain("\"track\": \"repo-explorer\"");
     await expect(handleInspectorCommand(repoDir, inspection, "show sources repo-explorer")).resolves.toContain("\"src/cli.ts\"");
     await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("Research");
+  });
+
+  it("shows build session and verification details when present", async () => {
+    const buildRunId = await seedBuildRun(repoDir);
+    const inspection = await loadRunInspection(repoDir, buildRunId);
+
+    expect(inspection.sessionRecord?.mode).toBe("exec");
+    expect(inspection.verificationRecord?.status).toBe("passed");
+    await expect(handleInspectorCommand(repoDir, inspection, "show session")).resolves.toContain("\"requestedMode\": \"interactive\"");
+    await expect(handleInspectorCommand(repoDir, inspection, "show verification")).resolves.toContain("\"status\": \"passed\"");
+    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("verification: passed");
   });
 });

@@ -1,5 +1,6 @@
-export type WorkflowName = "spec" | "discover" | "update" | "intent";
+export type WorkflowName = "spec" | "discover" | "build" | "update" | "intent";
 export type RunStatus = "running" | "completed" | "failed";
+export type WorkflowMode = "exec" | "interactive";
 
 export type StageName = "discover" | "spec" | "build" | "review" | "ship";
 
@@ -135,6 +136,8 @@ export interface RunInspection {
   stageLineage: StageLineage | null;
   discoverResearchPlan: DiscoverResearchPlan | null;
   discoverDelegates: DiscoverDelegateResult[];
+  sessionRecord: BuildSessionRecord | null;
+  verificationRecord: BuildVerificationRecord | null;
   recentEvents: RunEvent[];
   finalBody: string;
   artifacts: ArtifactEntry[];
@@ -165,6 +168,8 @@ export interface CodexConfig {
 }
 
 export interface WorkflowConfig {
+  mode?: WorkflowMode;
+  verificationCommands?: string[];
   delegation?: {
     enabled?: boolean;
     maxAgents?: number;
@@ -175,12 +180,57 @@ export interface WorkflowConfig {
   };
 }
 
+export interface VerificationConfig {
+  defaultCommands?: string[];
+}
+
 export interface CstackConfig {
   codex: CodexConfig;
   workflows: {
     spec: WorkflowConfig;
     discover: WorkflowConfig;
+    build: WorkflowConfig;
   };
+  verification?: VerificationConfig;
+}
+
+export interface BuildSessionRecord {
+  workflow: "build";
+  requestedMode: WorkflowMode;
+  mode: WorkflowMode;
+  startedAt: string;
+  endedAt: string;
+  sessionId?: string;
+  linkedRunId?: string;
+  linkedRunWorkflow?: WorkflowName;
+  linkedArtifactPath?: string;
+  transcriptPath?: string;
+  codexCommand: string[];
+  resumeCommand?: string;
+  forkCommand?: string;
+  observability: {
+    sessionIdObserved: boolean;
+    transcriptObserved: boolean;
+    finalArtifactObserved: boolean;
+    fallbackReason?: string;
+  };
+  notes?: string[];
+}
+
+export interface BuildVerificationCommandRecord {
+  command: string;
+  exitCode: number;
+  status: "passed" | "failed";
+  durationMs: number;
+  stdoutPath: string;
+  stderrPath: string;
+}
+
+export interface BuildVerificationRecord {
+  status: "not-run" | "passed" | "failed";
+  requestedCommands: string[];
+  results: BuildVerificationCommandRecord[];
+  notes?: string;
 }
 
 export interface RunRecord {
@@ -213,6 +263,10 @@ export interface RunRecord {
     selectedSpecialists?: string[];
     delegatedTracks?: string[];
     webResearchAllowed?: boolean;
+    linkedRunId?: string;
+    requestedMode?: WorkflowMode;
+    observedMode?: WorkflowMode;
+    verificationCommands?: string[];
     dryRun?: boolean;
   };
 }

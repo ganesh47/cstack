@@ -99,6 +99,7 @@ cstack spec "Design a run artifact model for cstack"
 # Launch a build run directly or from a saved planning run
 cstack build "Implement the queued billing retry cleanup"
 cstack build --from-run <run-id>
+cstack build --from-run <run-id> --exec
 
 # Check for the latest stable GitHub release or apply it
 cstack update --check
@@ -198,6 +199,8 @@ Useful inspector commands:
 - `show final`
 - `show routing`
 - `show research`
+- `show session`
+- `show verification`
 - `show delegate <track>`
 - `show sources <track>`
 - `show stage <name>`
@@ -381,7 +384,7 @@ allowWeb = false
 Notes:
 
 - `command` can point at the installed `codex` binary or a script path for testing.
-- `sandbox`, `profile`, `model`, and `extraArgs` are passed through to `codex exec`.
+- `sandbox`, `profile`, `model`, and `extraArgs` are passed through to Codex launches.
 - `workflows.build.mode` selects `interactive` or `exec`; interactive is the default for build runs.
 - `workflows.build.verificationCommands` provides default verification commands recorded into build artifacts.
 - discover delegation settings are now used to bound discover-time research fan-out.
@@ -406,6 +409,7 @@ Current artifact set:
 - `artifacts-index.json` or equivalent artifact inventory derived by the inspector
 - `artifacts/spec.md` for `spec`
 - `artifacts/findings.md` for `discover`
+- `artifacts/build-transcript.log` for best-effort interactive build capture
 - `artifacts/change-summary.md` for `build`
 - `artifacts/verification.json` for `build`
 - `stages/discover/artifacts/discovery-report.md` for discover-team synthesis
@@ -428,8 +432,10 @@ Discover-team notes:
 Build notes:
 
 - `build` is interactive by default and records the observed Codex session id in `session.json`
+- if `build` is requested in a non-TTY shell, `cstack` falls back to `exec` and records both requested and observed mode in `session.json`
 - `build --from-run <run-id>` links a prior `spec` or `intent` run into the build context without mutating the source run
 - verification commands are recorded even when they fail so inspection can explain what still remains
+- best-effort interactive transcripts are stored at `artifacts/build-transcript.log` when the interactive path is used
 
 ## Development
 

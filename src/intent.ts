@@ -526,7 +526,10 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
 
       if (!EXECUTABLE_STAGES.includes(stageName)) {
         lineageStage.status = "deferred";
-        lineageStage.notes = "Planned by the router, but not executed in this first intent-runner slice.";
+        lineageStage.notes =
+          stageName === "build"
+            ? `Planned by the router, but not auto-executed in this slice. Use \`cstack build --from-run ${runId}\` to start the implementation run.`
+            : "Planned by the router, but not executed in this first intent-runner slice.";
         events.markStage(stageName, "deferred");
         await writeJson(stageLineagePath, stageLineage);
         continue;
