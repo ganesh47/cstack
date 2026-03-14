@@ -7,7 +7,7 @@ This document is the working context for future development on `cstack`.
 It answers:
 
 - what the spec says the product should become
-- what is actually implemented in `v0.7.0`
+- what is actually implemented in `v0.8.0`
 - how we should work on the project from here without confusing spec intent with shipped behavior
 - what changed recently in git
 
@@ -31,6 +31,7 @@ Implemented commands:
 - `cstack run <intent> [--dry-run]`
 - `cstack discover <prompt>`
 - `cstack spec <prompt>`
+- `cstack build <prompt>` and `cstack build --from-run <run-id>` are the active next slice to ship
 - `cstack runs`
 - `cstack inspect [run-id] [--interactive]`
 - `cstack update`
@@ -120,16 +121,17 @@ Current expectation for intent runs:
 - they should preserve deferred lineage for later stages
 - they may attach specialist review artifacts when the heuristic selects them
 
-### 4. Implement Manually After Spec Artifacts
+### 4. Use Build After Spec Artifacts
 
-Because `build/review/ship` are not real commands yet, the practical workflow is:
+Because `review/ship` are not real commands yet, the practical workflow target is:
 
 1. use `discover` or `intent` to gather context
 2. use `spec` or the `intent`-generated spec stage artifact to shape the change
-3. edit the code directly in the repo
-4. run `npm run typecheck`
-5. run `npm test`
-6. use `cstack runs` and `cstack inspect` to review saved workflow artifacts
+3. launch `cstack build --from-run <spec-or-intent-run-id>` or `cstack build "<task>"`
+4. record `session.json`, `artifacts/change-summary.md`, and `artifacts/verification.json`
+5. run `npm run typecheck`
+6. run `npm test`
+7. use `cstack runs` and `cstack inspect` to review saved workflow artifacts
 
 ### 5. Keep Artifacts First-Class
 
@@ -157,15 +159,14 @@ When extending the workflow model:
 
 ## Current Slice
 
-The active slice is `discover v2`:
+The most recently completed slice is `discover v2`.
 
-- add a `Research Lead` for discover
-- add bounded `repo-explorer`, `external-researcher`, and `risk-researcher` tracks
-- keep web research explicit and capability-gated
-- persist `stages/discover/research-plan.json` plus bounded track artifacts under `stages/discover/delegates/`
-- preserve artifact-grounded inspection for all delegated outputs
+The active next slice is `build v1`:
 
-This is a targeted delegation slice inside `discover`, not a general-purpose multi-agent runtime.
+- define the build workflow contract in `docs/specs/cstack-build-slice.md`
+- add a first usable `cstack build`
+- record `session.json` and `verification.json`
+- keep `intent` conservative and hand off into build explicitly
 
 ## Recommended Next Milestones
 

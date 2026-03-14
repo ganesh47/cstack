@@ -7,6 +7,7 @@ Current implemented surface:
 - `cstack <intent>`
 - `discover`
 - `spec`
+- `build`
 - `update`
 - `runs`
 - `inspect`
@@ -95,6 +96,10 @@ cstack discover "Map the current CLI surface and artifact model"
 # Generate a spec run
 cstack spec "Design a run artifact model for cstack"
 
+# Launch a build run directly or from a saved planning run
+cstack build "Implement the queued billing retry cleanup"
+cstack build --from-run <run-id>
+
 # Check for the latest stable GitHub release or apply it
 cstack update --check
 cstack update --yes
@@ -127,7 +132,9 @@ What it does today:
 Current first-slice behavior:
 
 - `discover` and `spec` are executed automatically inside the intent run
-- `build`, `review`, and `ship` may still appear in the inferred plan but are recorded as deferred in this first release slice
+- `build`, `review`, and `ship` may still appear in the inferred plan
+- `build` is now available as an explicit follow-on workflow and intent runs may recommend `cstack build --from-run <run-id>`
+- `review` and `ship` are still recorded as deferred in the current slice
 - specialist reviews may run after the `spec` stage and are recorded under `delegates/`
 
 Examples:
@@ -190,6 +197,9 @@ Useful inspector commands:
 - `artifacts`
 - `show final`
 - `show routing`
+- `show research`
+- `show delegate <track>`
+- `show sources <track>`
 - `show stage <name>`
 - `show specialist <name>`
 - `show artifact <relative-path>`
@@ -267,6 +277,10 @@ sandbox = "workspace-write"
 enabled = false
 maxAgents = 0
 
+[workflows.build]
+mode = "interactive"
+verificationCommands = ["npm test"]
+
 [workflows.discover.delegation]
 enabled = true
 maxAgents = 2
@@ -286,6 +300,7 @@ cstack "Add feature flags to the billing flow with audit logging"
 # 2. Or use explicit stages when you want tighter control
 cstack discover "Map the current architecture, key modules, and likely risk areas"
 cstack spec "Design a safe migration plan for adding feature flags to the billing flow"
+cstack build --from-run <spec-run-id>
 
 # 3. Inspect saved runs and artifacts
 cstack runs
@@ -350,6 +365,10 @@ model = "gpt-5.4"
 enabled = false
 maxAgents = 0
 
+[workflows.build]
+mode = "interactive"
+verificationCommands = ["npm test"]
+
 [workflows.discover.delegation]
 enabled = true
 maxAgents = 2
@@ -363,6 +382,8 @@ Notes:
 
 - `command` can point at the installed `codex` binary or a script path for testing.
 - `sandbox`, `profile`, `model`, and `extraArgs` are passed through to `codex exec`.
+- `workflows.build.mode` selects `interactive` or `exec`; interactive is the default for build runs.
+- `workflows.build.verificationCommands` provides default verification commands recorded into build artifacts.
 - discover delegation settings are now used to bound discover-time research fan-out.
 - discover web research stays opt-in through `[workflows.discover.research].allowWeb`.
 
@@ -381,9 +402,12 @@ Current artifact set:
 - `stderr.log`
 - `routing-plan.json` for intent runs
 - `stage-lineage.json` for intent runs
+- `session.json` for build runs and any workflow with recorded interactive session lineage
 - `artifacts-index.json` or equivalent artifact inventory derived by the inspector
 - `artifacts/spec.md` for `spec`
 - `artifacts/findings.md` for `discover`
+- `artifacts/change-summary.md` for `build`
+- `artifacts/verification.json` for `build`
 - `stages/discover/artifacts/discovery-report.md` for discover-team synthesis
 - `stages/discover/research-plan.json` for discover-team activation, capability, and track decisions
 - `stages/discover/delegates/<track>/request.md` for discover-team delegated research requests
@@ -400,6 +424,12 @@ Discover-team notes:
 - `external-researcher` is only activated when the prompt implies external or unstable facts and web research is allowed
 - `risk-researcher` is only activated when the prompt implies a concrete risk domain
 - the research lead synthesizes the final discover output; delegated tracks remain advisory until accepted
+
+Build notes:
+
+- `build` is interactive by default and records the observed Codex session id in `session.json`
+- `build --from-run <run-id>` links a prior `spec` or `intent` run into the build context without mutating the source run
+- verification commands are recorded even when they fail so inspection can explain what still remains
 
 ## Development
 
@@ -452,6 +482,7 @@ Implemented:
 - `cstack <intent>`
 - `discover`
 - `spec`
+- `build`
 - `update`
 - `runs`
 - `inspect`
@@ -468,7 +499,6 @@ Implemented:
 
 Not implemented yet:
 
-- automatic execution of `build`
 - automatic execution of `review`
 - automatic execution of `ship`
 - `cstack`-native `resume` and `fork` wrappers

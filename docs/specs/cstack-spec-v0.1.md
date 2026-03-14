@@ -379,6 +379,26 @@ The first implementation should avoid a general-purpose swarm runtime. It should
 
 The cost and latency tradeoff is simple in v1: use multiple agents only when the task is separable enough that parallelism saves more time than synthesis costs. The most credible multi-agent shape is one lead plus a few narrowly scoped specialists, not a large team by default.
 
+### Build v1 minimal slice
+
+The first usable `build` slice should be deliberately narrow.
+
+Command surface:
+
+- `cstack build <prompt>`
+- `cstack build --from-run <run-id>`
+- `cstack build --from-run <run-id> --exec`
+- `cstack build ... --verify "<command>"` repeatable
+
+Behavior:
+
+- interactive `codex` is the default when a TTY is available
+- `--exec` is the explicit deterministic fallback for batch-friendly or non-TTY use
+- linked runs may come from `spec`, `intent`, or earlier workflow artifacts, but the wrapper should prefer the most implementation-ready artifact available
+- after the main build execution, the wrapper should record verification results and run a bounded synthesis pass so the artifact trail stays inspectable
+
+The first slice does not need to solve the full lifecycle of `resume`, `fork`, or parallel implementation delegates. It does need to leave enough lineage for those commands to become real wrappers later.
+
 ### Specialist library and activation rules
 
 The system should support a bounded library of specialist presets that the intent router or lead can activate deliberately:
@@ -523,6 +543,15 @@ Recommended additional files for inferred and interactive runs:
 | `artifacts-index.json` | Artifact inventory used by `inspect` and the interactive inspector |
 | `inspector-notes.json` | Optional persisted inspector bookmarks, last viewed artifact, or user follow-up state |
 
+Recommended additional files for build runs:
+
+| File | Meaning |
+| --- | --- |
+| `session.json` | Build session lineage, launch mode, source run linkage, transcript path, and observed session id when available |
+| `artifacts/change-summary.md` | Post-build change summary synthesized from the repo state, linked artifacts, and build session output |
+| `artifacts/verification.json` | Verification commands run, status per command, and overall verification verdict |
+| `artifacts/build-transcript.log` | Best-effort interactive transcript or inline session capture when available |
+
 The run ledger should be derivable from these artifacts without a separate daemon or database. V1 may cache summaries for speed, but the durable source of truth remains the run directories on disk.
 
 ### Logs / transcripts / auditability
@@ -535,6 +564,7 @@ Auditability matters more than completeness in v1.
 - Delegate records should be explicit about whether they are observed directly or leader-reported.
 - The post-run interactive inspector should answer from saved artifacts first and should distinguish observed facts from inferred guidance.
 - Discover-team runs should distinguish local findings from external findings and should expose source provenance clearly in inspection views.
+- Build runs should record both requested session behavior and observed session metadata, because Codex CLI session telemetry may be incomplete in some environments.
 
 ### Active-run TTY dashboard
 
@@ -777,10 +807,18 @@ cstack build --from-run spec-20260313-121015
 Expected flow:
 
 - `cstack` launches interactive `codex` with the spec artifact embedded into the initial prompt
-- `session.json` stores the returned Codex session id
+- `session.json` stores the requested launch mode, linked source run, transcript location, and the returned Codex session id when observed
 - the engineer iterates with Codex, runs tests, and adjusts scope
+- after the session exits, `cstack` records verification results and synthesizes `artifacts/change-summary.md` plus `final.md`
 - later they use `cstack resume <run-id>` rather than remembering the raw Codex session id
 - if they want an alternative implementation branch, they use `cstack fork <run-id> --workflow build`
+
+### Example first-slice build limitations
+
+- interactive launch should require a TTY unless `--exec` is set
+- transcript capture is best-effort and may vary by platform
+- `resume` and `fork` may still be wrapper recommendations rather than first-class commands in the first build slice
+- verification commands should be recorded faithfully, but the wrapper should not pretend that a passing verification set proves semantic correctness
 
 ### Example post-run interactive inspection
 
