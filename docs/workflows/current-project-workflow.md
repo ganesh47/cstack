@@ -7,7 +7,7 @@ This document is the working context for future development on `cstack`.
 It answers:
 
 - what the spec says the product should become
-- what is actually implemented in `v0.11.0`
+- what is actually implemented in `v0.12.0`
 - how we should work on the project from here without confusing spec intent with shipped behavior
 - what changed recently in git
 
@@ -227,6 +227,7 @@ This is the condensed progression reconstructed from recent commits.
 - `v0.9.0`: build workflow and session lineage available
 - `v0.10.0`: deliver workflow available
 - `v0.11.0`: GitHub-complete deliver gating with fail-closed ship enforcement
+- `v0.12.0`: deliver can publish branches and create or update pull requests
 
 ## Practical Read Of The Repo Today
 
