@@ -8,6 +8,7 @@ Current implemented surface:
 - `discover`
 - `spec`
 - `build`
+- `deliver`
 - `update`
 - `runs`
 - `inspect`
@@ -101,6 +102,10 @@ cstack build "Implement the queued billing retry cleanup"
 cstack build --from-run <run-id>
 cstack build --from-run <run-id> --exec
 
+# Launch the umbrella delivery workflow across build, review, and ship
+cstack deliver "Implement the queued billing retry cleanup"
+cstack deliver --from-run <run-id>
+
 # Check for the latest stable GitHub release or apply it
 cstack update --check
 cstack update --yes
@@ -134,8 +139,8 @@ Current first-slice behavior:
 
 - `discover` and `spec` are executed automatically inside the intent run
 - `build`, `review`, and `ship` may still appear in the inferred plan
-- `build` is now available as an explicit follow-on workflow and intent runs may recommend `cstack build --from-run <run-id>`
-- `review` and `ship` are still recorded as deferred in the current slice
+- `build` is available as an explicit follow-on workflow and intent runs may recommend `cstack build --from-run <run-id>`
+- `deliver` is the preferred umbrella follow-on workflow when the inferred work clearly spans `build`, `review`, and `ship`
 - specialist reviews may run after the `spec` stage and are recorded under `delegates/`
 
 Examples:
@@ -412,6 +417,8 @@ Current artifact set:
 - `artifacts/build-transcript.log` for best-effort interactive build capture
 - `artifacts/change-summary.md` for `build`
 - `artifacts/verification.json` for `build`
+- `artifacts/delivery-report.md` for `deliver`
+- `stages/build/...`, `stages/review/...`, and `stages/ship/...` for deliver stage-local artifacts
 - `stages/discover/artifacts/discovery-report.md` for discover-team synthesis
 - `stages/discover/research-plan.json` for discover-team activation, capability, and track decisions
 - `stages/discover/delegates/<track>/request.md` for discover-team delegated research requests
@@ -436,6 +443,13 @@ Build notes:
 - `build --from-run <run-id>` links a prior `spec` or `intent` run into the build context without mutating the source run
 - verification commands are recorded even when they fail so inspection can explain what still remains
 - best-effort interactive transcripts are stored at `artifacts/build-transcript.log` when the interactive path is used
+
+Deliver notes:
+
+- `deliver` is the operator-facing umbrella workflow over internal `build`, `review`, and `ship` stages
+- stage-local artifacts live under `stages/build`, `stages/review`, and `stages/ship`
+- `deliver` owns local release readiness and handoff artifacts, not remote deployment orchestration
+- `cstack inspect <run-id>` supports `show review` and `show ship` for deliver runs
 
 ## Development
 
@@ -489,6 +503,7 @@ Implemented:
 - `discover`
 - `spec`
 - `build`
+- `deliver`
 - `update`
 - `runs`
 - `inspect`
@@ -505,7 +520,7 @@ Implemented:
 
 Not implemented yet:
 
-- automatic execution of `review`
-- automatic execution of `ship`
+- standalone `review`
+- standalone `ship`
 - `cstack`-native `resume` and `fork` wrappers
 - GitHub issue sync helpers inside the CLI

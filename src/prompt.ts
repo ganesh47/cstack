@@ -2,6 +2,7 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import type {
   CstackConfig,
+  DeliverReviewVerdict,
   DiscoverDelegateResult,
   DiscoverResearchPlan,
   DiscoverTrackName,
@@ -17,7 +18,7 @@ export function excerpt(input: string, lines = 24): string {
 async function buildWorkflowPrompt(options: {
   cwd: string;
   input: string;
-  workflow: "spec" | "discover" | "build";
+  workflow: "spec" | "discover" | "build" | "deliver";
   config: CstackConfig;
 }): Promise<{ prompt: string; context: string }> {
   const { cwd, input, workflow, config } = options;
@@ -148,6 +149,69 @@ export async function buildBuildPrompt(options: {
       linkedArtifactPath ? `Linked artifact: ${linkedArtifactPath}` : "Linked artifact: none",
       `Verification commands: ${verificationCommands.join(" | ") || "none"}`,
       `Dirty worktree: ${dirtyWorktree ? "yes" : "no"}`
+    ].join("\n")
+  };
+}
+
+export async function buildDeliverPrompt(options: {
+  cwd: string;
+  input: string;
+  config: CstackConfig;
+  requestedMode: WorkflowMode;
+  linkedArtifactPath?: string;
+  linkedArtifactBody?: string;
+  linkedRunId?: string;
+  linkedWorkflow?: string;
+  verificationCommands: string[];
+  selectedSpecialists: SpecialistName[];
+}): Promise<{ prompt: string; context: string }> {
+  const {
+    cwd,
+    input,
+    config,
+    requestedMode,
+    linkedArtifactPath,
+    linkedArtifactBody,
+    linkedRunId,
+    linkedWorkflow,
+    verificationCommands,
+    selectedSpecialists
+  } = options;
+  const { prompt, context } = await buildWorkflowPrompt({ cwd, input, workflow: "deliver", config });
+
+  return {
+    prompt: [
+      prompt,
+      "",
+      "## Deliver workflow contract",
+      "- run a bounded delivery workflow with explicit internal stages: build, review, ship",
+      "- preserve stage artifacts so later inspection can explain every handoff",
+      "- treat specialist reviewers as advisory inputs to the review lead",
+      "- do not claim release readiness if verification or review artifacts do not support it",
+      "",
+      "## Requested build mode",
+      `- ${requestedMode}`,
+      "",
+      "## Linked upstream run",
+      linkedRunId ? `- run: ${linkedRunId}` : "- none",
+      linkedWorkflow ? `- workflow: ${linkedWorkflow}` : "- workflow: none",
+      linkedArtifactPath ? `- artifact: ${linkedArtifactPath}` : "- artifact: none",
+      "",
+      "## Linked artifact excerpt",
+      linkedArtifactBody ? excerpt(linkedArtifactBody, 40) : "(none)",
+      "",
+      "## Deliver team",
+      `- review specialists: ${selectedSpecialists.join(", ") || "none"}`,
+      `- verification commands: ${verificationCommands.join(" | ") || "none"}`
+    ].join("\n"),
+    context: [
+      context,
+      `Requested build mode: ${requestedMode}`,
+      linkedRunId ? `Linked run: ${linkedRunId}` : "Linked run: none",
+      linkedWorkflow ? `Linked workflow: ${linkedWorkflow}` : "Linked workflow: none",
+      linkedArtifactPath ? `Linked artifact: ${linkedArtifactPath}` : "Linked artifact: none",
+      `Selected review specialists: ${selectedSpecialists.join(", ") || "none"}`,
+      `Verification commands: ${verificationCommands.join(" | ") || "none"}`
     ].join("\n")
   };
 }
@@ -355,4 +419,164 @@ export async function buildSpecialistPrompt(options: {
   ].join("\n");
 
   return { prompt, context };
+}
+
+export async function buildDeliverReviewLeadPrompt(options: {
+  cwd: string;
+  input: string;
+  buildSummary: string;
+  verificationRecord: object;
+  specialistResults: Array<{ name: SpecialistName; reason: string; finalBody: string }>;
+}): Promise<{ prompt: string; context: string }> {
+  const { cwd, input, buildSummary, verificationRecord, specialistResults } = options;
+  const specDoc = path.join(cwd, "docs", "specs", "cstack-spec-v0.1.md");
+
+  return {
+    prompt: [
+      "You are the `Review Lead` for a bounded `cstack deliver` workflow.",
+      "",
+      "Synthesize the build stage output, verification evidence, and specialist reviews into one review verdict.",
+      "",
+      "Requirements:",
+      "- be explicit about whether delivery is ready, needs changes, or is blocked",
+      "- preserve serious risks even when the build itself completed",
+      "- cite specialist input only when it materially changed the verdict",
+      "- return valid JSON only, with no markdown fences or extra commentary",
+      "",
+      "Required JSON shape:",
+      "{",
+      '  "status": "ready" | "changes-requested" | "blocked",',
+      '  "summary": "short summary",',
+      '  "findings": [{"severity": "info" | "warning" | "high", "title": "finding title", "detail": "details", "owner": "optional"}],',
+      '  "recommendedActions": ["action"],',
+      '  "acceptedSpecialists": [{"name": "security-review", "disposition": "accepted" | "partial" | "discarded", "reason": "why"}],',
+      '  "reportMarkdown": "# Review Findings\\n..."',
+      "}",
+      "",
+      "## Deliver request",
+      input,
+      "",
+      "## Build summary",
+      excerpt(buildSummary, 80) || "(missing)",
+      "",
+      "## Verification evidence",
+      JSON.stringify(verificationRecord, null, 2),
+      "",
+      "## Specialist outputs",
+      JSON.stringify(specialistResults, null, 2),
+      "",
+      "## Referenced files",
+      `- ${specDoc}`
+    ].join("\n"),
+    context: [
+      "Workflow: deliver",
+      "Role: Review Lead",
+      `Selected specialists: ${specialistResults.map((result) => result.name).join(", ") || "none"}`,
+      `Spec source: ${specDoc}`
+    ].join("\n")
+  };
+}
+
+export async function buildDeliverSpecialistPrompt(options: {
+  cwd: string;
+  input: string;
+  name: SpecialistName;
+  reason: string;
+  buildSummary: string;
+  verificationRecord: object;
+}): Promise<{ prompt: string; context: string }> {
+  const { cwd, input, name, reason, buildSummary, verificationRecord } = options;
+  const specDoc = path.join(cwd, "docs", "specs", "cstack-spec-v0.1.md");
+  const title = specialistTitle(name);
+
+  return {
+    prompt: [
+      `You are running the \`${name}\` specialist for a \`cstack deliver\` review stage.`,
+      "",
+      `Perform a focused ${title} against the current build and release-readiness evidence.`,
+      "",
+      "Requirements:",
+      "- stay inside the named specialist scope",
+      "- call out concrete risks, gaps, and required follow-up",
+      "- be concise and operational",
+      "- structure the output so the review lead can accept, partially accept, or discard it cleanly",
+      "",
+      "## Deliver request",
+      input,
+      "",
+      "## Specialist activation reason",
+      reason,
+      "",
+      "## Build summary",
+      excerpt(buildSummary, 60) || "(missing)",
+      "",
+      "## Verification evidence",
+      JSON.stringify(verificationRecord, null, 2),
+      "",
+      "## Referenced files",
+      `- ${specDoc}`
+    ].join("\n"),
+    context: [
+      "Workflow: deliver",
+      `Specialist: ${name}`,
+      `Reason: ${reason}`,
+      `Spec source: ${specDoc}`
+    ].join("\n")
+  };
+}
+
+export async function buildDeliverShipPrompt(options: {
+  cwd: string;
+  input: string;
+  buildSummary: string;
+  reviewVerdict: DeliverReviewVerdict;
+  verificationRecord: object;
+}): Promise<{ prompt: string; context: string }> {
+  const { cwd, input, buildSummary, reviewVerdict, verificationRecord } = options;
+  const specDoc = path.join(cwd, "docs", "specs", "cstack-spec-v0.1.md");
+
+  return {
+    prompt: [
+      "You are the `Ship Lead` for a bounded `cstack deliver` workflow.",
+      "",
+      "Prepare a release-readiness handoff from the saved build and review artifacts.",
+      "",
+      "Requirements:",
+      "- distinguish completed checklist items from blockers",
+      "- treat failed verification or blocked review as release blockers",
+      "- keep the output implementation-facing rather than marketing-facing",
+      "- return valid JSON only, with no markdown fences or extra commentary",
+      "",
+      "Required JSON shape:",
+      "{",
+      '  "readiness": "ready" | "blocked",',
+      '  "summary": "short summary",',
+      '  "checklist": [{"item": "name", "status": "complete" | "incomplete" | "blocked", "notes": "optional"}],',
+      '  "unresolved": ["issue"],',
+      '  "nextActions": ["action"],',
+      '  "reportMarkdown": "# Ship Summary\\n..."',
+      "}",
+      "",
+      "## Deliver request",
+      input,
+      "",
+      "## Build summary",
+      excerpt(buildSummary, 80) || "(missing)",
+      "",
+      "## Review verdict",
+      JSON.stringify(reviewVerdict, null, 2),
+      "",
+      "## Verification evidence",
+      JSON.stringify(verificationRecord, null, 2),
+      "",
+      "## Referenced files",
+      `- ${specDoc}`
+    ].join("\n"),
+    context: [
+      "Workflow: deliver",
+      "Role: Ship Lead",
+      `Review status: ${reviewVerdict.status}`,
+      `Spec source: ${specDoc}`
+    ].join("\n")
+  };
 }

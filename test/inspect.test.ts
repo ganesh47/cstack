@@ -341,6 +341,127 @@ async function seedBuildRun(repoDir: string): Promise<string> {
   return runId;
 }
 
+async function seedDeliverRun(repoDir: string): Promise<string> {
+  const runId = "2026-03-14T12-15-00-deliver-billing-cleanup";
+  const runDir = path.join(repoDir, ".cstack", "runs", runId);
+  await fs.mkdir(path.join(runDir, "stages", "build", "artifacts"), { recursive: true });
+  await fs.mkdir(path.join(runDir, "stages", "review", "artifacts"), { recursive: true });
+  await fs.mkdir(path.join(runDir, "stages", "ship", "artifacts"), { recursive: true });
+
+  const run: RunRecord = {
+    id: runId,
+    workflow: "deliver",
+    createdAt: "2026-03-14T12:15:00.000Z",
+    updatedAt: "2026-03-14T12:15:30.000Z",
+    status: "completed",
+    cwd: repoDir,
+    gitBranch: "main",
+    codexVersion: "fake",
+    codexCommand: ["codex", "exec"],
+    promptPath: path.join(runDir, "prompt.md"),
+    finalPath: path.join(runDir, "final.md"),
+    contextPath: path.join(runDir, "context.md"),
+    eventsPath: path.join(runDir, "events.jsonl"),
+    stdoutPath: path.join(runDir, "stdout.log"),
+    stderrPath: path.join(runDir, "stderr.log"),
+    configSources: [],
+    sessionId: "fake-session-deliver",
+    lastActivity: "Deliver run completed",
+    summary: "Deliver billing cleanup",
+    inputs: {
+      userPrompt: "Deliver billing cleanup",
+      linkedRunId: "2026-03-14T12-00-00-spec-deliver-billing",
+      requestedMode: "interactive",
+      observedMode: "exec",
+      verificationCommands: ["npm test"]
+    }
+  };
+
+  await fs.writeFile(path.join(runDir, "run.json"), `${JSON.stringify(run, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(runDir, "final.md"), "# Deliver Run Summary\n\nDone.\n", "utf8");
+  await fs.writeFile(
+    path.join(runDir, "stage-lineage.json"),
+    `${JSON.stringify(
+      {
+        intent: "Deliver billing cleanup",
+        stages: [
+          { name: "build", rationale: "Implement", status: "completed", executed: true },
+          { name: "review", rationale: "Critique", status: "completed", executed: true },
+          { name: "ship", rationale: "Prepare release", status: "completed", executed: true }
+        ],
+        specialists: [{ name: "audit-review", reason: "Audit logging scope.", status: "completed", disposition: "accepted" }]
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(runDir, "stages", "build", "session.json"),
+    `${JSON.stringify(
+      {
+        workflow: "build",
+        requestedMode: "interactive",
+        mode: "exec",
+        startedAt: "2026-03-14T12:15:00.000Z",
+        endedAt: "2026-03-14T12:15:10.000Z",
+        sessionId: "fake-session-deliver",
+        codexCommand: ["codex", "exec"],
+        observability: {
+          sessionIdObserved: true,
+          transcriptObserved: false,
+          finalArtifactObserved: true
+        }
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(runDir, "stages", "build", "artifacts", "verification.json"),
+    `${JSON.stringify({ status: "passed", requestedCommands: ["npm test"], results: [] }, null, 2)}\n`,
+    "utf8"
+  );
+  await fs.writeFile(path.join(runDir, "stages", "build", "artifacts", "change-summary.md"), "# Build Summary\n", "utf8");
+  await fs.writeFile(path.join(runDir, "stages", "review", "artifacts", "findings.md"), "# Review Findings\n", "utf8");
+  await fs.writeFile(
+    path.join(runDir, "stages", "review", "artifacts", "verdict.json"),
+    `${JSON.stringify(
+      {
+        status: "changes-requested",
+        summary: "Review completed with bounded follow-up.",
+        findings: [],
+        recommendedActions: ["Review the release checklist before merge."],
+        acceptedSpecialists: [],
+        reportMarkdown: "# Review Findings\n"
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+  await fs.writeFile(path.join(runDir, "stages", "ship", "artifacts", "ship-summary.md"), "# Ship Summary\n", "utf8");
+  await fs.writeFile(
+    path.join(runDir, "stages", "ship", "artifacts", "ship-record.json"),
+    `${JSON.stringify(
+      {
+        readiness: "blocked",
+        summary: "Ship artifacts prepared.",
+        checklist: [{ item: "Confirm version bump.", status: "complete" }],
+        unresolved: ["Remote deployment remains manual."],
+        nextActions: ["Handle remote deployment outside the wrapper."],
+        reportMarkdown: "# Ship Summary\n"
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  return runId;
+}
+
 describe("inspect", () => {
   let repoDir: string;
   let runId: string;
@@ -409,5 +530,19 @@ describe("inspect", () => {
     await expect(handleInspectorCommand(repoDir, inspection, "show session")).resolves.toContain("\"requestedMode\": \"interactive\"");
     await expect(handleInspectorCommand(repoDir, inspection, "show verification")).resolves.toContain("\"status\": \"passed\"");
     await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("verification: passed");
+  });
+
+  it("loads nested build session and deliver stage artifacts for deliver runs", async () => {
+    const deliverRunId = await seedDeliverRun(repoDir);
+    const inspection = await loadRunInspection(repoDir, deliverRunId);
+
+    expect(inspection.sessionRecord?.mode).toBe("exec");
+    expect(inspection.verificationRecord?.status).toBe("passed");
+    expect(inspection.deliverReviewVerdict?.status).toBe("changes-requested");
+    expect(inspection.deliverShipRecord?.readiness).toBe("blocked");
+    await expect(handleInspectorCommand(repoDir, inspection, "show verification")).resolves.toContain("\"status\": \"passed\"");
+    await expect(handleInspectorCommand(repoDir, inspection, "show review")).resolves.toContain("\"status\": \"changes-requested\"");
+    await expect(handleInspectorCommand(repoDir, inspection, "show ship")).resolves.toContain("\"readiness\": \"blocked\"");
+    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("ship readiness: blocked");
   });
 });

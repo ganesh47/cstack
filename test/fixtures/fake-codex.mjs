@@ -100,6 +100,49 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
       ? "Linked context included."
       : "Linked context missing."
   ].join("\n");
+} else if (prompt.includes("You are the `Review Lead` for a bounded `cstack deliver` workflow.")) {
+  body = JSON.stringify(
+    {
+      status: "ready",
+      summary: "Review completed with bounded follow-up.",
+      findings: [
+        {
+          severity: "warning",
+          title: "Release readiness follow-up",
+          detail: "Review the release checklist before merge."
+        }
+      ],
+      recommendedActions: ["Review the release checklist before merge."],
+      acceptedSpecialists: [],
+      reportMarkdown: "# Review Findings\n\nBounded follow-up required.\n"
+    },
+    null,
+    2
+  );
+} else if (prompt.includes("You are the `Ship Lead` for a bounded `cstack deliver` workflow.")) {
+  body = JSON.stringify(
+    {
+      readiness: "ready",
+      summary: "Ship artifacts prepared.",
+      checklist: [
+        { item: "Confirm version bump.", status: "complete" },
+        { item: "Confirm verification artifacts.", status: "complete" }
+      ],
+      unresolved: ["Remote deployment remains manual."],
+      nextActions: ["Handle remote deployment outside the wrapper."],
+      reportMarkdown: "# Ship Summary\n\nReady for local handoff.\n"
+    },
+    null,
+    2
+  );
+} else if (prompt.includes("specialist for a `cstack deliver` review stage")) {
+  body = [
+    "# Specialist Findings",
+    "",
+    "Deliver specialist review completed.",
+    "",
+    "Concrete follow-up recorded."
+  ].join("\n");
 } else {
   body = [
     "# Fake Spec",

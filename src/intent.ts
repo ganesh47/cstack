@@ -99,7 +99,7 @@ function inferStagePlans(intent: string): RoutingStagePlan[] {
   return ensureUniqueStages(stages);
 }
 
-function inferSpecialists(intent: string): SpecialistSelection[] {
+export function inferSpecialists(intent: string): SpecialistSelection[] {
   const lower = intent.toLowerCase();
   const candidates: Record<SpecialistName, string | null> = {
     "security-review":
@@ -525,10 +525,13 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
       }
 
       if (!EXECUTABLE_STAGES.includes(stageName)) {
+        const prefersDeliver = routingPlan.stages.some((stage) => stage.name === "review" || stage.name === "ship");
         lineageStage.status = "deferred";
         lineageStage.notes =
           stageName === "build"
-            ? `Planned by the router, but not auto-executed in this slice. Use \`cstack build --from-run ${runId}\` to start the implementation run.`
+            ? prefersDeliver
+              ? `Planned by the router, but not auto-executed in this slice. Use \`cstack deliver --from-run ${runId}\` to carry the work through build, review, and ship.`
+              : `Planned by the router, but not auto-executed in this slice. Use \`cstack build --from-run ${runId}\` to start the implementation run.`
             : "Planned by the router, but not executed in this first intent-runner slice.";
         events.markStage(stageName, "deferred");
         await writeJson(stageLineagePath, stageLineage);

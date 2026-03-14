@@ -72,6 +72,12 @@ function resolveCandidateArtifacts(run: RunRecord): string[] {
       ];
     case "build":
       return [path.join(runDir, "artifacts", "change-summary.md"), run.finalPath];
+    case "deliver":
+      return [
+        path.join(runDir, "stages", "ship", "artifacts", "ship-summary.md"),
+        path.join(runDir, "stages", "build", "artifacts", "change-summary.md"),
+        run.finalPath
+      ];
     default:
       return [run.finalPath];
   }

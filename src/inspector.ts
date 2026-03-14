@@ -5,6 +5,8 @@ import type {
   ArtifactEntry,
   BuildSessionRecord,
   BuildVerificationRecord,
+  DeliverReviewVerdict,
+  DeliverShipRecord,
   DiscoverDelegateResult,
   DiscoverResearchPlan,
   RoutingPlan,
@@ -68,9 +70,17 @@ function renderSuggestedActions(inspection: RunInspection): string[] {
   const lines: string[] = [];
   const deferredStages = inspection.stageLineage?.stages.filter((stage) => stage.status === "deferred" || stage.status === "skipped") ?? [];
 
-  if (inspection.run.workflow === "build") {
-    lines.push("- review change summary with `show artifact artifacts/change-summary.md`");
+  if (inspection.run.workflow === "build" || inspection.run.workflow === "deliver") {
+    lines.push(
+      inspection.run.workflow === "deliver"
+        ? "- review change summary with `show artifact stages/build/artifacts/change-summary.md`"
+        : "- review change summary with `show artifact artifacts/change-summary.md`"
+    );
     lines.push("- inspect verification with `show verification`");
+    if (inspection.run.workflow === "deliver") {
+      lines.push("- inspect the review verdict with `show review`");
+      lines.push("- inspect ship readiness with `show ship`");
+    }
   }
   for (const stage of deferredStages.slice(0, 2)) {
     lines.push(`- inspect why ${stage.name} is ${stage.status}`);
@@ -161,14 +171,33 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
 
   const run = await readRun(cwd, targetId);
   const runDir = runDirForId(cwd, targetId);
-  const [recentEvents, routingPlan, stageLineage, discoverResearchPlan, discoverDelegates, sessionRecord, verificationRecord, artifacts] = await Promise.all([
+  const sessionPath = path.join(runDir, "session.json");
+  const verificationPath = path.join(runDir, "artifacts", "verification.json");
+  const deliverBuildSessionPath = path.join(runDir, "stages", "build", "session.json");
+  const deliverBuildVerificationPath = path.join(runDir, "stages", "build", "artifacts", "verification.json");
+  const deliverReviewVerdictPath = path.join(runDir, "stages", "review", "artifacts", "verdict.json");
+  const deliverShipRecordPath = path.join(runDir, "stages", "ship", "artifacts", "ship-record.json");
+  const [
+    recentEvents,
+    routingPlan,
+    stageLineage,
+    discoverResearchPlan,
+    discoverDelegates,
+    sessionRecord,
+    verificationRecord,
+    deliverReviewVerdict,
+    deliverShipRecord,
+    artifacts
+  ] = await Promise.all([
     readRecentEvents(run.eventsPath),
     readJsonFile<RoutingPlan>(path.join(runDir, "routing-plan.json")),
     readJsonFile<StageLineage>(path.join(runDir, "stage-lineage.json")),
     readJsonFile<DiscoverResearchPlan>(path.join(runDir, "stages", "discover", "research-plan.json")),
     loadDiscoverDelegates(runDir),
-    readJsonFile<BuildSessionRecord>(path.join(runDir, "session.json")),
-    readJsonFile<BuildVerificationRecord>(path.join(runDir, "artifacts", "verification.json")),
+    readJsonFile<BuildSessionRecord>(run.workflow === "deliver" ? deliverBuildSessionPath : sessionPath),
+    readJsonFile<BuildVerificationRecord>(run.workflow === "deliver" ? deliverBuildVerificationPath : verificationPath),
+    readJsonFile<DeliverReviewVerdict>(deliverReviewVerdictPath),
+    readJsonFile<DeliverShipRecord>(deliverShipRecordPath),
     walkArtifacts(runDir)
   ]);
 
@@ -186,6 +215,8 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     discoverDelegates,
     sessionRecord,
     verificationRecord,
+    deliverReviewVerdict,
+    deliverShipRecord,
     recentEvents,
     finalBody,
     artifacts
@@ -278,6 +309,8 @@ export function renderInspectionSummary(cwd: string, inspection: RunInspection):
       inspection.sessionRecord ? `- mode: requested ${inspection.sessionRecord.requestedMode}, observed ${inspection.sessionRecord.mode}` : undefined,
       inspection.sessionRecord?.linkedRunId ? `- linked run: ${inspection.sessionRecord.linkedRunId}` : undefined,
       inspection.verificationRecord ? `- verification: ${renderVerificationSummary(inspection.verificationRecord)}` : undefined,
+      inspection.deliverReviewVerdict ? `- review verdict: ${inspection.deliverReviewVerdict.status}` : undefined,
+      inspection.deliverShipRecord ? `- ship readiness: ${inspection.deliverShipRecord.readiness}` : undefined,
       "",
       "Plan",
       `- stages: ${renderStageStrip(inspection)}`,
@@ -322,6 +355,22 @@ function renderVerification(inspection: RunInspection): string {
   }
 
   return `${JSON.stringify(inspection.verificationRecord, null, 2)}\n`;
+}
+
+function renderDeliverReview(inspection: RunInspection): string {
+  if (!inspection.deliverReviewVerdict) {
+    return "No deliver review verdict was recorded for this run.";
+  }
+
+  return `${JSON.stringify(inspection.deliverReviewVerdict, null, 2)}\n`;
+}
+
+function renderDeliverShip(inspection: RunInspection): string {
+  if (!inspection.deliverShipRecord) {
+    return "No deliver ship record was recorded for this run.";
+  }
+
+  return `${JSON.stringify(inspection.deliverShipRecord, null, 2)}\n`;
 }
 
 function renderStages(inspection: RunInspection): string {
@@ -445,6 +494,8 @@ function helpText(): string {
     "- show research",
     "- show session",
     "- show verification",
+    "- show review",
+    "- show ship",
     "- show delegate <track>",
     "- show sources <track>",
     "- show stage <name>",
@@ -498,6 +549,12 @@ export async function handleInspectorCommand(cwd: string, inspection: RunInspect
   }
   if (trimmed === "show verification") {
     return renderVerification(inspection);
+  }
+  if (trimmed === "show review") {
+    return renderDeliverReview(inspection);
+  }
+  if (trimmed === "show ship") {
+    return renderDeliverShip(inspection);
   }
   if (trimmed === "what remains") {
     return renderWhatRemains(inspection);

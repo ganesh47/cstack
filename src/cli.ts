@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { runBuild } from "./commands/build.js";
+import { runDeliver } from "./commands/deliver.js";
 import { runDiscover } from "./commands/discover.js";
 import { runIntentCommand } from "./commands/intent.js";
 import { runSpec } from "./commands/spec.js";
@@ -15,6 +16,7 @@ function usage(): string {
     "  cstack discover <prompt>",
     "  cstack spec <prompt>",
     "  cstack build <prompt> [--from-run <run-id>] [--exec]",
+    "  cstack deliver <prompt> [--from-run <run-id>] [--exec]",
     "  cstack update [--check] [--dry-run] [--yes] [--version <x>] [--channel stable]",
     "  cstack runs [--active] [--workflow <name>] [--status <status>] [--recent <n>] [--json]",
     "  cstack inspect [run-id] [--interactive]"
@@ -37,6 +39,9 @@ async function main(): Promise<void> {
       return;
     case "build":
       await runBuild(cwd, rest);
+      return;
+    case "deliver":
+      await runDeliver(cwd, rest);
       return;
     case "runs":
       await runRuns(cwd, rest);

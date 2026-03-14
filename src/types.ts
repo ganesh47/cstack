@@ -1,4 +1,4 @@
-export type WorkflowName = "spec" | "discover" | "build" | "update" | "intent";
+export type WorkflowName = "spec" | "discover" | "build" | "deliver" | "update" | "intent";
 export type RunStatus = "running" | "completed" | "failed";
 export type WorkflowMode = "exec" | "interactive";
 
@@ -138,6 +138,8 @@ export interface RunInspection {
   discoverDelegates: DiscoverDelegateResult[];
   sessionRecord: BuildSessionRecord | null;
   verificationRecord: BuildVerificationRecord | null;
+  deliverReviewVerdict: DeliverReviewVerdict | null;
+  deliverShipRecord: DeliverShipRecord | null;
   recentEvents: RunEvent[];
   finalBody: string;
   artifacts: ArtifactEntry[];
@@ -190,6 +192,7 @@ export interface CstackConfig {
     spec: WorkflowConfig;
     discover: WorkflowConfig;
     build: WorkflowConfig;
+    deliver: WorkflowConfig;
   };
   verification?: VerificationConfig;
 }
@@ -233,6 +236,41 @@ export interface BuildVerificationRecord {
   notes?: string;
 }
 
+export interface DeliverReviewFinding {
+  severity: "info" | "warning" | "high";
+  title: string;
+  detail: string;
+  owner?: string;
+}
+
+export interface DeliverReviewVerdict {
+  status: "ready" | "changes-requested" | "blocked";
+  summary: string;
+  findings: DeliverReviewFinding[];
+  recommendedActions: string[];
+  acceptedSpecialists: Array<{
+    name: SpecialistName;
+    disposition: SpecialistDisposition;
+    reason: string;
+  }>;
+  reportMarkdown: string;
+}
+
+export interface DeliverShipChecklistItem {
+  item: string;
+  status: "complete" | "incomplete" | "blocked";
+  notes?: string;
+}
+
+export interface DeliverShipRecord {
+  readiness: "ready" | "blocked";
+  summary: string;
+  checklist: DeliverShipChecklistItem[];
+  unresolved: string[];
+  nextActions: string[];
+  reportMarkdown: string;
+}
+
 export interface RunRecord {
   id: string;
   workflow: WorkflowName;
@@ -260,13 +298,13 @@ export interface RunRecord {
     userPrompt: string;
     entrypoint?: "workflow" | "intent";
     plannedStages?: string[];
-    selectedSpecialists?: string[];
     delegatedTracks?: string[];
     webResearchAllowed?: boolean;
     linkedRunId?: string;
     requestedMode?: WorkflowMode;
     observedMode?: WorkflowMode;
     verificationCommands?: string[];
+    selectedSpecialists?: SpecialistName[];
     dryRun?: boolean;
   };
 }

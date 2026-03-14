@@ -34,6 +34,14 @@ const DEFAULT_CONFIG: CstackConfig = {
         enabled: false,
         maxAgents: 0
       }
+    },
+    deliver: {
+      mode: "interactive",
+      verificationCommands: [],
+      delegation: {
+        enabled: true,
+        maxAgents: 4
+      }
     }
   },
   verification: {

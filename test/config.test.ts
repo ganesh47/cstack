@@ -54,6 +54,10 @@ allowWeb = true
 [workflows.build]
 mode = "exec"
 verificationCommands = ["npm test"]
+
+[workflows.deliver]
+mode = "exec"
+verificationCommands = ["npm run release:check"]
 `,
       "utf8"
     );
@@ -67,6 +71,10 @@ verificationCommands = ["npm test"]
     expect(config.workflows.discover.research?.allowWeb).toBe(true);
     expect(config.workflows.build.mode).toBe("exec");
     expect(config.workflows.build.verificationCommands).toEqual(["npm test"]);
+    expect(config.workflows.deliver.mode).toBe("exec");
+    expect(config.workflows.deliver.verificationCommands).toEqual(["npm run release:check"]);
+    expect(config.workflows.deliver.delegation?.enabled).toBe(true);
+    expect(config.workflows.deliver.delegation?.maxAgents).toBe(4);
     expect(sources).toHaveLength(2);
   });
 });

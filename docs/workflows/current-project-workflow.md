@@ -7,7 +7,7 @@ This document is the working context for future development on `cstack`.
 It answers:
 
 - what the spec says the product should become
-- what is actually implemented in `v0.8.0`
+- what is actually implemented in `v0.10.0`
 - how we should work on the project from here without confusing spec intent with shipped behavior
 - what changed recently in git
 
@@ -31,7 +31,8 @@ Implemented commands:
 - `cstack run <intent> [--dry-run]`
 - `cstack discover <prompt>`
 - `cstack spec <prompt>`
-- `cstack build <prompt>` and `cstack build --from-run <run-id>` are the active next slice to ship
+- `cstack build <prompt>` and `cstack build --from-run <run-id>`
+- `cstack deliver <prompt>` and `cstack deliver --from-run <run-id>`
 - `cstack runs`
 - `cstack inspect [run-id] [--interactive]`
 - `cstack update`
@@ -39,7 +40,10 @@ Implemented commands:
 Implemented behavior:
 
 - `discover` and `spec` execute through `codex exec`
-- `discover` is evolving toward a bounded research-team model with a research lead and optional delegated tracks
+- `discover` supports a bounded research-team model with a research lead and optional delegated tracks
+- `build` records requested vs observed mode, session lineage, change summaries, and verification artifacts
+- `deliver` runs internal `build -> review -> ship` stages inside one durable run
+- `deliver` can attach bounded specialist review delegates and records their acceptance disposition
 - each run persists prompts, context, logs, events, final output, and `run.json` under `.cstack/runs/<run-id>/`
 - discover-team artifacts live under `stages/discover/` so they stay distinct from intent-level specialist reviews
 - `intent` infers a stage plan and specialist set, executes `discover` and `spec`, and records later stages as deferred
@@ -50,13 +54,11 @@ Implemented behavior:
 
 Not implemented yet, even though the spec defines them:
 
-- `cstack build`
 - `cstack review`
 - `cstack ship`
 - `cstack rerun`
 - `cstack resume`
 - `cstack fork`
-- true workflow-native wrappers around interactive Codex session lineage
 
 Important implementation constraint:
 
@@ -65,7 +67,7 @@ Important implementation constraint:
 
 ## How To Work On This Repo Now
 
-Use this as the default development loop until `build`, `review`, and `ship` exist as first-class commands.
+Use this as the default development loop while `review`, `ship`, `resume`, `fork`, and GTM are still being filled in around the shipped `deliver` umbrella workflow.
 
 ### 1. Start From Spec, Then Confirm Against Code
 
@@ -121,15 +123,15 @@ Current expectation for intent runs:
 - they should preserve deferred lineage for later stages
 - they may attach specialist review artifacts when the heuristic selects them
 
-### 4. Use Build After Spec Artifacts
+### 4. Use Deliver After Planning Artifacts
 
-Because `review/ship` are not real commands yet, the practical workflow target is:
+The practical workflow target now is:
 
 1. use `discover` or `intent` to gather context
 2. use `spec` or the `intent`-generated spec stage artifact to shape the change
-3. launch `cstack build --from-run <spec-or-intent-run-id>` or `cstack build "<task>"`
-4. record `session.json`, `artifacts/change-summary.md`, and `artifacts/verification.json`
-5. if the shell is non-interactive, expect build to fall back to `exec` and record requested vs observed mode in `session.json`
+3. launch `cstack deliver --from-run <spec-or-intent-run-id>` when the work clearly spans implementation, review, and release readiness
+4. use `cstack build --from-run <spec-or-intent-run-id>` only when you intentionally want the narrower implementation-only workflow
+5. if the shell is non-interactive, expect the build stage to fall back to `exec` and record requested vs observed mode in `session.json`
 6. run `npm run typecheck`
 7. run `npm test`
 8. use `cstack runs` and `cstack inspect` to review saved workflow artifacts
@@ -160,32 +162,27 @@ When extending the workflow model:
 
 ## Current Slice
 
-The most recently completed slice is `discover v2`.
+The most recently completed slices are:
 
-The active next slice is `build v1`:
-
-- define the build workflow contract in `docs/specs/cstack-build-slice.md`
-- add a first usable `cstack build`
-- record `session.json` and `verification.json`
-- keep `intent` conservative and hand off into build explicitly
+- `discover v2`
+- `build v1`
+- `deliver v1`
 
 ## Recommended Next Milestones
 
 The cleanest next sequence is:
 
-1. finish `discover v2` bounded research delegation
-2. implement `cstack build`
-3. add session lineage artifacts needed for `resume` and `fork`
-4. implement `cstack review`
-5. implement `cstack ship`
-6. add `rerun` after workflow contracts stabilize
+1. add wrapper-native `resume` and `fork` on top of existing build-session lineage
+2. add standalone `review` and `ship` commands for narrower operator paths
+3. add GTM as a post-ship workflow
+4. add `rerun` after workflow contracts stabilize
 
 Why this order:
 
-- discover is the safest place to add bounded parallelism and capability-gated web research
-- `intent` already plans `build/review/ship`, so `build` is the biggest current gap between planned and executable stages
-- `resume` and `fork` depend on build-session lineage being real
-- `review` and `ship` are easier to ground once build artifacts exist
+- `deliver` already closes the main execution gap between planning and local release readiness
+- `resume` and `fork` now depend mostly on wrapper ergonomics because build-session lineage is already being recorded
+- standalone `review` and `ship` become cleaner once the umbrella path has fixed the artifact contracts
+- GTM is cleaner once engineering delivery artifacts are unified
 - `rerun` should come after the workflow artifacts stop shifting
 
 ## Recent Git Timeline
@@ -224,6 +221,9 @@ This is the condensed progression reconstructed from recent commits.
 - `v0.5.0`: intent routing and specialists available
 - `v0.6.0`: run ledger and inspector available
 - `v0.7.0`: richer dashboard and inspector available
+- `v0.8.0`: discover research delegation available
+- `v0.9.0`: build workflow and session lineage available
+- `v0.10.0`: deliver workflow available
 
 ## Practical Read Of The Repo Today
 
@@ -233,14 +233,15 @@ The project is no longer a simple `spec` wrapper. It now has three strong founda
 - an intent router with bounded specialist follow-ups
 - an operator-oriented ledger and inspector
 
-The main missing piece is execution continuity after planning:
+The main missing pieces are execution continuation and narrower direct operator paths:
 
-- the product can already discover, plan, inspect, and update itself
-- it still cannot natively drive the planned implementation/review/ship loop end to end
+- the product can already discover, plan, build, deliver, inspect, and update itself
+- it still lacks standalone `review`, `ship`, `resume`, and `fork` commands
+- GTM remains a later post-deliver workflow, not part of `deliver`
 
 That makes the next development question straightforward:
 
-- continue polishing inspection and routing, or
-- close the largest product gap by implementing `build`
+- keep tightening the deliver-path operator UX, or
+- add the narrower follow-on commands and GTM workflow that now fit cleanly around it
 
-The spec and current code both point to `build` as the next highest-value workflow.
+The spec and current code now point to `resume`/`fork`, then standalone `review` and `ship`, as the next highest-value workflow work.

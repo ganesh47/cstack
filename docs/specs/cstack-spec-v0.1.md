@@ -103,7 +103,7 @@ If that loop works for one engineer in one repo, the product is doing the right 
 
 ## 6. **V1 Product Surface**
 
-The minimum lovable workflow set for v1 is four workflows: `discover`, `spec`, `build`, and `review`. V1 should ship a fifth workflow, `ship`, because it is a small extension that closes the handoff loop without major runtime complexity.
+The minimum lovable operator-facing workflow set for v1 is three workflows: `discover`, `spec`, and `deliver`. `deliver` is the umbrella execution workflow after planning, and it preserves explicit internal `build`, `review`, and `ship` stage boundaries rather than flattening them away.
 
 ### Unified front door
 
@@ -133,9 +133,12 @@ This means the external UX can be simple without collapsing the internal system 
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `cstack discover` | `codex exec` | Research Lead first; bounded research tracks optional | Map code, dependencies, constraints, and risks before planning or coding | New repo area, unclear ownership, incident triage, design kickoff | Question, path scope, optional files, optional prior run ids | `stages/discover/research-plan.json`, `stages/discover/artifacts/discovery-report.md`, `artifacts/findings.md`, optional `stages/discover/delegates/<track>/...`, `final.md` | Do not use it when the task is already well-scoped and the needed context is obvious |
 | `cstack spec` | `codex exec` | Single-agent first, delegate-optional | Convert intent into an implementation-ready spec and execution plan | Feature request, refactor proposal, migration plan, bug-fix plan | Goal, acceptance criteria, constraints, linked `discover` run, optional schema | `spec.md`, `plan.json`, `open-questions.md`, `final.md` | Do not use it for trivial edits that can be implemented faster than they can be specified |
+| `cstack deliver` | Mixed: interactive `codex` for build, `codex review` or `codex exec` for review, `codex exec` plus shell for ship | Delivery Lead with bounded sub-stage leads and optional specialists | Carry an approved task through implementation, critique, and release-readiness inside one durable run | Approved spec, clear implementation task, founder handoff, release preparation | Task or prior run id, constraints, verification commands, review policy, checklist template | `stage-lineage.json`, `stages/build/...`, `stages/review/...`, `stages/ship/...`, `artifacts/delivery-report.md`, `final.md` | Do not use it when only one sub-stage is needed and the narrower explicit workflow is clearer |
 | `cstack build` | Interactive `codex` | Delegate-optional | Execute an approved task with repo-aware editing and verification | Approved spec, bounded task, debugging or implementation session | Task or spec run id, constraints, target paths, test commands, delegation mode | `session.json`, `change-summary.md`, `verification.json`, `final.md` | Do not use it for pure critique or when a non-interactive batch run is required |
 | `cstack review` | `codex review` or `codex exec` | Single-agent by default | Critique changes, surface risks, and recommend next actions | Before merge, after build, before handoff | Git diff, branch, run id, review policy, optional severity thresholds | `findings.md`, `findings.json`, `verdict.json`, `final.md` | Do not use it as a replacement for implementation or as a general planning step |
 | `cstack ship` | `codex exec` plus shell | Single-agent only | Prepare a branch for handoff or release with final checks and artifacts | Ready-to-merge branch, release candidate, founder handoff | Branch or diff, linked run ids, checklist template, verification commands | `ship-summary.md`, `release-checklist.md`, `unresolved.md`, `final.md` | Do not use it for deployment orchestration or CI/CD automation beyond local prep |
+
+`deliver` is the default post-spec operator path. `build`, `review`, and `ship` remain explicit sub-stage contracts and may continue to exist as direct commands for narrower use.
 
 ### Support commands that are not workflows
 
@@ -940,11 +943,11 @@ This keeps the operator model coherent: one workflow, one leader, a small set of
 - Add `cstack inspect <run-id> --interactive` as a wrapper-owned post-run inspector
 - Upgrade the TTY inspector into a view-oriented ANSI console with shortcuts
 
-### Milestone 3: review and ship workflows
+### Milestone 3: deliver umbrella workflow and standalone review/ship follow-ons
 
-- Wrap `codex review`
-- Add structured findings artifacts
-- Implement `ship` as a final-prep workflow with verification hooks
+- Ship `deliver` as the umbrella execution workflow over internal `build`, `review`, and `ship`
+- Preserve explicit stage-local artifacts and lineage
+- Follow with standalone `review` and `ship` entrypoints for narrower operator paths
 
 ### Milestone 4: bounded delegation and capability packs
 
@@ -981,7 +984,7 @@ This keeps the operator model coherent: one workflow, one leader, a small set of
 
 ## 15. **Recommended Next Spec**
 
-The next spec should define the richer TTY interaction model in detail, including the active-run dashboard contract, the inspector shortcut model, and the threshold for a future full-screen TUI.
+The next spec should define session continuation and post-delivery workflows in detail, including wrapper-native `resume` and `fork`, standalone `review` and `ship` commands, and the boundary between `deliver` and a later GTM workflow.
 
 That spec should answer:
 
