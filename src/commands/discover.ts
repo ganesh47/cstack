@@ -1,9 +1,7 @@
 import path from "node:path";
-import { promises as fs } from "node:fs";
 import { loadConfig } from "../config.js";
-import { runCodexExec } from "../codex.js";
+import { runDiscoverExecution } from "../discover.js";
 import { maybeOfferInteractiveInspect } from "../inspector.js";
-import { buildDiscoverPrompt } from "../prompt.js";
 import { detectCodexVersion, detectGitBranch, ensureRunDir, makeRunId, writeRunRecord } from "../run.js";
 import type { RunRecord } from "../types.js";
 
@@ -35,14 +33,11 @@ export async function runDiscover(cwd: string, userPrompt: string): Promise<void
   const eventsPath = path.join(runDir, "events.jsonl");
   const stdoutPath = path.join(runDir, "stdout.log");
   const stderrPath = path.join(runDir, "stderr.log");
+  const stageDir = path.join(runDir, "stages", "discover");
   const [gitBranch, codexVersion] = await Promise.all([
     detectGitBranch(cwd),
     detectCodexVersion(cwd, config.codex.command)
   ]);
-  const { prompt, context } = await buildDiscoverPrompt(cwd, resolvedPrompt, config);
-
-  await fs.writeFile(promptPath, prompt, "utf8");
-  await fs.writeFile(contextPath, `${context}\n`, "utf8");
 
   const createdAt = new Date().toISOString();
   const runRecord: RunRecord = {
@@ -72,39 +67,40 @@ export async function runDiscover(cwd: string, userPrompt: string): Promise<void
   await writeRunRecord(runDir, runRecord);
 
   try {
-    const result = await runCodexExec({
+    const result = await runDiscoverExecution({
       cwd,
-      workflow: "discover",
       runId,
-      prompt,
-      finalPath,
-      eventsPath,
-      stdoutPath,
-      stderrPath,
-      config
+      input: resolvedPrompt,
+      config,
+      paths: {
+        runDir,
+        stageDir,
+        promptPath,
+        contextPath,
+        finalPath,
+        eventsPath,
+        stdoutPath,
+        stderrPath,
+        artifactPath
+      }
     });
 
-    runRecord.status = result.code === 0 ? "completed" : "failed";
+    runRecord.status = result.leadResult.code === 0 ? "completed" : "failed";
     runRecord.updatedAt = new Date().toISOString();
     delete runRecord.currentStage;
-    runRecord.codexCommand = result.command;
-    if (result.sessionId) {
-      runRecord.sessionId = result.sessionId;
+    runRecord.codexCommand = result.leadResult.command;
+    if (result.leadResult.sessionId) {
+      runRecord.sessionId = result.leadResult.sessionId;
     }
-    if (result.lastActivity) {
-      runRecord.lastActivity = result.lastActivity;
+    if (result.leadResult.lastActivity) {
+      runRecord.lastActivity = result.leadResult.lastActivity;
     }
-    if (result.code !== 0) {
-      runRecord.error = `codex exec exited with code ${result.code}${result.signal ? ` (${result.signal})` : ""}`;
-    }
-    if (result.code === 0) {
-      const finalBody = await fs.readFile(finalPath, "utf8");
-      await fs.writeFile(artifactPath, finalBody, "utf8");
-    }
+    runRecord.inputs.delegatedTracks = result.researchPlan.tracks.filter((track) => track.selected).map((track) => track.name);
+    runRecord.inputs.webResearchAllowed = result.researchPlan.webResearchAllowed;
     await writeRunRecord(runDir, runRecord);
 
-    if (result.code !== 0) {
-      throw new Error(runRecord.error);
+    if (result.leadResult.code !== 0) {
+      throw new Error(`discover research lead exited with code ${result.leadResult.code}`);
     }
 
     process.stdout.write(
@@ -115,6 +111,8 @@ export async function runDiscover(cwd: string, userPrompt: string): Promise<void
         `Artifacts:`,
         `  ${path.relative(cwd, finalPath)}`,
         `  ${path.relative(cwd, artifactPath)}`,
+        `  ${path.relative(cwd, path.join(stageDir, "artifacts", "discovery-report.md"))}`,
+        `  ${path.relative(cwd, path.join(stageDir, "research-plan.json"))}`,
         `  ${path.relative(cwd, eventsPath)}`,
         `  ${path.relative(cwd, path.join(runDir, "run.json"))}`
       ].join("\n") + "\n"

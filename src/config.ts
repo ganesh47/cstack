@@ -21,6 +21,10 @@ const DEFAULT_CONFIG: CstackConfig = {
       delegation: {
         enabled: true,
         maxAgents: 2
+      },
+      research: {
+        enabled: true,
+        allowWeb: false
       }
     }
   }

@@ -26,9 +26,75 @@ if (!finalPath) {
   process.exit(2);
 }
 
-await writeFile(
-  finalPath,
-  [
+let body;
+if (prompt.includes("track in a bounded `cstack discover` research run")) {
+  const track = prompt.includes("`external-researcher`")
+    ? "external-researcher"
+    : prompt.includes("`risk-researcher`")
+      ? "risk-researcher"
+      : "repo-explorer";
+  body = JSON.stringify(
+    {
+      status: "completed",
+      summary: `Fake delegated findings for ${track}.`,
+      filesInspected: track === "external-researcher" ? [] : ["src/cli.ts", "README.md"],
+      commandsRun: track === "external-researcher" ? ["web.lookup official docs"] : ["rg discover src README.md"],
+      sources:
+        track === "external-researcher"
+          ? [
+              {
+                title: "Official example source",
+                location: "https://example.com/docs",
+                kind: "url",
+                retrievedAt: "2026-03-14T00:00:00.000Z"
+              }
+            ]
+          : [
+              {
+                title: "Local repo",
+                location: "src/cli.ts",
+                kind: "file"
+              }
+            ],
+      findings: [`Finding from ${track}`],
+      confidence: "high",
+      unresolved: track === "risk-researcher" ? ["Need real threat model input."] : []
+    },
+    null,
+    2
+  );
+} else if (prompt.includes("You are the `Research Lead` for a bounded `cstack discover` run.")) {
+  body = JSON.stringify(
+    {
+      summary: "Fake discover synthesis.",
+      localFindings: ["Repo findings accepted."],
+      externalFindings: prompt.includes("external-researcher") ? ["External findings included."] : [],
+      risks: prompt.includes("risk-researcher") ? ["Risk findings included."] : [],
+      openQuestions: [],
+      delegateDisposition: [
+        { track: "repo-explorer", leaderDisposition: "accepted", reason: "Useful local context." },
+        ...(prompt.includes("external-researcher")
+          ? [{ track: "external-researcher", leaderDisposition: "accepted", reason: "Useful external context." }]
+          : []),
+        ...(prompt.includes("risk-researcher")
+          ? [{ track: "risk-researcher", leaderDisposition: "accepted", reason: "Useful risk context." }]
+          : [])
+      ],
+      reportMarkdown: [
+        "# Fake Spec",
+        "",
+        "This is a fake Codex response.",
+        "",
+        "Research Lead synthesis complete.",
+        "",
+        prompt.includes("external-researcher") ? "External findings included." : "External findings absent."
+      ].join("\n")
+    },
+    null,
+    2
+  );
+} else {
+  body = [
     "# Fake Spec",
     "",
     "This is a fake Codex response.",
@@ -36,9 +102,10 @@ await writeFile(
     prompt.includes("Repository spec excerpt") || prompt.includes("Repository spec context")
       ? "Context included."
       : "Context missing."
-  ].join("\n") + "\n",
-  "utf8"
-);
+  ].join("\n");
+}
+
+await writeFile(finalPath, `${body}\n`, "utf8");
 
 await new Promise((resolve) => process.stdout.write("writing final output\n", resolve));
 process.stdout.write("completed\n");

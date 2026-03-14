@@ -19,6 +19,56 @@ export type SpecialistName =
   | "release-pipeline-review";
 
 export type SpecialistDisposition = "accepted" | "partial" | "discarded";
+export type DiscoverTrackName = "repo-explorer" | "external-researcher" | "risk-researcher";
+export type DiscoverResearchMode = "single-agent" | "research-team";
+
+export interface DiscoverTrackSelection {
+  name: DiscoverTrackName;
+  reason: string;
+  selected: boolean;
+  requiresWeb: boolean;
+}
+
+export interface DiscoverSourceRecord {
+  title: string;
+  location: string;
+  kind: "url" | "file" | "command" | "note";
+  retrievedAt?: string;
+  notes?: string;
+}
+
+export interface DiscoverDelegateResult {
+  track: DiscoverTrackName;
+  status: "completed" | "failed" | "stalled" | "discarded";
+  summary: string;
+  filesInspected: string[];
+  commandsRun: string[];
+  sources: DiscoverSourceRecord[];
+  findings: string[];
+  confidence: "low" | "medium" | "high";
+  unresolved: string[];
+  leaderDisposition: SpecialistDisposition;
+  notes?: string;
+  delegateDir?: string;
+  artifactPath?: string;
+  resultPath?: string;
+  sourcesPath?: string;
+  sessionId?: string;
+}
+
+export interface DiscoverResearchPlan {
+  prompt: string;
+  decidedAt: string;
+  mode: DiscoverResearchMode;
+  delegationEnabled: boolean;
+  maxTracks: number;
+  webResearchAllowed: boolean;
+  requestedCapabilities: string[];
+  availableCapabilities: string[];
+  summary: string;
+  tracks: DiscoverTrackSelection[];
+  limitations: string[];
+}
 
 export interface RoutingStagePlan {
   name: StageName;
@@ -83,6 +133,8 @@ export interface RunInspection {
   runDir: string;
   routingPlan: RoutingPlan | null;
   stageLineage: StageLineage | null;
+  discoverResearchPlan: DiscoverResearchPlan | null;
+  discoverDelegates: DiscoverDelegateResult[];
   recentEvents: RunEvent[];
   finalBody: string;
   artifacts: ArtifactEntry[];
@@ -116,6 +168,10 @@ export interface WorkflowConfig {
   delegation?: {
     enabled?: boolean;
     maxAgents?: number;
+  };
+  research?: {
+    enabled?: boolean;
+    allowWeb?: boolean;
   };
 }
 
@@ -155,6 +211,8 @@ export interface RunRecord {
     entrypoint?: "workflow" | "intent";
     plannedStages?: string[];
     selectedSpecialists?: string[];
+    delegatedTracks?: string[];
+    webResearchAllowed?: boolean;
     dryRun?: boolean;
   };
 }

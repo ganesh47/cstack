@@ -15,6 +15,7 @@ export interface CodexRunOptions {
   stdoutPath: string;
   stderrPath: string;
   config: CstackConfig;
+  silentProgress?: boolean;
 }
 
 export interface CodexRunResult {
@@ -125,7 +126,7 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
   const bin = options.config.codex.command || process.env.CSTACK_CODEX_BIN || "codex";
   const invocation = resolveCommand(bin, args);
   const startedAt = Date.now();
-  const reporter = new ProgressReporter(options.workflow, options.runId);
+  const reporter = options.silentProgress ? null : new ProgressReporter(options.workflow, options.runId);
 
   return new Promise<CodexRunResult>((resolve, reject) => {
     const closeStreams = async (): Promise<void> =>
@@ -155,7 +156,7 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
 
     const emitEvent = (event: RunEvent) => {
       events.write(`${JSON.stringify(event)}\n`);
-      reporter.emit(event);
+      reporter?.emit(event);
       lastActivity = event.message;
     };
 
@@ -227,7 +228,7 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
 
     child.on("error", (error) => {
       clearInterval(heartbeat);
-      reporter.close();
+      reporter?.close();
       void closeStreams().finally(() => reject(error));
     });
 
@@ -250,7 +251,7 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
       if (sessionId) {
         result.sessionId = sessionId;
       }
-      reporter.close();
+      reporter?.close();
       await closeStreams();
       resolve(result);
     });

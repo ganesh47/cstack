@@ -6,6 +6,88 @@ import { runInspect } from "../src/commands/inspect.js";
 import { handleInspectorCommand, loadRunInspection, runInteractiveInspector } from "../src/inspector.js";
 import type { RoutingPlan, RunEvent, RunRecord, StageLineage } from "../src/types.js";
 
+async function seedDiscoverRun(repoDir: string): Promise<string> {
+  const runId = "2026-03-14T10-00-00-discover-research";
+  const runDir = path.join(repoDir, ".cstack", "runs", runId);
+  const stageDir = path.join(runDir, "stages", "discover");
+  await fs.mkdir(path.join(runDir, "artifacts"), { recursive: true });
+  await fs.mkdir(path.join(stageDir, "artifacts"), { recursive: true });
+  await fs.mkdir(path.join(stageDir, "delegates", "repo-explorer"), { recursive: true });
+
+  const run: RunRecord = {
+    id: runId,
+    workflow: "discover",
+    createdAt: "2026-03-14T10:00:00.000Z",
+    updatedAt: "2026-03-14T10:00:20.000Z",
+    status: "completed",
+    cwd: repoDir,
+    gitBranch: "main",
+    codexVersion: "fake",
+    codexCommand: ["codex", "exec"],
+    promptPath: path.join(runDir, "prompt.md"),
+    finalPath: path.join(runDir, "final.md"),
+    contextPath: path.join(runDir, "context.md"),
+    eventsPath: path.join(runDir, "events.jsonl"),
+    stdoutPath: path.join(runDir, "stdout.log"),
+    stderrPath: path.join(runDir, "stderr.log"),
+    configSources: [],
+    sessionId: "fake-session-456",
+    lastActivity: "Discover run completed",
+    summary: "Map repo and external docs",
+    inputs: {
+      userPrompt: "Map repo and external docs"
+    }
+  };
+
+  const researchPlan = {
+    prompt: "Map repo and external docs",
+    decidedAt: "2026-03-14T10:00:00.000Z",
+    mode: "research-team",
+    delegationEnabled: true,
+    maxTracks: 2,
+    webResearchAllowed: true,
+    requestedCapabilities: ["repo", "web"],
+    availableCapabilities: ["repo", "web"],
+    summary: "Discover research team: repo-explorer, external-researcher",
+    tracks: [
+      { name: "repo-explorer", reason: "repo mapping", selected: true, requiresWeb: false },
+      { name: "external-researcher", reason: "official docs", selected: true, requiresWeb: true },
+      { name: "risk-researcher", reason: "not needed", selected: false, requiresWeb: false }
+    ],
+    limitations: []
+  };
+
+  await fs.writeFile(path.join(runDir, "run.json"), `${JSON.stringify(run, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(stageDir, "research-plan.json"), `${JSON.stringify(researchPlan, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(runDir, "events.jsonl"), `${JSON.stringify({
+    timestamp: "2026-03-14T10:00:20.000Z",
+    elapsedMs: 20_000,
+    type: "completed",
+    message: "Discover run completed"
+  })}\n`, "utf8");
+  await fs.writeFile(path.join(runDir, "final.md"), "# Final\n\nResearch synthesis.\n", "utf8");
+  await fs.writeFile(path.join(stageDir, "artifacts", "discovery-report.md"), "# Discovery report\n", "utf8");
+  await fs.writeFile(path.join(stageDir, "delegates", "repo-explorer", "result.json"), `${JSON.stringify({
+    track: "repo-explorer",
+    status: "completed",
+    summary: "Repo mapped.",
+    filesInspected: ["src/cli.ts"],
+    commandsRun: ["rg discover src"],
+    sources: [{ title: "src/cli.ts", location: "src/cli.ts", kind: "file" }],
+    findings: ["CLI entrypoint located."],
+    confidence: "high",
+    unresolved: [],
+    leaderDisposition: "accepted"
+  }, null, 2)}\n`, "utf8");
+  await fs.writeFile(
+    path.join(stageDir, "delegates", "repo-explorer", "sources.json"),
+    `${JSON.stringify([{ title: "src/cli.ts", location: "src/cli.ts", kind: "file" }], null, 2)}\n`,
+    "utf8"
+  );
+
+  return runId;
+}
+
 async function seedIntentRun(repoDir: string): Promise<string> {
   const runId = "2026-03-13T18-20-00-intent-sso-audit";
   const runDir = path.join(repoDir, ".cstack", "runs", runId);
@@ -214,5 +296,16 @@ describe("inspect", () => {
     await expect(
       runInteractiveInspector(repoDir, inspection, { input: process.stdin, output: process.stdout })
     ).rejects.toThrow("Interactive inspection requires a TTY.");
+  });
+
+  it("shows discover research plan details when present", async () => {
+    const discoverRunId = await seedDiscoverRun(repoDir);
+    const inspection = await loadRunInspection(repoDir, discoverRunId);
+
+    expect(inspection.discoverResearchPlan?.mode).toBe("research-team");
+    await expect(handleInspectorCommand(repoDir, inspection, "show research")).resolves.toContain("\"webResearchAllowed\": true");
+    await expect(handleInspectorCommand(repoDir, inspection, "show delegate repo-explorer")).resolves.toContain("\"track\": \"repo-explorer\"");
+    await expect(handleInspectorCommand(repoDir, inspection, "show sources repo-explorer")).resolves.toContain("\"src/cli.ts\"");
+    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("Research");
   });
 });

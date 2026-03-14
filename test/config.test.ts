@@ -47,6 +47,9 @@ sandbox = "workspace-write"
 [workflows.spec.delegation]
 enabled = true
 maxAgents = 2
+
+[workflows.discover.research]
+allowWeb = true
 `,
       "utf8"
     );
@@ -56,6 +59,8 @@ maxAgents = 2
     expect(config.codex.sandbox).toBe("workspace-write");
     expect(config.workflows.spec.delegation?.enabled).toBe(true);
     expect(config.workflows.spec.delegation?.maxAgents).toBe(2);
+    expect(config.workflows.discover.research?.enabled).toBe(true);
+    expect(config.workflows.discover.research?.allowWeb).toBe(true);
     expect(sources).toHaveLength(2);
   });
 });

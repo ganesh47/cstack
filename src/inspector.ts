@@ -1,7 +1,16 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import readline from "node:readline/promises";
-import type { ArtifactEntry, RoutingPlan, RunEvent, RunInspection, RunLedgerEntry, StageLineage } from "./types.js";
+import type {
+  ArtifactEntry,
+  DiscoverDelegateResult,
+  DiscoverResearchPlan,
+  RoutingPlan,
+  RunEvent,
+  RunInspection,
+  RunLedgerEntry,
+  StageLineage
+} from "./types.js";
 import { listRunLedger, listRuns, readRun, runDirForId } from "./run.js";
 
 async function readRecentEvents(eventsPath?: string): Promise<RunEvent[]> {
@@ -71,11 +80,11 @@ function renderSuggestedActions(inspection: RunInspection): string[] {
 }
 
 function classifyArtifact(relativePath: string): ArtifactEntry["kind"] {
+  if (relativePath.includes("/delegates/") || relativePath.startsWith("delegates/")) {
+    return "delegate";
+  }
   if (relativePath.startsWith("artifacts/")) {
     return "artifact";
-  }
-  if (relativePath.startsWith("delegates/")) {
-    return "delegate";
   }
   if (relativePath.startsWith("stages/")) {
     return "stage";
@@ -108,6 +117,26 @@ async function walkArtifacts(root: string, current = root): Promise<ArtifactEntr
   return artifacts.sort((left, right) => left.path.localeCompare(right.path));
 }
 
+async function loadDiscoverDelegates(runDir: string): Promise<DiscoverDelegateResult[]> {
+  const delegatesRoot = path.join(runDir, "stages", "discover", "delegates");
+  try {
+    const entries = await fs.readdir(delegatesRoot, { withFileTypes: true });
+    const delegates: DiscoverDelegateResult[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const result = await readJsonFile<DiscoverDelegateResult>(path.join(delegatesRoot, entry.name, "result.json"));
+      if (result) {
+        delegates.push(result);
+      }
+    }
+    return delegates.sort((left, right) => left.track.localeCompare(right.track));
+  } catch {
+    return [];
+  }
+}
+
 export async function loadRunInspection(cwd: string, runId?: string): Promise<RunInspection> {
   const targetId = runId ?? (await listRuns(cwd))[0]?.id;
   if (!targetId) {
@@ -116,10 +145,12 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
 
   const run = await readRun(cwd, targetId);
   const runDir = runDirForId(cwd, targetId);
-  const [recentEvents, routingPlan, stageLineage, artifacts] = await Promise.all([
+  const [recentEvents, routingPlan, stageLineage, discoverResearchPlan, discoverDelegates, artifacts] = await Promise.all([
     readRecentEvents(run.eventsPath),
     readJsonFile<RoutingPlan>(path.join(runDir, "routing-plan.json")),
     readJsonFile<StageLineage>(path.join(runDir, "stage-lineage.json")),
+    readJsonFile<DiscoverResearchPlan>(path.join(runDir, "stages", "discover", "research-plan.json")),
+    loadDiscoverDelegates(runDir),
     walkArtifacts(runDir)
   ]);
 
@@ -133,10 +164,36 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     runDir,
     routingPlan,
     stageLineage,
+    discoverResearchPlan,
+    discoverDelegates,
     recentEvents,
     finalBody,
     artifacts
   };
+}
+
+function renderResearchSection(inspection: RunInspection): string[] {
+  const { discoverResearchPlan } = inspection;
+  if (!discoverResearchPlan) {
+    return [];
+  }
+
+  const sourceCount = inspection.discoverDelegates.reduce((count, delegate) => count + delegate.sources.length, 0);
+
+  return [
+    "",
+    "Research",
+    `- mode: ${discoverResearchPlan.mode}`,
+    `- web research allowed: ${discoverResearchPlan.webResearchAllowed ? "yes" : "no"}`,
+    `- selected tracks: ${
+      discoverResearchPlan.tracks.filter((track) => track.selected).map((track) => track.name).join(", ") || "none"
+    }`,
+    `- cited sources: ${sourceCount}`,
+    ...inspection.discoverDelegates.map(
+      (delegate) => `- ${delegate.track}: ${delegate.status}, disposition=${delegate.leaderDisposition}`
+    ),
+    ...discoverResearchPlan.limitations.map((limitation) => `- limitation: ${limitation}`)
+  ];
 }
 
 function renderRoutingSection(inspection: RunInspection): string[] {
@@ -202,6 +259,7 @@ export function renderInspectionSummary(cwd: string, inspection: RunInspection):
       "Plan",
       `- stages: ${renderStageStrip(inspection)}`,
       `- specialists: ${renderSpecialistStrip(inspection)}`,
+      ...renderResearchSection(inspection),
       ...renderRoutingSection(inspection),
       ...renderLineageSection(inspection),
       "",
@@ -258,6 +316,26 @@ function renderSpecialists(inspection: RunInspection): string {
     "Executed specialists:",
     ...(executed.length > 0
       ? executed.map((specialist) => `- ${specialist.name}: ${specialist.status}, disposition=${specialist.disposition}`)
+      : ["- none"])
+  ].join("\n");
+}
+
+function renderDiscoverDelegates(inspection: RunInspection): string {
+  if (!inspection.discoverResearchPlan) {
+    return "No discover research plan was recorded for this run.";
+  }
+
+  const planned = inspection.discoverResearchPlan.tracks.filter((track) => track.selected);
+  return [
+    "Planned discover tracks:",
+    ...(planned.length > 0 ? planned.map((track) => `- ${track.name}: ${track.reason}`) : ["- none"]),
+    "",
+    "Executed discover tracks:",
+    ...(inspection.discoverDelegates.length > 0
+      ? inspection.discoverDelegates.map(
+          (delegate) =>
+            `- ${delegate.track}: ${delegate.status}, disposition=${delegate.leaderDisposition}, sources=${delegate.sources.length}`
+        )
       : ["- none"])
   ].join("\n");
 }
@@ -325,6 +403,9 @@ function helpText(): string {
     "- artifacts",
     "- show final",
     "- show routing",
+    "- show research",
+    "- show delegate <track>",
+    "- show sources <track>",
     "- show stage <name>",
     "- show specialist <name>",
     "- show artifact <relative-path>",
@@ -361,6 +442,16 @@ export async function handleInspectorCommand(cwd: string, inspection: RunInspect
   if (trimmed === "r" || trimmed === "show routing") {
     return inspection.routingPlan ? `${JSON.stringify(inspection.routingPlan, null, 2)}\n` : "No routing plan recorded for this run.";
   }
+  if (trimmed === "show research") {
+    if (!inspection.discoverResearchPlan) {
+      return "No discover research plan was recorded for this run.";
+    }
+    return [
+      JSON.stringify(inspection.discoverResearchPlan, null, 2),
+      "",
+      renderDiscoverDelegates(inspection)
+    ].join("\n");
+  }
   if (trimmed === "what remains") {
     return renderWhatRemains(inspection);
   }
@@ -396,6 +487,19 @@ export async function handleInspectorCommand(cwd: string, inspection: RunInspect
     }
     const planned = inspection.routingPlan?.specialists.find((entry) => entry.name === specialistName);
     return planned ? `${JSON.stringify(planned, null, 2)}\n` : `No specialist named \`${specialistName}\` was recorded for this run.`;
+  }
+  if (trimmed.startsWith("show delegate ")) {
+    const track = trimmed.slice("show delegate ".length).trim();
+    const delegate = inspection.discoverDelegates.find((entry) => entry.track === track);
+    return delegate ? `${JSON.stringify(delegate, null, 2)}\n` : `No discover delegate named \`${track}\` was recorded for this run.`;
+  }
+  if (trimmed.startsWith("show sources ")) {
+    const track = trimmed.slice("show sources ".length).trim();
+    const delegate = inspection.discoverDelegates.find((entry) => entry.track === track);
+    if (!delegate) {
+      return `No discover delegate named \`${track}\` was recorded for this run.`;
+    }
+    return `${JSON.stringify(delegate.sources, null, 2)}\n`;
   }
   if (trimmed.startsWith("show artifact ")) {
     const relativePath = trimmed.slice("show artifact ".length).trim();

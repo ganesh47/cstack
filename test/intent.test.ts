@@ -32,7 +32,11 @@ describe("intent router", () => {
         "",
         "[workflows.discover.delegation]",
         "enabled = true",
-        "maxAgents = 2",
+        "maxAgents = 3",
+        "",
+        "[workflows.discover.research]",
+        "enabled = true",
+        "allowWeb = true",
         ""
       ].join("\n"),
       "utf8"
@@ -77,6 +81,9 @@ describe("intent router", () => {
       const runDir = path.dirname(run.finalPath);
       const routingPlan = JSON.parse(await fs.readFile(path.join(runDir, "routing-plan.json"), "utf8")) as RoutingPlan;
       const lineage = JSON.parse(await fs.readFile(path.join(runDir, "stage-lineage.json"), "utf8")) as StageLineage;
+      const discoverResearchPlan = JSON.parse(
+        await fs.readFile(path.join(runDir, "stages", "discover", "research-plan.json"), "utf8")
+      ) as { mode: string; tracks: Array<{ name: string; selected: boolean }> };
       const finalBody = await fs.readFile(run.finalPath, "utf8");
 
       expect(run.workflow).toBe("intent");
@@ -87,7 +94,21 @@ describe("intent router", () => {
       expect(lineage.stages.find((stage) => stage.name === "build")?.status).toBe("deferred");
       expect(lineage.specialists).toHaveLength(3);
       expect(lineage.specialists.every((specialist) => specialist.disposition === "accepted")).toBe(true);
-      expect(await fs.readFile(path.join(runDir, "stages", "discover", "artifacts", "findings.md"), "utf8")).toContain("Fake Spec");
+      expect(discoverResearchPlan.mode).toBe("research-team");
+      expect(discoverResearchPlan.tracks.filter((track) => track.selected).map((track) => track.name)).toEqual([
+        "repo-explorer",
+        "risk-researcher",
+        "external-researcher"
+      ]);
+      expect(await fs.readFile(path.join(runDir, "stages", "discover", "artifacts", "findings.md"), "utf8")).toContain(
+        "Research Lead synthesis complete."
+      );
+      expect(await fs.readFile(path.join(runDir, "stages", "discover", "artifacts", "discovery-report.md"), "utf8")).toContain(
+        "Research Lead synthesis complete."
+      );
+      expect(await fs.readFile(path.join(runDir, "stages", "discover", "delegates", "risk-researcher", "result.json"), "utf8")).toContain(
+        "\"track\": \"risk-researcher\""
+      );
       expect(await fs.readFile(path.join(runDir, "stages", "spec", "artifacts", "spec.md"), "utf8")).toContain("Fake Spec");
       expect(await fs.readFile(path.join(runDir, "delegates", "security-review", "result.json"), "utf8")).toContain(
         "\"disposition\": \"accepted\""

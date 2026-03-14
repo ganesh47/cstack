@@ -3,8 +3,9 @@ import { promises as fs } from "node:fs";
 import { buildEvent, ProgressReporter } from "./progress.js";
 import { loadConfig } from "./config.js";
 import { runCodexExec } from "./codex.js";
+import { runDiscoverExecution } from "./discover.js";
 import { maybeOfferInteractiveInspect } from "./inspector.js";
-import { buildDiscoverPrompt, buildSpecPrompt, buildSpecialistPrompt, excerpt } from "./prompt.js";
+import { buildSpecPrompt, buildSpecialistPrompt, excerpt } from "./prompt.js";
 import { detectCodexVersion, detectGitBranch, ensureRunDir, makeRunId, writeRunRecord } from "./run.js";
 import type {
   CstackConfig,
@@ -540,22 +541,30 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
       await events.emit("activity", `Running ${stageName} stage`);
 
       if (stageName === "discover") {
-        const { prompt, context } = await buildDiscoverPrompt(cwd, resolvedIntent, config);
-        const result = await executeStage({
+        const stageDir = path.join(runDir, "stages", "discover");
+        await fs.mkdir(path.join(stageDir, "artifacts"), { recursive: true });
+        const discoverResult = await runDiscoverExecution({
           cwd,
-          runId,
-          runDir,
-          stage: "discover",
-          prompt,
-          context,
+          runId: `${runId}-discover`,
+          input: resolvedIntent,
           config,
-          artifactName: "findings.md"
+          paths: {
+            runDir,
+            stageDir,
+            promptPath: path.join(stageDir, "prompt.md"),
+            contextPath: path.join(stageDir, "context.md"),
+            finalPath: path.join(stageDir, "final.md"),
+            eventsPath: path.join(stageDir, "events.jsonl"),
+            stdoutPath: path.join(stageDir, "stdout.log"),
+            stderrPath: path.join(stageDir, "stderr.log"),
+            artifactPath: path.join(stageDir, "artifacts", "findings.md")
+          }
         });
-        discoverFindings = await fs.readFile(result.artifactPath, "utf8");
+        discoverFindings = discoverResult.finalBody;
         lineageStage.status = "completed";
         lineageStage.executed = true;
-        lineageStage.stageDir = result.stageDir;
-        lineageStage.artifactPath = result.artifactPath;
+        lineageStage.stageDir = stageDir;
+        lineageStage.artifactPath = path.join(stageDir, "artifacts", "findings.md");
         events.markStage(stageName, "completed");
         await writeJson(stageLineagePath, stageLineage);
         continue;
