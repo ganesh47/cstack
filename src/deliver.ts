@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import { buildEvent, ProgressReporter } from "./progress.js";
 import { resolveLinkedBuildContext, runBuildExecution, type BuildExecutionResult, type LinkedBuildContext } from "./build.js";
 import { runCodexExec } from "./codex.js";
+import { collectGitHubDeliveryEvidence } from "./github.js";
 import {
   buildDeliverPrompt,
   buildDeliverReviewLeadPrompt,
@@ -12,8 +13,10 @@ import {
 import { inferRoutingPlan } from "./intent.js";
 import type {
   CstackConfig,
+  DeliverTargetMode,
   DeliverReviewVerdict,
   DeliverShipRecord,
+  GitHubDeliveryRecord,
   RoutingStagePlan,
   RunEvent,
   SpecialistExecution,
@@ -36,6 +39,7 @@ export interface DeliverPaths {
 
 export interface DeliverExecutionOptions {
   cwd: string;
+  gitBranch: string;
   runId: string;
   input: string;
   config: CstackConfig;
@@ -43,12 +47,15 @@ export interface DeliverExecutionOptions {
   requestedMode: WorkflowMode;
   linkedContext?: LinkedBuildContext | undefined;
   verificationCommands: string[];
+  deliveryMode: DeliverTargetMode;
+  issueNumbers: number[];
 }
 
 export interface DeliverExecutionResult {
   buildExecution: BuildExecutionResult;
   reviewVerdict: DeliverReviewVerdict;
   shipRecord: DeliverShipRecord;
+  githubDeliveryRecord: GitHubDeliveryRecord;
   stageLineage: StageLineage;
   selectedSpecialists: SpecialistSelection[];
   finalBody: string;
@@ -210,12 +217,17 @@ function renderUnresolvedMarkdown(record: DeliverShipRecord): string {
   return ["# Unresolved", "", ...(record.unresolved.length > 0 ? record.unresolved.map((item) => `- ${item}`) : ["- none"])].join("\n") + "\n";
 }
 
+function mergeUniqueLines(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))];
+}
+
 function buildDeliverFinalSummary(options: {
   input: string;
   linkedContext?: LinkedBuildContext;
   stageLineage: StageLineage;
   reviewVerdict: DeliverReviewVerdict;
   shipRecord: DeliverShipRecord;
+  githubDeliveryRecord: GitHubDeliveryRecord;
 }): string {
   return [
     "# Deliver Run Summary",
@@ -237,7 +249,12 @@ function buildDeliverFinalSummary(options: {
     "## Ship readiness",
     `- readiness: ${options.shipRecord.readiness}`,
     `- summary: ${options.shipRecord.summary}`,
-    ...options.shipRecord.nextActions.map((action) => `- next: ${action}`)
+    ...options.shipRecord.nextActions.map((action) => `- next: ${action}`),
+    "",
+    "## GitHub delivery",
+    `- status: ${options.githubDeliveryRecord.overall.status}`,
+    `- summary: ${options.githubDeliveryRecord.overall.summary}`,
+    ...options.githubDeliveryRecord.overall.blockers.map((blocker) => `- blocker: ${blocker}`)
   ].join("\n") + "\n";
 }
 
@@ -415,12 +432,23 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
   await writeJson(options.paths.stageLineagePath, stageLineage);
   events.markStage("ship", "running");
 
+  const githubEvidence = await collectGitHubDeliveryEvidence({
+    cwd: options.cwd,
+    gitBranch: options.gitBranch,
+    deliveryMode: options.deliveryMode,
+    issueNumbers: options.issueNumbers,
+    policy: options.config.workflows.deliver.github ?? {},
+    input: options.input,
+    ...(options.linkedContext?.artifactBody ? { linkedArtifactBody: options.linkedContext.artifactBody } : {})
+  });
+  const githubDeliveryRecord = githubEvidence.record;
   const shipPrompt = await buildDeliverShipPrompt({
     cwd: options.cwd,
     input: options.input,
     buildSummary: buildExecution.finalBody,
     reviewVerdict,
-    verificationRecord: buildExecution.verificationRecord
+    verificationRecord: buildExecution.verificationRecord,
+    githubDeliveryRecord
   });
   await fs.writeFile(path.join(shipStageDir, "prompt.md"), shipPrompt.prompt, "utf8");
   await fs.writeFile(path.join(shipStageDir, "context.md"), `${shipPrompt.context}\n`, "utf8");
@@ -436,19 +464,58 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
     config: options.config
   });
   const shipRaw = await fs.readFile(path.join(shipStageDir, "final.md"), "utf8");
-  const shipRecord = parseJson<DeliverShipRecord>(shipRaw, "Ship lead");
+  let shipRecord = parseJson<DeliverShipRecord>(shipRaw, "Ship lead");
+  if (githubDeliveryRecord.overall.status === "blocked") {
+    shipRecord = {
+      ...shipRecord,
+      readiness: "blocked",
+      summary: `${shipRecord.summary} GitHub delivery is blocked.`,
+      unresolved: mergeUniqueLines([...shipRecord.unresolved, ...githubDeliveryRecord.overall.blockers]),
+      nextActions: mergeUniqueLines([...shipRecord.nextActions, ...githubDeliveryRecord.overall.blockers]),
+      checklist: [
+        ...shipRecord.checklist,
+        {
+          item: "GitHub delivery policy",
+          status: "blocked",
+          notes: githubDeliveryRecord.overall.blockers.join("; ")
+        }
+      ],
+      reportMarkdown: `${shipRecord.reportMarkdown.trimEnd()}\n\n## GitHub delivery\n\nStatus: blocked\n`
+    };
+  } else {
+    shipRecord = {
+      ...shipRecord,
+      checklist: [
+        ...shipRecord.checklist,
+        {
+          item: "GitHub delivery policy",
+          status: "complete",
+          notes: githubDeliveryRecord.overall.summary
+        }
+      ],
+      reportMarkdown: `${shipRecord.reportMarkdown.trimEnd()}\n\n## GitHub delivery\n\nStatus: ready\n`
+    };
+  }
   await fs.writeFile(path.join(shipStageDir, "artifacts", "ship-summary.md"), shipRecord.reportMarkdown, "utf8");
   await fs.writeFile(path.join(shipStageDir, "artifacts", "release-checklist.md"), renderChecklistMarkdown(shipRecord), "utf8");
   await fs.writeFile(path.join(shipStageDir, "artifacts", "unresolved.md"), renderUnresolvedMarkdown(shipRecord), "utf8");
   await writeJson(path.join(shipStageDir, "artifacts", "ship-record.json"), shipRecord);
+  await writeJson(path.join(shipStageDir, "artifacts", "github-state.json"), githubEvidence.artifacts.githubState);
+  await writeJson(path.join(shipStageDir, "artifacts", "pull-request.json"), githubEvidence.artifacts.pullRequest);
+  await writeJson(path.join(shipStageDir, "artifacts", "issues.json"), githubEvidence.artifacts.issues);
+  await writeJson(path.join(shipStageDir, "artifacts", "checks.json"), githubEvidence.artifacts.checks);
+  await writeJson(path.join(shipStageDir, "artifacts", "actions.json"), githubEvidence.artifacts.actions);
+  await writeJson(path.join(shipStageDir, "artifacts", "security.json"), githubEvidence.artifacts.security);
+  await writeJson(path.join(shipStageDir, "artifacts", "release.json"), githubEvidence.artifacts.release);
+  await writeJson(path.join(options.paths.runDir, "artifacts", "github-delivery.json"), githubDeliveryRecord);
 
-  shipStage.status = shipResult.code === 0 ? "completed" : "failed";
+  shipStage.status = shipResult.code === 0 && githubDeliveryRecord.overall.status === "ready" ? "completed" : "failed";
   shipStage.executed = true;
   shipStage.stageDir = shipStageDir;
   shipStage.artifactPath = path.join(shipStageDir, "artifacts", "ship-summary.md");
   shipStage.notes = shipRecord.summary;
   await writeJson(options.paths.stageLineagePath, stageLineage);
-  events.markStage("ship", shipResult.code === 0 ? "completed" : "failed");
+  events.markStage("ship", shipStage.status === "completed" ? "completed" : "failed");
   await events.emit("completed", "Deliver workflow completed");
   events.close();
 
@@ -457,6 +524,7 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
     stageLineage,
     reviewVerdict,
     shipRecord,
+    githubDeliveryRecord,
     ...(options.linkedContext ? { linkedContext: options.linkedContext } : {})
   });
   await fs.writeFile(options.paths.finalPath, finalBody, "utf8");
@@ -466,6 +534,7 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
     buildExecution,
     reviewVerdict,
     shipRecord,
+    githubDeliveryRecord,
     stageLineage,
     selectedSpecialists,
     finalBody

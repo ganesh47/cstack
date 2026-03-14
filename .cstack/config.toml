@@ -8,3 +8,25 @@ maxAgents = 0
 [workflows.discover.delegation]
 enabled = true
 maxAgents = 2
+
+[workflows.deliver.github]
+enabled = true
+command = "gh"
+repository = "ganesh47/cstack"
+mode = "merge-ready"
+prRequired = true
+requireApprovedReview = true
+linkedIssuesRequired = false
+requiredIssueState = "linked"
+requiredChecks = []
+requiredWorkflows = []
+requireRelease = false
+requireTag = false
+requireVersionMatch = false
+requireChangelog = false
+changelogPaths = ["README.md"]
+
+[workflows.deliver.github.security]
+requireDependabot = false
+requireCodeScanning = false
+blockSeverities = ["high", "critical"]

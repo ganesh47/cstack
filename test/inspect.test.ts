@@ -341,19 +341,32 @@ async function seedBuildRun(repoDir: string): Promise<string> {
   return runId;
 }
 
-async function seedDeliverRun(repoDir: string): Promise<string> {
-  const runId = "2026-03-14T12-15-00-deliver-billing-cleanup";
+async function seedDeliverRun(
+  repoDir: string,
+  options: {
+    readiness?: "ready" | "blocked";
+    mode?: "merge-ready" | "release";
+  } = {}
+): Promise<string> {
+  const readiness = options.readiness ?? "blocked";
+  const mode = options.mode ?? "merge-ready";
+  const blocked = readiness === "blocked";
+  const runId =
+    readiness === "blocked"
+      ? "2026-03-14T12-15-00-deliver-billing-cleanup-blocked"
+      : "2026-03-14T12-16-00-deliver-billing-cleanup-ready";
   const runDir = path.join(repoDir, ".cstack", "runs", runId);
   await fs.mkdir(path.join(runDir, "stages", "build", "artifacts"), { recursive: true });
   await fs.mkdir(path.join(runDir, "stages", "review", "artifacts"), { recursive: true });
   await fs.mkdir(path.join(runDir, "stages", "ship", "artifacts"), { recursive: true });
+  await fs.mkdir(path.join(runDir, "artifacts"), { recursive: true });
 
   const run: RunRecord = {
     id: runId,
     workflow: "deliver",
     createdAt: "2026-03-14T12:15:00.000Z",
     updatedAt: "2026-03-14T12:15:30.000Z",
-    status: "completed",
+    status: blocked ? "failed" : "completed",
     cwd: repoDir,
     gitBranch: "main",
     codexVersion: "fake",
@@ -432,7 +445,7 @@ async function seedDeliverRun(repoDir: string): Promise<string> {
         status: "changes-requested",
         summary: "Review completed with bounded follow-up.",
         findings: [],
-        recommendedActions: ["Review the release checklist before merge."],
+        recommendedActions: blocked ? ["Review the release checklist before merge."] : [],
         acceptedSpecialists: [],
         reportMarkdown: "# Review Findings\n"
       },
@@ -446,11 +459,11 @@ async function seedDeliverRun(repoDir: string): Promise<string> {
     path.join(runDir, "stages", "ship", "artifacts", "ship-record.json"),
     `${JSON.stringify(
       {
-        readiness: "blocked",
-        summary: "Ship artifacts prepared.",
+        readiness,
+        summary: blocked ? "Ship artifacts prepared with outstanding blockers." : "Ship artifacts prepared.",
         checklist: [{ item: "Confirm version bump.", status: "complete" }],
-        unresolved: ["Remote deployment remains manual."],
-        nextActions: ["Handle remote deployment outside the wrapper."],
+        unresolved: blocked ? ["Required GitHub gates remain blocked."] : [],
+        nextActions: blocked ? ["Resolve the blocked GitHub gates before rerunning deliver."] : [],
         reportMarkdown: "# Ship Summary\n"
       },
       null,
@@ -458,6 +471,131 @@ async function seedDeliverRun(repoDir: string): Promise<string> {
     )}\n`,
     "utf8"
   );
+  const githubDelivery = {
+    repository: "ganesh47/cstack",
+    mode,
+    branch: {
+      name: "main",
+      headSha: "abc123",
+      defaultBranch: "main"
+    },
+    requestedPolicy: {
+      enabled: true,
+      prRequired: true,
+      requiredChecks: ["deliver/test"],
+      requiredWorkflows: ["Release"]
+    },
+    issueReferences: [123],
+    branchState: {
+      required: true,
+      status: "ready",
+      summary: "Observed main.",
+      blockers: [],
+      observedAt: "2026-03-14T12:15:20.000Z",
+      source: "gh",
+      observed: { current: "main", headSha: "abc123", defaultBranch: "main" }
+    },
+    pullRequest: {
+      required: true,
+      status: "ready",
+      summary: "PR looks good.",
+      blockers: [],
+      observedAt: "2026-03-14T12:15:20.000Z",
+      source: "gh",
+      observed: {
+        number: 42,
+        title: "Deliver billing cleanup",
+        state: "OPEN",
+        isDraft: false,
+        reviewDecision: "APPROVED",
+        url: "https://example.com/pr/42",
+        headRefName: "main",
+        baseRefName: "main"
+      }
+    },
+    issues: {
+      required: true,
+      status: "ready",
+      summary: "Issue closed.",
+      blockers: [],
+      observedAt: "2026-03-14T12:15:20.000Z",
+      source: "gh",
+      observed: [{ number: 123, title: "Track deliver", state: "CLOSED", url: "https://example.com/issues/123" }]
+    },
+    checks: {
+      required: true,
+      status: blocked ? "blocked" : "ready",
+      summary: blocked ? "Required check deliver/test is failing." : "Observed 1 required check.",
+      blockers: blocked ? ["Required check deliver/test is failing."] : [],
+      observedAt: "2026-03-14T12:15:20.000Z",
+      source: "gh",
+      observed: [{ name: "deliver/test", status: "completed", conclusion: blocked ? "fail" : "pass" }]
+    },
+    actions: {
+      required: true,
+      status: "ready",
+      summary: "Release workflow passed.",
+      blockers: [],
+      observedAt: "2026-03-14T12:15:20.000Z",
+      source: "gh",
+      observed: [{ databaseId: 1, workflowName: "Release", status: "completed", conclusion: "success" }]
+    },
+    release: {
+      required: mode === "release",
+      status: mode === "release" ? "ready" : "not-applicable",
+      summary: mode === "release" ? "Release artifacts are present." : "No release required.",
+      blockers: [],
+      observedAt: "2026-03-14T12:15:20.000Z",
+      source: mode === "release" ? "gh" : "config",
+      observed:
+        mode === "release"
+          ? {
+              tagName: "v1.2.3",
+              version: "1.2.3",
+              url: "https://example.com/releases/v1.2.3",
+              publishedAt: "2026-03-14T12:15:20.000Z",
+              tagExists: true,
+              releaseExists: true
+            }
+          : null
+    },
+    security: {
+      required: true,
+      status: blocked ? "blocked" : "ready",
+      summary: blocked ? "Dependabot alert is open." : "GitHub security gates passed.",
+      blockers: blocked ? ["Dependabot alert #7 is open at severity high."] : [],
+      observedAt: "2026-03-14T12:15:20.000Z",
+      source: "gh",
+      observed: {
+        dependabot: blocked ? [{ number: 7, severity: "high", state: "open", packageName: "lodash" }] : [],
+        codeScanning: []
+      }
+    },
+    overall: {
+      status: blocked ? "blocked" : "ready",
+      summary: blocked ? "2 blockers remain." : "All required GitHub gates passed.",
+      blockers: blocked ? ["Required check deliver/test is failing.", "Dependabot alert #7 is open at severity high."] : [],
+      observedAt: "2026-03-14T12:15:20.000Z"
+    },
+    limitations: []
+  };
+  await fs.writeFile(
+    path.join(runDir, "artifacts", "github-delivery.json"),
+    `${JSON.stringify(githubDelivery, null, 2)}\n`,
+    "utf8"
+  );
+  await fs.writeFile(path.join(runDir, "stages", "ship", "artifacts", "github-state.json"), `${JSON.stringify({
+    repository: githubDelivery.repository,
+    mode: githubDelivery.mode,
+    branch: githubDelivery.branch,
+    overall: githubDelivery.overall
+  }, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(runDir, "stages", "ship", "artifacts", "pull-request.json"), `${JSON.stringify(githubDelivery.pullRequest, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(runDir, "stages", "ship", "artifacts", "issues.json"), `${JSON.stringify(githubDelivery.issues, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(runDir, "stages", "ship", "artifacts", "checks.json"), `${JSON.stringify(githubDelivery.checks, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(runDir, "stages", "ship", "artifacts", "actions.json"), `${JSON.stringify(githubDelivery.actions, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(runDir, "stages", "ship", "artifacts", "security.json"), `${JSON.stringify(githubDelivery.security, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(runDir, "stages", "ship", "artifacts", "release.json"), `${JSON.stringify(githubDelivery.release, null, 2)}\n`, "utf8");
 
   return runId;
 }
@@ -533,16 +671,41 @@ describe("inspect", () => {
   });
 
   it("loads nested build session and deliver stage artifacts for deliver runs", async () => {
-    const deliverRunId = await seedDeliverRun(repoDir);
+    const deliverRunId = await seedDeliverRun(repoDir, { readiness: "blocked" });
     const inspection = await loadRunInspection(repoDir, deliverRunId);
 
     expect(inspection.sessionRecord?.mode).toBe("exec");
     expect(inspection.verificationRecord?.status).toBe("passed");
     expect(inspection.deliverReviewVerdict?.status).toBe("changes-requested");
     expect(inspection.deliverShipRecord?.readiness).toBe("blocked");
+    expect(inspection.githubDeliveryRecord?.overall.status).toBe("blocked");
+    expect(inspection.run.status).toBe("failed");
     await expect(handleInspectorCommand(repoDir, inspection, "show verification")).resolves.toContain("\"status\": \"passed\"");
     await expect(handleInspectorCommand(repoDir, inspection, "show review")).resolves.toContain("\"status\": \"changes-requested\"");
     await expect(handleInspectorCommand(repoDir, inspection, "show ship")).resolves.toContain("\"readiness\": \"blocked\"");
+    await expect(handleInspectorCommand(repoDir, inspection, "show github")).resolves.toContain("\"status\": \"blocked\"");
+    await expect(handleInspectorCommand(repoDir, inspection, "show checks")).resolves.toContain("GitHub checks gate: blocked");
+    await expect(handleInspectorCommand(repoDir, inspection, "show security")).resolves.toContain("GitHub security gate: blocked");
+    await expect(handleInspectorCommand(repoDir, inspection, "what remains")).resolves.toContain("github checks: Required check deliver/test is failing.");
+    await expect(handleInspectorCommand(repoDir, inspection, "what remains")).resolves.toContain("github security: Dependabot alert is open.");
+    await expect(handleInspectorCommand(repoDir, inspection, "show artifact stages/ship/artifacts/checks.json")).resolves.toContain("\"conclusion\": \"fail\"");
+    await expect(handleInspectorCommand(repoDir, inspection, "show artifact stages/ship/artifacts/security.json")).resolves.toContain("\"severity\": \"high\"");
     await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("ship readiness: blocked");
+    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("github delivery: blocked (checks, security)");
+  });
+
+  it("shows ready GitHub delivery details for ready deliver runs", async () => {
+    const deliverRunId = await seedDeliverRun(repoDir, { readiness: "ready", mode: "release" });
+    const inspection = await loadRunInspection(repoDir, deliverRunId);
+
+    expect(inspection.run.status).toBe("completed");
+    expect(inspection.deliverShipRecord?.readiness).toBe("ready");
+    expect(inspection.githubDeliveryRecord?.overall.status).toBe("ready");
+    await expect(handleInspectorCommand(repoDir, inspection, "show pr")).resolves.toContain("GitHub pull request gate: ready");
+    await expect(handleInspectorCommand(repoDir, inspection, "show release")).resolves.toContain("GitHub release gate: ready");
+    await expect(handleInspectorCommand(repoDir, inspection, "show actions")).resolves.toContain("GitHub actions gate: ready");
+    await expect(handleInspectorCommand(repoDir, inspection, "what remains")).resolves.toContain("no deferred or missing work recorded");
+    await expect(handleInspectorCommand(repoDir, inspection, "show artifact stages/ship/artifacts/release.json")).resolves.toContain("\"tagName\": \"v1.2.3\"");
+    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("github delivery: ready");
   });
 });

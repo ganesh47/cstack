@@ -1,6 +1,7 @@
 export type WorkflowName = "spec" | "discover" | "build" | "deliver" | "update" | "intent";
 export type RunStatus = "running" | "completed" | "failed";
 export type WorkflowMode = "exec" | "interactive";
+export type DeliverTargetMode = "merge-ready" | "release";
 
 export type StageName = "discover" | "spec" | "build" | "review" | "ship";
 
@@ -140,6 +141,7 @@ export interface RunInspection {
   verificationRecord: BuildVerificationRecord | null;
   deliverReviewVerdict: DeliverReviewVerdict | null;
   deliverShipRecord: DeliverShipRecord | null;
+  githubDeliveryRecord: GitHubDeliveryRecord | null;
   recentEvents: RunEvent[];
   finalBody: string;
   artifacts: ArtifactEntry[];
@@ -180,6 +182,7 @@ export interface WorkflowConfig {
     enabled?: boolean;
     allowWeb?: boolean;
   };
+  github?: DeliverGitHubConfig;
 }
 
 export interface VerificationConfig {
@@ -195,6 +198,31 @@ export interface CstackConfig {
     deliver: WorkflowConfig;
   };
   verification?: VerificationConfig;
+}
+
+export interface DeliverGitHubSecurityConfig {
+  requireDependabot?: boolean;
+  requireCodeScanning?: boolean;
+  blockSeverities?: string[];
+}
+
+export interface DeliverGitHubConfig {
+  enabled?: boolean;
+  command?: string;
+  repository?: string;
+  mode?: DeliverTargetMode;
+  prRequired?: boolean;
+  requireApprovedReview?: boolean;
+  linkedIssuesRequired?: boolean;
+  requiredIssueState?: "linked" | "closed";
+  requiredChecks?: string[];
+  requiredWorkflows?: string[];
+  requireRelease?: boolean;
+  requireTag?: boolean;
+  requireVersionMatch?: boolean;
+  requireChangelog?: boolean;
+  changelogPaths?: string[];
+  security?: DeliverGitHubSecurityConfig;
 }
 
 export interface BuildSessionRecord {
@@ -271,6 +299,118 @@ export interface DeliverShipRecord {
   reportMarkdown: string;
 }
 
+export type GitHubGateStatus = "ready" | "blocked" | "not-applicable" | "unknown";
+
+export interface GitHubPullRequestRecord {
+  number: number;
+  title: string;
+  state: string;
+  isDraft: boolean;
+  reviewDecision?: string | null;
+  url: string;
+  headRefName: string;
+  baseRefName: string;
+}
+
+export interface GitHubIssueRecord {
+  number: number;
+  title: string;
+  state: string;
+  url: string;
+  closedAt?: string | null;
+}
+
+export interface GitHubCheckRunRecord {
+  name: string;
+  status: string;
+  conclusion?: string | null;
+  detailsUrl?: string | null;
+}
+
+export interface GitHubActionRunRecord {
+  databaseId: number;
+  workflowName: string;
+  status: string;
+  conclusion?: string | null;
+  url?: string;
+  headSha?: string;
+  headBranch?: string;
+  event?: string;
+}
+
+export interface GitHubDependabotAlertRecord {
+  number: number;
+  severity?: string | null;
+  state?: string | null;
+  packageName?: string | null;
+  url?: string;
+}
+
+export interface GitHubCodeScanningAlertRecord {
+  number: number;
+  severity?: string | null;
+  state?: string | null;
+  ruleId?: string | null;
+  url?: string;
+}
+
+export interface GitHubReleaseRecord {
+  tagName: string;
+  version?: string | null;
+  changelogPaths?: string[];
+  name?: string | null;
+  url?: string;
+  isDraft?: boolean;
+  isPrerelease?: boolean;
+  publishedAt?: string | null;
+  tagExists: boolean;
+  releaseExists: boolean;
+}
+
+export interface GitHubGateEvaluation<T> {
+  required: boolean;
+  status: GitHubGateStatus;
+  summary: string;
+  blockers: string[];
+  observedAt: string;
+  source: "gh" | "git" | "config" | "none";
+  observed: T;
+  error?: string;
+}
+
+export interface GitHubDeliveryRecord {
+  repository: string | null;
+  mode: DeliverTargetMode;
+  branch: {
+    name: string;
+    headSha: string;
+    defaultBranch?: string | null;
+  };
+  requestedPolicy: DeliverGitHubConfig;
+  issueReferences: number[];
+  branchState: GitHubGateEvaluation<{
+    current: string;
+    headSha: string;
+    defaultBranch?: string | null;
+  }>;
+  pullRequest: GitHubGateEvaluation<GitHubPullRequestRecord | null>;
+  issues: GitHubGateEvaluation<GitHubIssueRecord[]>;
+  checks: GitHubGateEvaluation<GitHubCheckRunRecord[]>;
+  actions: GitHubGateEvaluation<GitHubActionRunRecord[]>;
+  release: GitHubGateEvaluation<GitHubReleaseRecord | null>;
+  security: GitHubGateEvaluation<{
+    dependabot: GitHubDependabotAlertRecord[];
+    codeScanning: GitHubCodeScanningAlertRecord[];
+  }>;
+  overall: {
+    status: "ready" | "blocked";
+    summary: string;
+    blockers: string[];
+    observedAt: string;
+  };
+  limitations: string[];
+}
+
 export interface RunRecord {
   id: string;
   workflow: WorkflowName;
@@ -305,6 +445,8 @@ export interface RunRecord {
     observedMode?: WorkflowMode;
     verificationCommands?: string[];
     selectedSpecialists?: SpecialistName[];
+    deliveryMode?: DeliverTargetMode;
+    issueNumbers?: number[];
     dryRun?: boolean;
   };
 }

@@ -9,6 +9,8 @@ import type {
   DeliverShipRecord,
   DiscoverDelegateResult,
   DiscoverResearchPlan,
+  GitHubGateEvaluation,
+  GitHubDeliveryRecord,
   RoutingPlan,
   RunEvent,
   RunInspection,
@@ -80,6 +82,14 @@ function renderSuggestedActions(inspection: RunInspection): string[] {
     if (inspection.run.workflow === "deliver") {
       lines.push("- inspect the review verdict with `show review`");
       lines.push("- inspect ship readiness with `show ship`");
+      if (inspection.githubDeliveryRecord) {
+        lines.push("- inspect GitHub delivery evidence with `show github`");
+        for (const gate of githubBlockingGates(inspection.githubDeliveryRecord).slice(0, 3)) {
+          const command =
+            gate === "pr" ? "show pr" : gate === "branch" ? "show branch" : `show ${gate}`;
+          lines.push(`- inspect blocked GitHub ${gate} gate with \`${command}\``);
+        }
+      }
     }
   }
   for (const stage of deferredStages.slice(0, 2)) {
@@ -163,6 +173,47 @@ function renderVerificationSummary(record: BuildVerificationRecord | null): stri
   return record.status;
 }
 
+function githubBlockingGates(record: GitHubDeliveryRecord): string[] {
+  const gates: Array<{ name: string; status: string }> = [
+    { name: "branch", status: record.branchState.status },
+    { name: "pr", status: record.pullRequest.status },
+    { name: "issues", status: record.issues.status },
+    { name: "checks", status: record.checks.status },
+    { name: "actions", status: record.actions.status },
+    { name: "security", status: record.security.status },
+    { name: "release", status: record.release.status }
+  ];
+
+  return gates.filter((gate) => gate.status === "blocked").map((gate) => gate.name);
+}
+
+function renderGitHubSummary(record: GitHubDeliveryRecord | null): string {
+  if (!record) {
+    return "not recorded";
+  }
+  const blockingGates = githubBlockingGates(record);
+  if (blockingGates.length === 0) {
+    return record.overall.status;
+  }
+  return `${record.overall.status} (${blockingGates.join(", ")})`;
+}
+
+function renderGitHubGate<T>(label: string, gate: GitHubGateEvaluation<T>): string {
+  return [
+    `${label}: ${gate.status}`,
+    `- required: ${gate.required ? "yes" : "no"}`,
+    `- source: ${gate.source}`,
+    `- observed at: ${gate.observedAt}`,
+    `- summary: ${gate.summary}`,
+    ...(gate.blockers.length > 0 ? gate.blockers.map((blocker) => `- blocker: ${blocker}`) : ["- blockers: none"]),
+    gate.error ? `- error: ${gate.error}` : undefined,
+    "",
+    JSON.stringify(gate.observed, null, 2)
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 export async function loadRunInspection(cwd: string, runId?: string): Promise<RunInspection> {
   const targetId = runId ?? (await listRuns(cwd))[0]?.id;
   if (!targetId) {
@@ -177,6 +228,7 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
   const deliverBuildVerificationPath = path.join(runDir, "stages", "build", "artifacts", "verification.json");
   const deliverReviewVerdictPath = path.join(runDir, "stages", "review", "artifacts", "verdict.json");
   const deliverShipRecordPath = path.join(runDir, "stages", "ship", "artifacts", "ship-record.json");
+  const githubDeliveryPath = path.join(runDir, "artifacts", "github-delivery.json");
   const [
     recentEvents,
     routingPlan,
@@ -187,6 +239,7 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     verificationRecord,
     deliverReviewVerdict,
     deliverShipRecord,
+    githubDeliveryRecord,
     artifacts
   ] = await Promise.all([
     readRecentEvents(run.eventsPath),
@@ -198,6 +251,7 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     readJsonFile<BuildVerificationRecord>(run.workflow === "deliver" ? deliverBuildVerificationPath : verificationPath),
     readJsonFile<DeliverReviewVerdict>(deliverReviewVerdictPath),
     readJsonFile<DeliverShipRecord>(deliverShipRecordPath),
+    readJsonFile<GitHubDeliveryRecord>(githubDeliveryPath),
     walkArtifacts(runDir)
   ]);
 
@@ -217,6 +271,7 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     verificationRecord,
     deliverReviewVerdict,
     deliverShipRecord,
+    githubDeliveryRecord,
     recentEvents,
     finalBody,
     artifacts
@@ -311,6 +366,7 @@ export function renderInspectionSummary(cwd: string, inspection: RunInspection):
       inspection.verificationRecord ? `- verification: ${renderVerificationSummary(inspection.verificationRecord)}` : undefined,
       inspection.deliverReviewVerdict ? `- review verdict: ${inspection.deliverReviewVerdict.status}` : undefined,
       inspection.deliverShipRecord ? `- ship readiness: ${inspection.deliverShipRecord.readiness}` : undefined,
+      inspection.githubDeliveryRecord ? `- github delivery: ${renderGitHubSummary(inspection.githubDeliveryRecord)}` : undefined,
       "",
       "Plan",
       `- stages: ${renderStageStrip(inspection)}`,
@@ -371,6 +427,70 @@ function renderDeliverShip(inspection: RunInspection): string {
   }
 
   return `${JSON.stringify(inspection.deliverShipRecord, null, 2)}\n`;
+}
+
+function renderGitHub(inspection: RunInspection): string {
+  if (!inspection.githubDeliveryRecord) {
+    return "No GitHub delivery record was recorded for this run.";
+  }
+
+  return `${JSON.stringify(inspection.githubDeliveryRecord, null, 2)}\n`;
+}
+
+function renderGitHubBranch(inspection: RunInspection): string {
+  if (!inspection.githubDeliveryRecord) {
+    return "No GitHub delivery record was recorded for this run.";
+  }
+
+  return `${renderGitHubGate("GitHub branch gate", inspection.githubDeliveryRecord.branchState)}\n`;
+}
+
+function renderGitHubPullRequest(inspection: RunInspection): string {
+  if (!inspection.githubDeliveryRecord) {
+    return "No GitHub delivery record was recorded for this run.";
+  }
+
+  return `${renderGitHubGate("GitHub pull request gate", inspection.githubDeliveryRecord.pullRequest)}\n`;
+}
+
+function renderGitHubIssues(inspection: RunInspection): string {
+  if (!inspection.githubDeliveryRecord) {
+    return "No GitHub delivery record was recorded for this run.";
+  }
+
+  return `${renderGitHubGate("GitHub issues gate", inspection.githubDeliveryRecord.issues)}\n`;
+}
+
+function renderGitHubChecks(inspection: RunInspection): string {
+  if (!inspection.githubDeliveryRecord) {
+    return "No GitHub delivery record was recorded for this run.";
+  }
+
+  return `${renderGitHubGate("GitHub checks gate", inspection.githubDeliveryRecord.checks)}\n`;
+}
+
+function renderGitHubActions(inspection: RunInspection): string {
+  if (!inspection.githubDeliveryRecord) {
+    return "No GitHub delivery record was recorded for this run.";
+  }
+
+  return `${renderGitHubGate("GitHub actions gate", inspection.githubDeliveryRecord.actions)}\n`;
+}
+
+function renderGitHubSecurity(inspection: RunInspection): string {
+  if (!inspection.githubDeliveryRecord) {
+    return "No GitHub delivery record was recorded for this run.";
+  }
+
+  return `${renderGitHubGate("GitHub security gate", inspection.githubDeliveryRecord.security)}\n`;
+}
+
+function renderGitHubRelease(inspection: RunInspection): string {
+  if (!inspection.githubDeliveryRecord) {
+    return "No GitHub delivery record was recorded for this run.";
+  }
+
+  return `${renderGitHubGate("GitHub release gate", inspection.githubDeliveryRecord.release)}\n`;
 }
 
 function renderStages(inspection: RunInspection): string {
@@ -437,6 +557,35 @@ function renderWhatRemains(inspection: RunInspection): string {
 
   const lines = ["Remaining work:"];
   if (outstandingStages.length === 0 && skippedSpecialists.length === 0) {
+    if (inspection.githubDeliveryRecord) {
+      const githubLines = [
+        inspection.githubDeliveryRecord.branchState.status === "blocked"
+          ? `- github branch: ${inspection.githubDeliveryRecord.branchState.summary}`
+          : undefined,
+        inspection.githubDeliveryRecord.pullRequest.status === "blocked"
+          ? `- github pr: ${inspection.githubDeliveryRecord.pullRequest.summary}`
+          : undefined,
+        inspection.githubDeliveryRecord.issues.status === "blocked"
+          ? `- github issues: ${inspection.githubDeliveryRecord.issues.summary}`
+          : undefined,
+        inspection.githubDeliveryRecord.checks.status === "blocked"
+          ? `- github checks: ${inspection.githubDeliveryRecord.checks.summary}`
+          : undefined,
+        inspection.githubDeliveryRecord.actions.status === "blocked"
+          ? `- github actions: ${inspection.githubDeliveryRecord.actions.summary}`
+          : undefined,
+        inspection.githubDeliveryRecord.security.status === "blocked"
+          ? `- github security: ${inspection.githubDeliveryRecord.security.summary}`
+          : undefined,
+        inspection.githubDeliveryRecord.release.status === "blocked"
+          ? `- github release: ${inspection.githubDeliveryRecord.release.summary}`
+          : undefined
+      ].filter((line): line is string => Boolean(line));
+      if (githubLines.length > 0) {
+        lines.push(...githubLines);
+        return lines.join("\n");
+      }
+    }
     lines.push("- no deferred or missing work recorded");
     return lines.join("\n");
   }
@@ -496,6 +645,14 @@ function helpText(): string {
     "- show verification",
     "- show review",
     "- show ship",
+    "- show github",
+    "- show branch",
+    "- show pr",
+    "- show issues",
+    "- show checks",
+    "- show actions",
+    "- show security",
+    "- show release",
     "- show delegate <track>",
     "- show sources <track>",
     "- show stage <name>",
@@ -555,6 +712,30 @@ export async function handleInspectorCommand(cwd: string, inspection: RunInspect
   }
   if (trimmed === "show ship") {
     return renderDeliverShip(inspection);
+  }
+  if (trimmed === "show github") {
+    return renderGitHub(inspection);
+  }
+  if (trimmed === "show branch") {
+    return renderGitHubBranch(inspection);
+  }
+  if (trimmed === "show pr") {
+    return renderGitHubPullRequest(inspection);
+  }
+  if (trimmed === "show issues") {
+    return renderGitHubIssues(inspection);
+  }
+  if (trimmed === "show checks") {
+    return renderGitHubChecks(inspection);
+  }
+  if (trimmed === "show actions") {
+    return renderGitHubActions(inspection);
+  }
+  if (trimmed === "show security") {
+    return renderGitHubSecurity(inspection);
+  }
+  if (trimmed === "show release") {
+    return renderGitHubRelease(inspection);
   }
   if (trimmed === "what remains") {
     return renderWhatRemains(inspection);

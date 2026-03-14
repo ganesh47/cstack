@@ -41,6 +41,26 @@ const DEFAULT_CONFIG: CstackConfig = {
       delegation: {
         enabled: true,
         maxAgents: 4
+      },
+      github: {
+        enabled: false,
+        mode: "merge-ready",
+        prRequired: false,
+        requireApprovedReview: false,
+        linkedIssuesRequired: false,
+        requiredIssueState: "linked",
+        requiredChecks: [],
+        requiredWorkflows: [],
+        requireRelease: false,
+        requireTag: false,
+        requireVersionMatch: false,
+        requireChangelog: false,
+        changelogPaths: ["README.md"],
+        security: {
+          requireDependabot: false,
+          requireCodeScanning: false,
+          blockSeverities: ["high", "critical"]
+        }
       }
     }
   },

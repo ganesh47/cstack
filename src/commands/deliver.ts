@@ -3,11 +3,13 @@ import { loadConfig } from "../config.js";
 import { maybeOfferInteractiveInspect } from "../inspector.js";
 import { resolveLinkedBuildContext, runDeliverExecution } from "../deliver.js";
 import { detectCodexVersion, detectGitBranch, ensureRunDir, makeRunId, writeRunRecord } from "../run.js";
-import type { RunRecord, WorkflowMode } from "../types.js";
+import type { DeliverTargetMode, RunRecord, WorkflowMode } from "../types.js";
 
 export interface DeliverCliOptions {
   fromRunId?: string;
   requestedMode?: WorkflowMode;
+  deliveryMode?: DeliverTargetMode;
+  issueNumbers?: number[];
 }
 
 async function readPromptFromStdin(): Promise<string> {
@@ -39,6 +41,19 @@ export function parseDeliverArgs(args: string[]): { prompt: string; options: Del
     }
     if (arg === "--exec") {
       options.requestedMode = "exec";
+      continue;
+    }
+    if (arg === "--release") {
+      options.deliveryMode = "release";
+      continue;
+    }
+    if (arg === "--issue") {
+      const value = args[index + 1];
+      if (!value || !/^\d+$/.test(value)) {
+        throw new Error("`cstack deliver --issue` requires a numeric issue id.");
+      }
+      options.issueNumbers = [...(options.issueNumbers ?? []), Number.parseInt(value, 10)];
+      index += 1;
       continue;
     }
     if (arg.startsWith("-")) {
@@ -87,6 +102,8 @@ export async function runDeliver(cwd: string, args: string[] = []): Promise<void
     ...((config.workflows.deliver.verificationCommands?.length ?? 0) > 0 ? [] : (config.verification?.defaultCommands ?? []))
   ];
   const requestedMode = parsed.options.requestedMode ?? config.workflows.deliver.mode ?? config.workflows.build.mode ?? "interactive";
+  const deliveryMode = parsed.options.deliveryMode ?? config.workflows.deliver.github?.mode ?? "merge-ready";
+  const issueNumbers = parsed.options.issueNumbers ?? [];
 
   const createdAt = new Date().toISOString();
   const runRecord: RunRecord = {
@@ -113,7 +130,9 @@ export async function runDeliver(cwd: string, args: string[] = []): Promise<void
       entrypoint: "workflow",
       ...(linkedContext ? { linkedRunId: linkedContext.run.id } : {}),
       requestedMode,
-      verificationCommands
+      verificationCommands,
+      deliveryMode,
+      ...(issueNumbers.length > 0 ? { issueNumbers } : {})
     }
   };
 
@@ -122,6 +141,7 @@ export async function runDeliver(cwd: string, args: string[] = []): Promise<void
   try {
     const execution = await runDeliverExecution({
       cwd,
+      gitBranch,
       runId,
       input: resolvedPrompt,
       config,
@@ -138,6 +158,8 @@ export async function runDeliver(cwd: string, args: string[] = []): Promise<void
       },
       requestedMode,
       verificationCommands,
+      deliveryMode,
+      issueNumbers,
       ...(linkedContext ? { linkedContext } : {})
     });
 
@@ -145,7 +167,8 @@ export async function runDeliver(cwd: string, args: string[] = []): Promise<void
     runRecord.status =
       execution.buildExecution.result.code === 0 &&
       execution.reviewVerdict.status === "ready" &&
-      execution.shipRecord.readiness === "ready"
+      execution.shipRecord.readiness === "ready" &&
+      execution.githubDeliveryRecord.overall.status === "ready"
         ? "completed"
         : "failed";
     runRecord.updatedAt = new Date().toISOString();
@@ -154,14 +177,21 @@ export async function runDeliver(cwd: string, args: string[] = []): Promise<void
     if (buildSession.sessionId) {
       runRecord.sessionId = buildSession.sessionId;
     }
-    runRecord.lastActivity = `Ship readiness: ${execution.shipRecord.readiness}`;
+    runRecord.lastActivity = `Ship readiness: ${execution.shipRecord.readiness}; GitHub delivery: ${execution.githubDeliveryRecord.overall.status}`;
     runRecord.inputs.observedMode = execution.buildExecution.observedMode;
     runRecord.inputs.selectedSpecialists = execution.selectedSpecialists.map((specialist) => specialist.name);
+    runRecord.inputs.deliveryMode = deliveryMode;
+    if (execution.githubDeliveryRecord.issueReferences.length > 0) {
+      runRecord.inputs.issueNumbers = execution.githubDeliveryRecord.issueReferences;
+    }
     if (runRecord.status !== "completed") {
       runRecord.error = [
         execution.buildExecution.result.code !== 0 ? `build exited with code ${execution.buildExecution.result.code}` : null,
         execution.reviewVerdict.status !== "ready" ? `review status: ${execution.reviewVerdict.status}` : null,
-        execution.shipRecord.readiness === "blocked" ? "ship stage blocked release readiness" : null
+        execution.shipRecord.readiness === "blocked" ? "ship stage blocked release readiness" : null,
+        execution.githubDeliveryRecord.overall.status === "blocked"
+          ? `github delivery blocked: ${execution.githubDeliveryRecord.overall.blockers.join("; ")}`
+          : null
       ]
         .filter(Boolean)
         .join("; ");
@@ -177,9 +207,11 @@ export async function runDeliver(cwd: string, args: string[] = []): Promise<void
         buildSession.sessionId ? `Build session: ${buildSession.sessionId}` : "Build session: not observed",
         `Review verdict: ${execution.reviewVerdict.status}`,
         `Ship readiness: ${execution.shipRecord.readiness}`,
+        `GitHub delivery: ${execution.githubDeliveryRecord.overall.status}`,
         "Artifacts:",
         `  ${path.relative(cwd, finalPath)}`,
         `  ${path.relative(cwd, deliveryReportPath)}`,
+        `  ${path.relative(cwd, path.join(runDir, "artifacts", "github-delivery.json"))}`,
         `  ${path.relative(cwd, stageLineagePath)}`,
         `  ${path.relative(cwd, path.join(runDir, "stages", "build", "artifacts", "change-summary.md"))}`,
         `  ${path.relative(cwd, path.join(runDir, "stages", "review", "artifacts", "verdict.json"))}`,

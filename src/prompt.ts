@@ -531,8 +531,9 @@ export async function buildDeliverShipPrompt(options: {
   buildSummary: string;
   reviewVerdict: DeliverReviewVerdict;
   verificationRecord: object;
+  githubDeliveryRecord: object;
 }): Promise<{ prompt: string; context: string }> {
-  const { cwd, input, buildSummary, reviewVerdict, verificationRecord } = options;
+  const { cwd, input, buildSummary, reviewVerdict, verificationRecord, githubDeliveryRecord } = options;
   const specDoc = path.join(cwd, "docs", "specs", "cstack-spec-v0.1.md");
 
   return {
@@ -568,6 +569,9 @@ export async function buildDeliverShipPrompt(options: {
       "",
       "## Verification evidence",
       JSON.stringify(verificationRecord, null, 2),
+      "",
+      "## GitHub delivery evidence",
+      JSON.stringify(githubDeliveryRecord, null, 2),
       "",
       "## Referenced files",
       `- ${specDoc}`

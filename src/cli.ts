@@ -16,7 +16,7 @@ function usage(): string {
     "  cstack discover <prompt>",
     "  cstack spec <prompt>",
     "  cstack build <prompt> [--from-run <run-id>] [--exec]",
-    "  cstack deliver <prompt> [--from-run <run-id>] [--exec]",
+    "  cstack deliver <prompt> [--from-run <run-id>] [--exec] [--release] [--issue <n>]",
     "  cstack update [--check] [--dry-run] [--yes] [--version <x>] [--channel stable]",
     "  cstack runs [--active] [--workflow <name>] [--status <status>] [--recent <n>] [--json]",
     "  cstack inspect [run-id] [--interactive]"
