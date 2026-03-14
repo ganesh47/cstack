@@ -42,6 +42,7 @@ Minimum product outcome:
 - the build stage records session lineage and verification
 - the review stage records findings and a verdict
 - the ship stage records GitHub delivery evidence and release-bearing artifacts when applicable
+- the ship stage can publish the working branch and create or update the pull request when repo policy enables wrapper-owned GitHub mutation
 - `inspect` can explain the umbrella run and the nested stage artifacts
 - `intent` can recommend `cstack deliver --from-run <run-id>` when later execution stages are implied
 
@@ -64,6 +65,7 @@ Design and implement `deliver` around these responsibilities:
 - use interactive build by default when a TTY is available, with honest exec fallback
 - attach bounded specialist review only when justified
 - evaluate GitHub PR, issue, check, Actions, release, and security state when policy requires them
+- publish branch / commit / pull-request mutation artifacts when GitHub mutation is enabled
 - persist stage-local prompts, contexts, finals, events, and artifacts
 - write top-level stage lineage and a final deliver summary
 
@@ -71,6 +73,7 @@ At minimum, artifacts should cover:
 - `.cstack/runs/<run-id>/stage-lineage.json`
 - `.cstack/runs/<run-id>/artifacts/delivery-report.md`
 - `.cstack/runs/<run-id>/artifacts/github-delivery.json`
+- `.cstack/runs/<run-id>/artifacts/github-mutation.json`
 - `.cstack/runs/<run-id>/stages/build/...`
 - `.cstack/runs/<run-id>/stages/review/...`
 - `.cstack/runs/<run-id>/stages/ship/...`

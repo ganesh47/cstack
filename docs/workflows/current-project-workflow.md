@@ -130,13 +130,13 @@ The practical workflow target now is:
 
 1. use `discover` or `intent` to gather context
 2. use `spec` or the `intent`-generated spec stage artifact to shape the change
-3. launch `cstack deliver --from-run <spec-or-intent-run-id>` when the work clearly spans implementation, review, and GitHub-complete engineering delivery
+3. launch `cstack deliver --from-run <spec-or-intent-run-id>` when the work clearly spans implementation, review, and GitHub-complete engineering delivery, including wrapper-owned branch/PR publication when repo policy enables it
 4. use `cstack build --from-run <spec-or-intent-run-id>` only when you intentionally want the narrower implementation-only workflow
 5. use `--release` for release-bearing delivery and `--issue <n>` when issue linkage should be explicit
 6. if the shell is non-interactive, expect the build stage to fall back to `exec` and record requested vs observed mode in `session.json`
 7. run `npm run typecheck`
 8. run `npm test`
-9. use `cstack runs` and `cstack inspect` to review saved workflow artifacts, especially `show github` for deliver runs
+9. use `cstack runs` and `cstack inspect` to review saved workflow artifacts, especially `show mutation` and `show github` for deliver runs
 
 ### 5. Keep Artifacts First-Class
 
@@ -168,7 +168,7 @@ The most recently completed slices are:
 
 - `discover v2`
 - `build v1`
-- `deliver v2`
+- `deliver v3`
 
 ## Recommended Next Milestones
 
@@ -181,7 +181,7 @@ The cleanest next sequence is:
 
 Why this order:
 
-- `deliver` already closes the main execution gap between planning and GitHub-scoped engineering completion
+- `deliver` now closes the main execution gap between planning and GitHub-scoped engineering completion, including branch push and PR publication when policy enables it
 - `resume` and `fork` now depend mostly on wrapper ergonomics because build-session lineage is already being recorded
 - standalone `review` and `ship` become cleaner once the umbrella path has fixed the artifact contracts
 - GTM is cleaner once engineering delivery artifacts are unified

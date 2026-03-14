@@ -106,6 +106,7 @@ cstack build --from-run <run-id> --exec
 cstack deliver "Implement the queued billing retry cleanup"
 cstack deliver --from-run <run-id>
 cstack deliver --from-run <run-id> --release --issue 123
+# with repo policy enabled, this can push a branch and open or update a PR
 
 # Check for the latest stable GitHub release or apply it
 cstack update --check
@@ -209,6 +210,7 @@ Useful inspector commands:
 - `show verification`
 - `show review`
 - `show ship`
+- `show mutation`
 - `show github`
 - `show delegate <track>`
 - `show sources <track>`
@@ -454,11 +456,12 @@ Deliver notes:
 
 - `deliver` is the operator-facing umbrella workflow over internal `build`, `review`, and `ship` stages
 - stage-local artifacts live under `stages/build`, `stages/review`, and `stages/ship`
+- when repo policy enables it, `deliver` can create or reuse a working branch, auto-commit the deliver change set, push it to `origin`, and create or update the GitHub pull request
 - `deliver` now evaluates GitHub-scoped engineering completion, including PR, checks, Actions, issue linkage, release evidence, and security gates when policy requires them
 - `deliver` fails closed when required GitHub evidence is missing or blocked
 - `deliver --release` switches the run into release-bearing mode and expects tag and release evidence
 - `deliver --issue <n>` links a specific GitHub issue into deliver evaluation
-- `cstack inspect <run-id>` supports `show review`, `show ship`, and `show github` for deliver runs
+- `cstack inspect <run-id>` supports `show review`, `show ship`, `show mutation`, and `show github` for deliver runs
 
 ## Development
 

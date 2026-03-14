@@ -1,4 +1,4 @@
-# Deliver Slice v1
+# Deliver Slice v3
 
 ## Goal
 
@@ -29,6 +29,7 @@ Behavior:
 - `cstack deliver --exec` forces the build sub-stage to use `codex exec`
 - default mode is interactive for the internal build sub-stage when a TTY is available
 - `review` and `ship` remain deterministic `codex exec`-backed sub-stages in this slice
+- when GitHub mutation policy is enabled, `deliver` may create a branch, commit the deliver change set, push that branch, and create or update the pull request before final ship evaluation
 
 Rejected in this slice:
 
@@ -71,6 +72,7 @@ At minimum, a successful `deliver` run should prove:
 - required reviewer and specialist findings are resolved or accepted with policy-backed rationale
 - the branch and pull request state satisfy repo policy
 - required GitHub checks succeeded
+- required branch publish and pull request mutation succeeded when repo policy enables wrapper-owned GitHub mutation
 - versioning, changelog, release notes, and packaging state satisfy repo policy when the task is release-bearing
 - a tag and GitHub Release exist when the workflow target is a published release
 - blocking unresolved items are empty at the end of the run
@@ -109,6 +111,7 @@ Top-level deliver artifacts:
 - `stderr.log`
 - `stage-lineage.json`
 - `artifacts/delivery-report.md`
+- `artifacts/github-mutation.json`
 - `artifacts/github-delivery.json`
 
 Build sub-stage:
@@ -141,6 +144,8 @@ Ship sub-stage:
 - `stages/ship/artifacts/release-checklist.md`
 - `stages/ship/artifacts/unresolved.md`
 - `stages/ship/artifacts/github-state.json`
+- `stages/ship/artifacts/github-mutation.json`
+- `stages/ship/artifacts/pull-request-body.md`
 - `stages/ship/artifacts/pull-request.json`
 - `stages/ship/artifacts/checks.json`
 - `stages/ship/artifacts/release.json`
@@ -159,6 +164,7 @@ This slice changes the recommended handoff:
 
 - stage strip for `build`, `review`, and `ship`
 - build session and verification state when present
+- GitHub mutation state when present
 - GitHub delivery evidence and blocking gaps when present
 - stage-specific artifacts through `show artifact <path>`
 - resume and fork guidance derived from the build stage session record
@@ -173,6 +179,8 @@ Useful artifact paths:
 - `stages/ship/artifacts/release-checklist.md`
 - `stages/ship/artifacts/unresolved.md`
 - `stages/ship/artifacts/github-state.json`
+- `stages/ship/artifacts/github-mutation.json`
+- `stages/ship/artifacts/pull-request-body.md`
 - `stages/ship/artifacts/pull-request.json`
 - `stages/ship/artifacts/checks.json`
 - `stages/ship/artifacts/release.json`
@@ -180,6 +188,7 @@ Useful artifact paths:
 ## Known Limitations
 
 - `deliver` owns GitHub-complete engineering delivery, not GTM or broader launch execution
+- GitHub mutation is policy-driven; repos may enable observation-only delivery or wrapper-owned branch/PR publication
 - remote production deployment remains out of scope unless the repo explicitly defines it as a GitHub-driven release action
 - specialist review remains bounded and prompt-driven rather than a separate scheduler
 - wrapper-native GTM remains a later workflow after `deliver`
@@ -193,6 +202,7 @@ This slice is complete when:
 - linked-run delivery works
 - `build`, `review`, and `ship` artifacts are written inside one deliver run
 - GitHub delivery evidence is written for branch, PR, checks, and release state when applicable
+- GitHub mutation artifacts are written when `deliver` owns branch or PR publication
 - inspector can explain stage progression and build-session lineage
 - the run only reports `completed` when all required GitHub-scoped gates are satisfied
 - tests cover direct deliver and linked deliver flows
