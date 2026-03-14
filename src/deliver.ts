@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import { buildEvent, ProgressReporter } from "./progress.js";
 import { resolveLinkedBuildContext, runBuildExecution, type BuildExecutionResult, type LinkedBuildContext } from "./build.js";
 import { runCodexExec } from "./codex.js";
-import { collectGitHubDeliveryEvidence } from "./github.js";
+import { collectGitHubDeliveryEvidence, performGitHubDeliverMutations } from "./github.js";
 import {
   buildDeliverPrompt,
   buildDeliverReviewLeadPrompt,
@@ -17,6 +17,7 @@ import type {
   DeliverReviewVerdict,
   DeliverShipRecord,
   GitHubDeliveryRecord,
+  GitHubMutationRecord,
   RoutingStagePlan,
   RunEvent,
   SpecialistExecution,
@@ -56,6 +57,7 @@ export interface DeliverExecutionResult {
   reviewVerdict: DeliverReviewVerdict;
   shipRecord: DeliverShipRecord;
   githubDeliveryRecord: GitHubDeliveryRecord;
+  githubMutationRecord: GitHubMutationRecord;
   stageLineage: StageLineage;
   selectedSpecialists: SpecialistSelection[];
   finalBody: string;
@@ -228,6 +230,7 @@ function buildDeliverFinalSummary(options: {
   reviewVerdict: DeliverReviewVerdict;
   shipRecord: DeliverShipRecord;
   githubDeliveryRecord: GitHubDeliveryRecord;
+  githubMutationRecord: GitHubMutationRecord;
 }): string {
   return [
     "# Deliver Run Summary",
@@ -250,6 +253,12 @@ function buildDeliverFinalSummary(options: {
     `- readiness: ${options.shipRecord.readiness}`,
     `- summary: ${options.shipRecord.summary}`,
     ...options.shipRecord.nextActions.map((action) => `- next: ${action}`),
+    "",
+    "## GitHub mutations",
+    `- summary: ${options.githubMutationRecord.summary}`,
+    `- branch: ${options.githubMutationRecord.branch.current}`,
+    ...(options.githubMutationRecord.pullRequest.url ? [`- pull request: ${options.githubMutationRecord.pullRequest.url}`] : []),
+    ...options.githubMutationRecord.blockers.map((blocker) => `- mutation blocker: ${blocker}`),
     "",
     "## GitHub delivery",
     `- status: ${options.githubDeliveryRecord.overall.status}`,
@@ -432,13 +441,28 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
   await writeJson(options.paths.stageLineagePath, stageLineage);
   events.markStage("ship", "running");
 
-  const githubEvidence = await collectGitHubDeliveryEvidence({
+  const githubMutation = await performGitHubDeliverMutations({
     cwd: options.cwd,
     gitBranch: options.gitBranch,
+    runId: options.runId,
+    input: options.input,
+    issueNumbers: options.issueNumbers,
+    policy: options.config.workflows.deliver.github ?? {},
+    buildSummary: buildExecution.finalBody,
+    reviewVerdict,
+    verificationRecord: buildExecution.verificationRecord,
+    ...(options.linkedContext?.run.id ? { linkedRunId: options.linkedContext.run.id } : {}),
+    pullRequestBodyPath: path.join(shipStageDir, "artifacts", "pull-request-body.md")
+  });
+
+  const githubEvidence = await collectGitHubDeliveryEvidence({
+    cwd: options.cwd,
+    gitBranch: githubMutation.branch,
     deliveryMode: options.deliveryMode,
     issueNumbers: options.issueNumbers,
     policy: options.config.workflows.deliver.github ?? {},
     input: options.input,
+    mutationRecord: githubMutation.record,
     ...(options.linkedContext?.artifactBody ? { linkedArtifactBody: options.linkedContext.artifactBody } : {})
   });
   const githubDeliveryRecord = githubEvidence.record;
@@ -448,6 +472,7 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
     buildSummary: buildExecution.finalBody,
     reviewVerdict,
     verificationRecord: buildExecution.verificationRecord,
+    githubMutationRecord: githubMutation.record,
     githubDeliveryRecord
   });
   await fs.writeFile(path.join(shipStageDir, "prompt.md"), shipPrompt.prompt, "utf8");
@@ -507,9 +532,14 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
   await writeJson(path.join(shipStageDir, "artifacts", "actions.json"), githubEvidence.artifacts.actions);
   await writeJson(path.join(shipStageDir, "artifacts", "security.json"), githubEvidence.artifacts.security);
   await writeJson(path.join(shipStageDir, "artifacts", "release.json"), githubEvidence.artifacts.release);
+  await writeJson(path.join(shipStageDir, "artifacts", "github-mutation.json"), githubMutation.record);
+  await writeJson(path.join(options.paths.runDir, "artifacts", "github-mutation.json"), githubMutation.record);
   await writeJson(path.join(options.paths.runDir, "artifacts", "github-delivery.json"), githubDeliveryRecord);
 
-  shipStage.status = shipResult.code === 0 && githubDeliveryRecord.overall.status === "ready" ? "completed" : "failed";
+  shipStage.status =
+    shipResult.code === 0 && githubMutation.record.blockers.length === 0 && githubDeliveryRecord.overall.status === "ready"
+      ? "completed"
+      : "failed";
   shipStage.executed = true;
   shipStage.stageDir = shipStageDir;
   shipStage.artifactPath = path.join(shipStageDir, "artifacts", "ship-summary.md");
@@ -524,6 +554,7 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
     stageLineage,
     reviewVerdict,
     shipRecord,
+    githubMutationRecord: githubMutation.record,
     githubDeliveryRecord,
     ...(options.linkedContext ? { linkedContext: options.linkedContext } : {})
   });
@@ -535,6 +566,7 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
     reviewVerdict,
     shipRecord,
     githubDeliveryRecord,
+    githubMutationRecord: githubMutation.record,
     stageLineage,
     selectedSpecialists,
     finalBody

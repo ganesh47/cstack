@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const args = process.argv.slice(2);
 const fixturePath = path.join(process.cwd(), ".cstack", "test-gh.json");
+const statePath = path.join(process.cwd(), ".cstack", "test-gh-state.json");
 
 async function loadFixture() {
   if (process.env.FAKE_GH_SCENARIO) {
@@ -28,7 +29,25 @@ function getArgValue(flag) {
   return index >= 0 ? args[index + 1] : undefined;
 }
 
-const fixture = await loadFixture();
+async function loadState() {
+  try {
+    return JSON.parse(await readFile(statePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+async function saveState(state) {
+  await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+}
+
+function activeFixture(base, state) {
+  return state ? { ...base, ...state } : base;
+}
+
+const baseFixture = await loadFixture();
+const state = await loadState();
+const fixture = activeFixture(baseFixture, state);
 
 if (args[0] === "repo" && args[1] === "view") {
   printJson(fixture.repoView ?? { nameWithOwner: "ganesh47/cstack", defaultBranchRef: { name: "main" } });
@@ -41,6 +60,68 @@ if (args[0] === "pr" && args[1] === "view") {
     fail("no pull request found");
   }
   printJson(pullRequest);
+  process.exit(0);
+}
+
+if (args[0] === "pr" && args[1] === "create") {
+  if (fixture.prCreateError) {
+    fail(fixture.prCreateError);
+  }
+  const title = getArgValue("--title") ?? "New PR";
+  const headRefName = getArgValue("--head") ?? "cstack/test";
+  const baseRefName = getArgValue("--base") ?? "main";
+  const repo = getArgValue("--repo") ?? "ganesh47/cstack";
+  const isDraft = args.includes("--draft");
+  const bodyFile = getArgValue("--body-file");
+  const body = bodyFile ? await readFile(bodyFile, "utf8") : "";
+  const closingIssuesReferences = [...body.matchAll(/#(\d+)/g)].map((match) => ({ number: Number.parseInt(match[1], 10) }));
+  const nextNumber = fixture.nextPullRequestNumber ?? 99;
+  const pullRequest = {
+    number: nextNumber,
+    title,
+    state: "OPEN",
+    isDraft,
+    reviewDecision: "APPROVED",
+    url: `https://github.com/${repo}/pull/${nextNumber}`,
+    headRefName,
+    baseRefName,
+    mergeStateStatus: "CLEAN",
+    closingIssuesReferences,
+    ...(fixture.createdPullRequest ?? {})
+  };
+  await saveState({
+    ...fixture,
+    nextPullRequestNumber: nextNumber + 1,
+    pullRequest
+  });
+  process.stdout.write(`${pullRequest.url}\n`);
+  process.exit(0);
+}
+
+if (args[0] === "pr" && args[1] === "edit") {
+  if (fixture.prEditError) {
+    fail(fixture.prEditError);
+  }
+  const currentPr = fixture.pullRequest ?? fixture.pr;
+  if (!currentPr) {
+    fail("no pull request found");
+  }
+  const title = getArgValue("--title") ?? currentPr.title;
+  const bodyFile = getArgValue("--body-file");
+  const body = bodyFile ? await readFile(bodyFile, "utf8") : undefined;
+  const closingIssuesReferences = body
+    ? [...body.matchAll(/#(\d+)/g)].map((match) => ({ number: Number.parseInt(match[1], 10) }))
+    : currentPr.closingIssuesReferences;
+  const pullRequest = {
+    ...currentPr,
+    title,
+    ...(body ? { body, closingIssuesReferences } : {})
+  };
+  await saveState({
+    ...fixture,
+    pullRequest
+  });
+  process.stdout.write(`${pullRequest.url}\n`);
   process.exit(0);
 }
 

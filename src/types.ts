@@ -142,6 +142,7 @@ export interface RunInspection {
   deliverReviewVerdict: DeliverReviewVerdict | null;
   deliverShipRecord: DeliverShipRecord | null;
   githubDeliveryRecord: GitHubDeliveryRecord | null;
+  githubMutationRecord: GitHubMutationRecord | null;
   recentEvents: RunEvent[];
   finalBody: string;
   artifacts: ArtifactEntry[];
@@ -211,6 +212,16 @@ export interface DeliverGitHubConfig {
   command?: string;
   repository?: string;
   mode?: DeliverTargetMode;
+  pushBranch?: boolean;
+  branchPrefix?: string;
+  commitChanges?: boolean;
+  createPullRequest?: boolean;
+  updatePullRequest?: boolean;
+  pullRequestBase?: string;
+  pullRequestDraft?: boolean;
+  watchChecks?: boolean;
+  checkWatchTimeoutSeconds?: number;
+  checkWatchPollSeconds?: number;
   prRequired?: boolean;
   requireApprovedReview?: boolean;
   linkedIssuesRequired?: boolean;
@@ -402,6 +413,7 @@ export interface GitHubDeliveryRecord {
     dependabot: GitHubDependabotAlertRecord[];
     codeScanning: GitHubCodeScanningAlertRecord[];
   }>;
+  mutation: GitHubMutationRecord;
   overall: {
     status: "ready" | "blocked";
     summary: string;
@@ -409,6 +421,41 @@ export interface GitHubDeliveryRecord {
     observedAt: string;
   };
   limitations: string[];
+}
+
+export interface GitHubMutationRecord {
+  enabled: boolean;
+  branch: {
+    initial: string;
+    current: string;
+    created: boolean;
+    pushed: boolean;
+    remote?: string | null;
+  };
+  commit: {
+    created: boolean;
+    sha?: string;
+    message?: string;
+    changedFiles: string[];
+  };
+  pullRequest: {
+    created: boolean;
+    updated: boolean;
+    number?: number;
+    url?: string;
+    title?: string;
+    baseRefName?: string;
+    headRefName?: string;
+    draft?: boolean;
+  };
+  checks: {
+    watched: boolean;
+    polls: number;
+    completed: boolean;
+    summary: string;
+  };
+  blockers: string[];
+  summary: string;
 }
 
 export interface RunRecord {

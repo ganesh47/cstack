@@ -64,6 +64,16 @@ enabled = true
 command = "gh"
 repository = "ganesh47/cstack"
 mode = "release"
+pushBranch = true
+branchPrefix = "deliver"
+commitChanges = true
+createPullRequest = true
+updatePullRequest = true
+pullRequestBase = "main"
+pullRequestDraft = false
+watchChecks = true
+checkWatchTimeoutSeconds = 120
+checkWatchPollSeconds = 5
 prRequired = true
 requireApprovedReview = true
 linkedIssuesRequired = true
@@ -100,6 +110,15 @@ blockSeverities = ["medium", "high", "critical"]
     expect(config.workflows.deliver.github?.enabled).toBe(true);
     expect(config.workflows.deliver.github?.repository).toBe("ganesh47/cstack");
     expect(config.workflows.deliver.github?.mode).toBe("release");
+    expect(config.workflows.deliver.github?.pushBranch).toBe(true);
+    expect(config.workflows.deliver.github?.branchPrefix).toBe("deliver");
+    expect(config.workflows.deliver.github?.commitChanges).toBe(true);
+    expect(config.workflows.deliver.github?.createPullRequest).toBe(true);
+    expect(config.workflows.deliver.github?.updatePullRequest).toBe(true);
+    expect(config.workflows.deliver.github?.pullRequestBase).toBe("main");
+    expect(config.workflows.deliver.github?.watchChecks).toBe(true);
+    expect(config.workflows.deliver.github?.checkWatchTimeoutSeconds).toBe(120);
+    expect(config.workflows.deliver.github?.checkWatchPollSeconds).toBe(5);
     expect(config.workflows.deliver.github?.prRequired).toBe(true);
     expect(config.workflows.deliver.github?.requiredChecks).toEqual(["deliver/test"]);
     expect(config.workflows.deliver.github?.requiredWorkflows).toEqual(["Release"]);
@@ -117,6 +136,16 @@ blockSeverities = ["medium", "high", "critical"]
     expect(sources).toHaveLength(0);
     expect(config.workflows.deliver.github?.enabled).toBe(false);
     expect(config.workflows.deliver.github?.mode).toBe("merge-ready");
+    expect(config.workflows.deliver.github?.pushBranch).toBe(false);
+    expect(config.workflows.deliver.github?.branchPrefix).toBe("cstack");
+    expect(config.workflows.deliver.github?.commitChanges).toBe(false);
+    expect(config.workflows.deliver.github?.createPullRequest).toBe(false);
+    expect(config.workflows.deliver.github?.updatePullRequest).toBe(true);
+    expect(config.workflows.deliver.github?.pullRequestBase).toBe("main");
+    expect(config.workflows.deliver.github?.pullRequestDraft).toBe(false);
+    expect(config.workflows.deliver.github?.watchChecks).toBe(false);
+    expect(config.workflows.deliver.github?.checkWatchTimeoutSeconds).toBe(600);
+    expect(config.workflows.deliver.github?.checkWatchPollSeconds).toBe(15);
     expect(config.workflows.deliver.github?.prRequired).toBe(false);
     expect(config.workflows.deliver.github?.requiredChecks).toEqual([]);
     expect(config.workflows.deliver.github?.requiredWorkflows).toEqual([]);

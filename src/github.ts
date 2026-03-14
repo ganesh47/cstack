@@ -13,7 +13,9 @@ import type {
   GitHubGateEvaluation,
   GitHubGateStatus,
   GitHubIssueRecord,
+  GitHubMutationRecord,
   GitHubPullRequestRecord,
+  DeliverReviewVerdict,
   GitHubReleaseRecord
 } from "./types.js";
 
@@ -32,12 +34,14 @@ export interface CollectGitHubDeliveryOptions {
   policy: DeliverGitHubConfig;
   input?: string;
   linkedArtifactBody?: string;
+  mutationRecord?: GitHubMutationRecord;
 }
 
 export interface CollectGitHubDeliveryResult {
   record: GitHubDeliveryRecord;
   artifacts: {
     githubState: Record<string, unknown>;
+    mutation: GitHubMutationRecord;
     pullRequest: GitHubGateEvaluation<GitHubPullRequestRecord | null>;
     issues: GitHubGateEvaluation<GitHubIssueRecord[]>;
     checks: GitHubGateEvaluation<GitHubCheckRunRecord[]>;
@@ -48,6 +52,25 @@ export interface CollectGitHubDeliveryResult {
     }>;
     release: GitHubGateEvaluation<GitHubReleaseRecord | null>;
   };
+}
+
+export interface PerformGitHubMutationOptions {
+  cwd: string;
+  gitBranch: string;
+  runId: string;
+  input: string;
+  issueNumbers: number[];
+  policy: DeliverGitHubConfig;
+  buildSummary: string;
+  reviewVerdict: DeliverReviewVerdict;
+  verificationRecord: object;
+  linkedRunId?: string;
+  pullRequestBodyPath: string;
+}
+
+export interface PerformGitHubMutationResult {
+  record: GitHubMutationRecord;
+  branch: string;
 }
 
 function resolveCommand(command: string, args: string[]): { file: string; args: string[] } {
@@ -170,6 +193,198 @@ function issueNumbersFromPrompt(input: string): number[] {
   return [...input.matchAll(/(?:^|\s)#(\d+)\b/g)].map((match) => Number.parseInt(match[1]!, 10));
 }
 
+function truncateLine(value: string, maxLength = 72): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 3).trimEnd()}...` : normalized;
+}
+
+function slugifySegment(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+}
+
+function buildMutationBranchName(prefix: string, runId: string, input: string): string {
+  const runSlug = runId.split("-").slice(-6).join("-").slice(0, 36);
+  const inputSlug = slugifySegment(input).slice(0, 36);
+  return `${prefix}/${inputSlug || runSlug || "deliver"}`.slice(0, 80);
+}
+
+async function listChangedFiles(cwd: string): Promise<string[]> {
+  try {
+    const { stdout } = await runGit(cwd, ["status", "--porcelain"]);
+    return stdout
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => line.slice(3).trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function currentHeadSha(cwd: string): Promise<string | undefined> {
+  const sha = await detectHeadSha(cwd);
+  return sha || undefined;
+}
+
+function buildCommitMessage(input: string, issueNumbers: number[]): string {
+  const prefix = issueNumbers.length > 0 ? `fix(#${issueNumbers[0]}): ` : "cstack deliver: ";
+  return truncateLine(`${prefix}${input}`, 72);
+}
+
+function buildPullRequestTitle(input: string, issueNumbers: number[]): string {
+  return truncateLine(issueNumbers.length > 0 ? `${input} (#${issueNumbers[0]})` : input, 72);
+}
+
+function buildPullRequestBody(options: {
+  input: string;
+  issueNumbers: number[];
+  linkedRunId?: string;
+  buildSummary: string;
+  reviewVerdict: DeliverReviewVerdict;
+  verificationRecord: object;
+}): string {
+  return [
+    "# cstack deliver",
+    "",
+    "## Request",
+    options.input,
+    "",
+    "## Linked run",
+    options.linkedRunId ? `- ${options.linkedRunId}` : "- none",
+    "",
+    "## Issues",
+    ...(options.issueNumbers.length > 0 ? options.issueNumbers.map((number) => `- closes #${number}`) : ["- none"]),
+    "",
+    "## Build summary",
+    truncateLine(options.buildSummary, 400),
+    "",
+    "## Review verdict",
+    `- status: ${options.reviewVerdict.status}`,
+    `- summary: ${options.reviewVerdict.summary}`,
+    ...options.reviewVerdict.recommendedActions.map((action) => `- action: ${action}`),
+    "",
+    "## Verification",
+    "```json",
+    JSON.stringify(options.verificationRecord, null, 2),
+    "```"
+  ].join("\n");
+}
+
+async function resolveRemoteForPush(cwd: string): Promise<string | null> {
+  try {
+    const { stdout } = await runGit(cwd, ["remote"]);
+    const remotes = stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    return remotes.includes("origin") ? "origin" : remotes[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function readPullRequest(options: {
+  ghCommand: string;
+  cwd: string;
+  repository: string | null;
+  gitBranch: string;
+}): Promise<GitHubPullRequestRecord | null> {
+  const { ghCommand, cwd, repository, gitBranch } = options;
+  if (!repository) {
+    return null;
+  }
+
+  const { stdout } = await runGh(ghCommand, cwd, [
+    "pr",
+    "view",
+    gitBranch,
+    "--repo",
+    repository,
+    "--json",
+    "number,title,state,isDraft,reviewDecision,url,headRefName,baseRefName,mergeStateStatus,closingIssuesReferences"
+  ]);
+  const raw = JSON.parse(stdout) as {
+    number: number;
+    title: string;
+    state: string;
+    isDraft: boolean;
+    reviewDecision?: string | null;
+    url: string;
+    headRefName: string;
+    baseRefName: string;
+  };
+
+  return {
+    number: raw.number,
+    title: raw.title,
+    state: raw.state,
+    isDraft: raw.isDraft,
+    reviewDecision: raw.reviewDecision ?? null,
+    url: raw.url,
+    headRefName: raw.headRefName,
+    baseRefName: raw.baseRefName
+  };
+}
+
+async function waitForRequiredChecks(options: {
+  ghCommand: string;
+  cwd: string;
+  repository: string;
+  pullRequestNumber: number;
+  timeoutSeconds: number;
+  pollSeconds: number;
+}): Promise<{ polls: number; completed: boolean; summary: string }> {
+  const startedAt = Date.now();
+  let polls = 0;
+  let summary = "Required checks were not observed.";
+
+  while ((Date.now() - startedAt) / 1000 < options.timeoutSeconds) {
+    polls += 1;
+    try {
+      const { stdout } = await runGh(options.ghCommand, options.cwd, [
+        "pr",
+        "checks",
+        String(options.pullRequestNumber),
+        "--repo",
+        options.repository,
+        "--required",
+        "--json",
+        "name,bucket,state,workflow,link"
+      ]);
+      const checks = JSON.parse(stdout) as Array<{ name: string; bucket: string; state: string }>;
+      if (checks.length === 0) {
+        summary = "No required checks were reported yet.";
+      } else {
+        const completed = checks.every((check) => check.state === "completed");
+        const failing = checks.filter((check) => check.bucket !== "pass");
+        summary = completed
+          ? failing.length === 0
+            ? `Observed ${checks.length} completed required checks.`
+            : `Observed ${failing.length} non-passing required checks.`
+          : `Waiting for ${checks.filter((check) => check.state !== "completed").length} required checks.`;
+        if (completed) {
+          return {
+            polls,
+            completed: true,
+            summary
+          };
+        }
+      }
+    } catch (error) {
+      summary = error instanceof Error ? error.message : String(error);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, options.pollSeconds * 1000));
+  }
+
+  return {
+    polls,
+    completed: false,
+    summary: `Timed out while waiting for required checks. Last observation: ${summary}`
+  };
+}
+
 async function detectPullRequest(options: {
   ghCommand: string;
   cwd: string;
@@ -186,27 +401,15 @@ async function detectPullRequest(options: {
   }
 
   try {
-    const { stdout } = await runGh(ghCommand, cwd, [
-      "pr",
-      "view",
-      gitBranch,
-      "--repo",
+    const raw = await readPullRequest({
+      ghCommand,
+      cwd,
       repository,
-      "--json",
-      "number,title,state,isDraft,reviewDecision,url,headRefName,baseRefName,mergeStateStatus,closingIssuesReferences"
-    ]);
-    const raw = JSON.parse(stdout) as {
-      number: number;
-      title: string;
-      state: string;
-      isDraft: boolean;
-      reviewDecision?: string | null;
-      url: string;
-      headRefName: string;
-      baseRefName: string;
-      mergeStateStatus?: string | null;
-      closingIssuesReferences?: Array<{ number: number }>;
-    };
+      gitBranch
+    });
+    if (!raw) {
+      throw new Error("No pull request could be resolved for the current branch.");
+    }
 
     const blockers: string[] = [];
     if (raw.state !== "OPEN") {
@@ -218,24 +421,12 @@ async function detectPullRequest(options: {
     if (requireApprovedReview && raw.reviewDecision !== "APPROVED") {
       blockers.push(`Pull request #${raw.number} does not have an approved review decision.`);
     }
-    if (raw.mergeStateStatus && ["DIRTY", "BLOCKED", "UNKNOWN"].includes(raw.mergeStateStatus)) {
-      blockers.push(`Pull request #${raw.number} merge state is ${raw.mergeStateStatus}.`);
-    }
 
     return gate(
       prRequired,
       blockers.length === 0 ? "ready" : "blocked",
       blockers.length === 0 ? `Pull request #${raw.number} satisfies the current policy.` : blockers[0]!,
-      {
-        number: raw.number,
-        title: raw.title,
-        state: raw.state,
-        isDraft: raw.isDraft,
-        reviewDecision: raw.reviewDecision ?? null,
-        url: raw.url,
-        headRefName: raw.headRefName,
-        baseRefName: raw.baseRefName
-      },
+      raw,
       "gh",
       blockers
     );
@@ -708,6 +899,235 @@ async function detectRelease(options: {
   }
 }
 
+export async function performGitHubDeliverMutations(options: PerformGitHubMutationOptions): Promise<PerformGitHubMutationResult> {
+  const policy = options.policy;
+  const enabled = Boolean(policy.pushBranch || policy.commitChanges || policy.createPullRequest || policy.updatePullRequest || policy.watchChecks);
+  const remote = await resolveRemoteForPush(options.cwd);
+  const { repository } = await detectRepository(options.cwd, policy.repository);
+  const ghCommand = policy.command || "gh";
+  const defaultBranch = await detectDefaultBranch(ghCommand, options.cwd, repository);
+  let branch = options.gitBranch;
+  let createdBranch = false;
+  let pushed = false;
+  let commitCreated = false;
+  let commitSha: string | undefined;
+  let commitMessage: string | undefined;
+  let pullRequestCreated = false;
+  let pullRequestUpdated = false;
+  let pullRequestRecord: GitHubPullRequestRecord | null = null;
+  const blockers: string[] = [];
+
+  if (!enabled) {
+    return {
+      branch,
+      record: {
+        enabled: false,
+        branch: {
+          initial: options.gitBranch,
+          current: options.gitBranch,
+          created: false,
+          pushed: false,
+          remote
+        },
+        commit: {
+          created: false,
+          changedFiles: await listChangedFiles(options.cwd)
+        },
+        pullRequest: {
+          created: false,
+          updated: false
+        },
+        checks: {
+          watched: false,
+          polls: 0,
+          completed: false,
+          summary: "GitHub mutations are disabled by policy."
+        },
+        blockers: [],
+        summary: "GitHub mutations are disabled by policy."
+      }
+    };
+  }
+
+  const baseBranch = policy.pullRequestBase || defaultBranch || "main";
+  const changedFiles = await listChangedFiles(options.cwd);
+
+  try {
+    if (policy.pushBranch && (branch === baseBranch || branch === defaultBranch)) {
+      branch = buildMutationBranchName(policy.branchPrefix || "cstack", options.runId, options.input);
+      await runGit(options.cwd, ["checkout", "-b", branch]);
+      createdBranch = true;
+    }
+  } catch (error) {
+    blockers.push(`Failed to create branch ${branch}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  if (policy.commitChanges && blockers.length === 0) {
+    const dirtyFiles = await listChangedFiles(options.cwd);
+    if (dirtyFiles.length > 0) {
+      try {
+        commitMessage = buildCommitMessage(options.input, options.issueNumbers);
+        await runGit(options.cwd, ["add", "-A"]);
+        await runGit(options.cwd, ["commit", "-m", commitMessage]);
+        commitCreated = true;
+        commitSha = await currentHeadSha(options.cwd);
+      } catch (error) {
+        blockers.push(`Failed to commit deliver changes: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+
+  if (policy.pushBranch && blockers.length === 0) {
+    if (!remote) {
+      blockers.push("No git remote is configured for pushing deliver branches.");
+    } else {
+      try {
+        await runGit(options.cwd, ["push", "--set-upstream", remote, branch]);
+        pushed = true;
+      } catch (error) {
+        blockers.push(`Failed to push branch ${branch}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+
+  const prTitle = buildPullRequestTitle(options.input, options.issueNumbers);
+  const prBody = buildPullRequestBody({
+    input: options.input,
+    issueNumbers: options.issueNumbers,
+    buildSummary: options.buildSummary,
+    reviewVerdict: options.reviewVerdict,
+    verificationRecord: options.verificationRecord,
+    ...(options.linkedRunId ? { linkedRunId: options.linkedRunId } : {})
+  });
+  await fs.writeFile(options.pullRequestBodyPath, `${prBody}\n`, "utf8");
+
+  if ((policy.createPullRequest || policy.updatePullRequest) && blockers.length === 0) {
+    if (!repository) {
+      blockers.push("GitHub repository could not be resolved for PR mutation.");
+    } else if (branch === baseBranch) {
+      blockers.push(`Cannot create or update a pull request when head branch ${branch} matches base branch ${baseBranch}.`);
+    } else {
+      try {
+        pullRequestRecord = await readPullRequest({
+          ghCommand,
+          cwd: options.cwd,
+          repository,
+          gitBranch: branch
+        });
+      } catch {}
+
+      try {
+        if (!pullRequestRecord && policy.createPullRequest) {
+          await runGh(ghCommand, options.cwd, [
+            "pr",
+            "create",
+            "--repo",
+            repository,
+            "--base",
+            baseBranch,
+            "--head",
+            branch,
+            "--title",
+            prTitle,
+            "--body-file",
+            options.pullRequestBodyPath,
+            ...(policy.pullRequestDraft ? ["--draft"] : [])
+          ]);
+          pullRequestCreated = true;
+        } else if (pullRequestRecord && policy.updatePullRequest) {
+          await runGh(ghCommand, options.cwd, [
+            "pr",
+            "edit",
+            String(pullRequestRecord.number),
+            "--repo",
+            repository,
+            "--title",
+            prTitle,
+            "--body-file",
+            options.pullRequestBodyPath
+          ]);
+          pullRequestUpdated = true;
+        }
+      } catch (error) {
+        blockers.push(`Failed to create or update the pull request: ${error instanceof Error ? error.message : String(error)}`);
+      }
+
+      try {
+        pullRequestRecord = await readPullRequest({
+          ghCommand,
+          cwd: options.cwd,
+          repository,
+          gitBranch: branch
+        });
+      } catch (error) {
+        if (policy.createPullRequest || policy.updatePullRequest) {
+          blockers.push(`Failed to load pull request state after mutation: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    }
+  }
+
+  let checksSummary = "Required checks were not watched.";
+  let checksCompleted = false;
+  let checkPolls = 0;
+  if (policy.watchChecks && blockers.length === 0 && repository && pullRequestRecord) {
+    const watchResult = await waitForRequiredChecks({
+      ghCommand,
+      cwd: options.cwd,
+      repository,
+      pullRequestNumber: pullRequestRecord.number,
+      timeoutSeconds: policy.checkWatchTimeoutSeconds ?? 600,
+      pollSeconds: policy.checkWatchPollSeconds ?? 15
+    });
+    checkPolls = watchResult.polls;
+    checksCompleted = watchResult.completed;
+    checksSummary = watchResult.summary;
+  }
+
+  return {
+    branch,
+    record: {
+      enabled: true,
+      branch: {
+        initial: options.gitBranch,
+        current: branch,
+        created: createdBranch,
+        pushed,
+        remote
+      },
+      commit: {
+        created: commitCreated,
+        ...(commitSha ? { sha: commitSha } : {}),
+        ...(commitMessage ? { message: commitMessage } : {}),
+        changedFiles
+      },
+      pullRequest: {
+        created: pullRequestCreated,
+        updated: pullRequestUpdated,
+        ...(pullRequestRecord?.number ? { number: pullRequestRecord.number } : {}),
+        ...(pullRequestRecord?.url ? { url: pullRequestRecord.url } : {}),
+        ...(prTitle ? { title: prTitle } : {}),
+        ...(pullRequestRecord?.baseRefName ? { baseRefName: pullRequestRecord.baseRefName } : {}),
+        ...(pullRequestRecord?.headRefName ? { headRefName: pullRequestRecord.headRefName } : {}),
+        ...(typeof policy.pullRequestDraft === "boolean" ? { draft: policy.pullRequestDraft } : {})
+      },
+      checks: {
+        watched: Boolean(policy.watchChecks && pullRequestRecord),
+        polls: checkPolls,
+        completed: checksCompleted,
+        summary: checksSummary
+      },
+      blockers,
+      summary:
+        blockers.length === 0
+          ? pullRequestRecord?.url
+            ? `Branch ${branch} is pushed and PR ${pullRequestRecord.url} is available.`
+            : `Branch ${branch} prepared without GitHub blockers.`
+          : blockers[0]!
+    }
+  };
+}
+
 export async function collectGitHubDeliveryEvidence(options: CollectGitHubDeliveryOptions): Promise<CollectGitHubDeliveryResult> {
   const policy = structuredClone(options.policy);
   const inferredIssueNumbers = [
@@ -719,6 +1139,11 @@ export async function collectGitHubDeliveryEvidence(options: CollectGitHubDelive
     policy.enabled ||
       options.deliveryMode === "release" ||
       inferredIssueNumbers.length > 0 ||
+      policy.pushBranch ||
+      policy.commitChanges ||
+      policy.createPullRequest ||
+      policy.updatePullRequest ||
+      policy.watchChecks ||
       policy.prRequired ||
       policy.linkedIssuesRequired ||
       (policy.requiredChecks?.length ?? 0) > 0 ||
@@ -733,6 +1158,33 @@ export async function collectGitHubDeliveryEvidence(options: CollectGitHubDelive
 
   if (!enabled) {
     const observedAt = new Date().toISOString();
+    const mutationRecord =
+      options.mutationRecord ??
+      ({
+        enabled: false,
+        branch: {
+          initial: options.gitBranch,
+          current: options.gitBranch,
+          created: false,
+          pushed: false
+        },
+        commit: {
+          created: false,
+          changedFiles: []
+        },
+        pullRequest: {
+          created: false,
+          updated: false
+        },
+        checks: {
+          watched: false,
+          polls: 0,
+          completed: false,
+          summary: "GitHub mutations are disabled by policy."
+        },
+        blockers: [],
+        summary: "GitHub mutations are disabled by policy."
+      } satisfies GitHubMutationRecord);
     return {
       record: {
         repository: null,
@@ -767,12 +1219,14 @@ export async function collectGitHubDeliveryEvidence(options: CollectGitHubDelive
           blockers: [],
           observedAt
         },
+        mutation: mutationRecord,
         limitations: ["GitHub delivery evidence was skipped because the deliver GitHub policy is disabled."]
       },
       artifacts: {
         githubState: {
           policyEnabled: false
         },
+        mutation: mutationRecord,
         pullRequest: gate(false, "not-applicable", "Pull request policy is disabled for this run.", null, "config"),
         issues: gate(false, "not-applicable", "Issue policy is disabled for this run.", [], "config"),
         checks: gate(false, "not-applicable", "Check policy is disabled for this run.", [], "config"),
@@ -860,7 +1314,36 @@ export async function collectGitHubDeliveryEvidence(options: CollectGitHubDelive
     changelogPaths: policy.changelogPaths && policy.changelogPaths.length > 0 ? policy.changelogPaths : ["README.md"]
   });
 
+  const mutationRecord =
+    options.mutationRecord ??
+    ({
+      enabled: false,
+      branch: {
+        initial: options.gitBranch,
+        current: options.gitBranch,
+        created: false,
+        pushed: false
+      },
+      commit: {
+        created: false,
+        changedFiles: []
+      },
+      pullRequest: {
+        created: false,
+        updated: false
+      },
+      checks: {
+        watched: false,
+        polls: 0,
+        completed: false,
+        summary: "GitHub mutations were not requested for this run."
+      },
+      blockers: [],
+      summary: "GitHub mutations were not requested for this run."
+    } satisfies GitHubMutationRecord);
+
   const blockers = [
+    ...mutationRecord.blockers,
     ...branchState.blockers,
     ...pullRequest.blockers,
     ...issues.blockers,
@@ -887,6 +1370,7 @@ export async function collectGitHubDeliveryEvidence(options: CollectGitHubDelive
     actions,
     release,
     security,
+    mutation: mutationRecord,
     overall: {
       status: blockers.length === 0 ? "ready" : "blocked",
       summary:
@@ -913,6 +1397,7 @@ export async function collectGitHubDeliveryEvidence(options: CollectGitHubDelive
         headSha,
         policy
       },
+      mutation: mutationRecord,
       pullRequest,
       issues,
       checks,

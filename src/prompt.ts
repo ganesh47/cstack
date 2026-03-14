@@ -187,6 +187,7 @@ export async function buildDeliverPrompt(options: {
       "- run a bounded delivery workflow with explicit internal stages: build, review, ship",
       "- preserve stage artifacts so later inspection can explain every handoff",
       "- treat specialist reviewers as advisory inputs to the review lead",
+      "- when GitHub mutation policy is enabled, the wrapper may create a branch, push it, and open or update a pull request during ship",
       "- do not claim release readiness if verification or review artifacts do not support it",
       "",
       "## Requested build mode",
@@ -531,9 +532,10 @@ export async function buildDeliverShipPrompt(options: {
   buildSummary: string;
   reviewVerdict: DeliverReviewVerdict;
   verificationRecord: object;
+  githubMutationRecord: object;
   githubDeliveryRecord: object;
 }): Promise<{ prompt: string; context: string }> {
-  const { cwd, input, buildSummary, reviewVerdict, verificationRecord, githubDeliveryRecord } = options;
+  const { cwd, input, buildSummary, reviewVerdict, verificationRecord, githubMutationRecord, githubDeliveryRecord } = options;
   const specDoc = path.join(cwd, "docs", "specs", "cstack-spec-v0.1.md");
 
   return {
@@ -569,6 +571,9 @@ export async function buildDeliverShipPrompt(options: {
       "",
       "## Verification evidence",
       JSON.stringify(verificationRecord, null, 2),
+      "",
+      "## GitHub mutation state",
+      JSON.stringify(githubMutationRecord, null, 2),
       "",
       "## GitHub delivery evidence",
       JSON.stringify(githubDeliveryRecord, null, 2),

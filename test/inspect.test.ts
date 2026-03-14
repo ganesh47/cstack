@@ -584,12 +584,92 @@ async function seedDeliverRun(
     `${JSON.stringify(githubDelivery, null, 2)}\n`,
     "utf8"
   );
+  await fs.writeFile(
+    path.join(runDir, "artifacts", "github-mutation.json"),
+    `${JSON.stringify(
+      {
+        enabled: true,
+        branch: {
+          initial: "main",
+          current: blocked ? "cstack/billing-cleanup" : "cstack/billing-cleanup-ready",
+          created: true,
+          pushed: true,
+          remote: "origin"
+        },
+        commit: {
+          created: true,
+          sha: "def456",
+          message: "cstack deliver: billing cleanup",
+          changedFiles: ["src/billing.ts"]
+        },
+        pullRequest: {
+          created: true,
+          updated: false,
+          number: 42,
+          url: "https://example.com/pr/42",
+          title: "Deliver billing cleanup",
+          baseRefName: "main",
+          headRefName: blocked ? "cstack/billing-cleanup" : "cstack/billing-cleanup-ready",
+          draft: false
+        },
+        checks: {
+          watched: true,
+          polls: 1,
+          completed: !blocked,
+          summary: blocked ? "Timed out while waiting for required checks." : "Observed 1 completed required checks."
+        },
+        blockers: [],
+        summary: "Branch pushed and pull request prepared."
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
   await fs.writeFile(path.join(runDir, "stages", "ship", "artifacts", "github-state.json"), `${JSON.stringify({
     repository: githubDelivery.repository,
     mode: githubDelivery.mode,
     branch: githubDelivery.branch,
     overall: githubDelivery.overall
   }, null, 2)}\n`, "utf8");
+  await fs.writeFile(
+    path.join(runDir, "stages", "ship", "artifacts", "github-mutation.json"),
+    `${JSON.stringify(
+      {
+        enabled: true,
+        branch: {
+          initial: "main",
+          current: blocked ? "cstack/billing-cleanup" : "cstack/billing-cleanup-ready",
+          created: true,
+          pushed: true,
+          remote: "origin"
+        },
+        commit: {
+          created: true,
+          sha: "def456",
+          message: "cstack deliver: billing cleanup",
+          changedFiles: ["src/billing.ts"]
+        },
+        pullRequest: {
+          created: true,
+          updated: false,
+          number: 42,
+          url: "https://example.com/pr/42"
+        },
+        checks: {
+          watched: true,
+          polls: 1,
+          completed: !blocked,
+          summary: blocked ? "Timed out while waiting for required checks." : "Observed 1 completed required checks."
+        },
+        blockers: [],
+        summary: "Branch pushed and pull request prepared."
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
   await fs.writeFile(path.join(runDir, "stages", "ship", "artifacts", "pull-request.json"), `${JSON.stringify(githubDelivery.pullRequest, null, 2)}\n`, "utf8");
   await fs.writeFile(path.join(runDir, "stages", "ship", "artifacts", "issues.json"), `${JSON.stringify(githubDelivery.issues, null, 2)}\n`, "utf8");
   await fs.writeFile(path.join(runDir, "stages", "ship", "artifacts", "checks.json"), `${JSON.stringify(githubDelivery.checks, null, 2)}\n`, "utf8");
@@ -678,19 +758,23 @@ describe("inspect", () => {
     expect(inspection.verificationRecord?.status).toBe("passed");
     expect(inspection.deliverReviewVerdict?.status).toBe("changes-requested");
     expect(inspection.deliverShipRecord?.readiness).toBe("blocked");
+    expect(inspection.githubMutationRecord?.pullRequest.url).toBe("https://example.com/pr/42");
     expect(inspection.githubDeliveryRecord?.overall.status).toBe("blocked");
     expect(inspection.run.status).toBe("failed");
     await expect(handleInspectorCommand(repoDir, inspection, "show verification")).resolves.toContain("\"status\": \"passed\"");
     await expect(handleInspectorCommand(repoDir, inspection, "show review")).resolves.toContain("\"status\": \"changes-requested\"");
     await expect(handleInspectorCommand(repoDir, inspection, "show ship")).resolves.toContain("\"readiness\": \"blocked\"");
+    await expect(handleInspectorCommand(repoDir, inspection, "show mutation")).resolves.toContain("\"current\": \"cstack/billing-cleanup\"");
     await expect(handleInspectorCommand(repoDir, inspection, "show github")).resolves.toContain("\"status\": \"blocked\"");
     await expect(handleInspectorCommand(repoDir, inspection, "show checks")).resolves.toContain("GitHub checks gate: blocked");
     await expect(handleInspectorCommand(repoDir, inspection, "show security")).resolves.toContain("GitHub security gate: blocked");
     await expect(handleInspectorCommand(repoDir, inspection, "what remains")).resolves.toContain("github checks: Required check deliver/test is failing.");
     await expect(handleInspectorCommand(repoDir, inspection, "what remains")).resolves.toContain("github security: Dependabot alert is open.");
+    await expect(handleInspectorCommand(repoDir, inspection, "show artifact stages/ship/artifacts/github-mutation.json")).resolves.toContain("\"created\": true");
     await expect(handleInspectorCommand(repoDir, inspection, "show artifact stages/ship/artifacts/checks.json")).resolves.toContain("\"conclusion\": \"fail\"");
     await expect(handleInspectorCommand(repoDir, inspection, "show artifact stages/ship/artifacts/security.json")).resolves.toContain("\"severity\": \"high\"");
     await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("ship readiness: blocked");
+    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("github mutation: Branch pushed and pull request prepared.");
     await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("github delivery: blocked (checks, security)");
   });
 
@@ -700,7 +784,9 @@ describe("inspect", () => {
 
     expect(inspection.run.status).toBe("completed");
     expect(inspection.deliverShipRecord?.readiness).toBe("ready");
+    expect(inspection.githubMutationRecord?.branch.current).toBe("cstack/billing-cleanup-ready");
     expect(inspection.githubDeliveryRecord?.overall.status).toBe("ready");
+    await expect(handleInspectorCommand(repoDir, inspection, "show mutation")).resolves.toContain("\"url\": \"https://example.com/pr/42\"");
     await expect(handleInspectorCommand(repoDir, inspection, "show pr")).resolves.toContain("GitHub pull request gate: ready");
     await expect(handleInspectorCommand(repoDir, inspection, "show release")).resolves.toContain("GitHub release gate: ready");
     await expect(handleInspectorCommand(repoDir, inspection, "show actions")).resolves.toContain("GitHub actions gate: ready");

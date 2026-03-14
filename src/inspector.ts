@@ -11,6 +11,7 @@ import type {
   DiscoverResearchPlan,
   GitHubGateEvaluation,
   GitHubDeliveryRecord,
+  GitHubMutationRecord,
   RoutingPlan,
   RunEvent,
   RunInspection,
@@ -82,6 +83,9 @@ function renderSuggestedActions(inspection: RunInspection): string[] {
     if (inspection.run.workflow === "deliver") {
       lines.push("- inspect the review verdict with `show review`");
       lines.push("- inspect ship readiness with `show ship`");
+      if (inspection.githubMutationRecord) {
+        lines.push("- inspect GitHub mutation state with `show mutation`");
+      }
       if (inspection.githubDeliveryRecord) {
         lines.push("- inspect GitHub delivery evidence with `show github`");
         for (const gate of githubBlockingGates(inspection.githubDeliveryRecord).slice(0, 3)) {
@@ -229,6 +233,7 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
   const deliverReviewVerdictPath = path.join(runDir, "stages", "review", "artifacts", "verdict.json");
   const deliverShipRecordPath = path.join(runDir, "stages", "ship", "artifacts", "ship-record.json");
   const githubDeliveryPath = path.join(runDir, "artifacts", "github-delivery.json");
+  const githubMutationPath = path.join(runDir, "artifacts", "github-mutation.json");
   const [
     recentEvents,
     routingPlan,
@@ -240,6 +245,7 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     deliverReviewVerdict,
     deliverShipRecord,
     githubDeliveryRecord,
+    githubMutationRecord,
     artifacts
   ] = await Promise.all([
     readRecentEvents(run.eventsPath),
@@ -252,6 +258,7 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     readJsonFile<DeliverReviewVerdict>(deliverReviewVerdictPath),
     readJsonFile<DeliverShipRecord>(deliverShipRecordPath),
     readJsonFile<GitHubDeliveryRecord>(githubDeliveryPath),
+    readJsonFile<GitHubMutationRecord>(githubMutationPath),
     walkArtifacts(runDir)
   ]);
 
@@ -272,6 +279,7 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     deliverReviewVerdict,
     deliverShipRecord,
     githubDeliveryRecord,
+    githubMutationRecord,
     recentEvents,
     finalBody,
     artifacts
@@ -366,6 +374,7 @@ export function renderInspectionSummary(cwd: string, inspection: RunInspection):
       inspection.verificationRecord ? `- verification: ${renderVerificationSummary(inspection.verificationRecord)}` : undefined,
       inspection.deliverReviewVerdict ? `- review verdict: ${inspection.deliverReviewVerdict.status}` : undefined,
       inspection.deliverShipRecord ? `- ship readiness: ${inspection.deliverShipRecord.readiness}` : undefined,
+      inspection.githubMutationRecord ? `- github mutation: ${inspection.githubMutationRecord.summary}` : undefined,
       inspection.githubDeliveryRecord ? `- github delivery: ${renderGitHubSummary(inspection.githubDeliveryRecord)}` : undefined,
       "",
       "Plan",
@@ -435,6 +444,14 @@ function renderGitHub(inspection: RunInspection): string {
   }
 
   return `${JSON.stringify(inspection.githubDeliveryRecord, null, 2)}\n`;
+}
+
+function renderGitHubMutation(inspection: RunInspection): string {
+  if (!inspection.githubMutationRecord) {
+    return "No GitHub mutation record was recorded for this run.";
+  }
+
+  return `${JSON.stringify(inspection.githubMutationRecord, null, 2)}\n`;
 }
 
 function renderGitHubBranch(inspection: RunInspection): string {
@@ -557,6 +574,12 @@ function renderWhatRemains(inspection: RunInspection): string {
 
   const lines = ["Remaining work:"];
   if (outstandingStages.length === 0 && skippedSpecialists.length === 0) {
+    if (inspection.githubMutationRecord?.blockers.length) {
+      for (const blocker of inspection.githubMutationRecord.blockers) {
+        lines.push(`- github mutation: ${blocker}`);
+      }
+      return lines.join("\n");
+    }
     if (inspection.githubDeliveryRecord) {
       const githubLines = [
         inspection.githubDeliveryRecord.branchState.status === "blocked"
@@ -645,6 +668,7 @@ function helpText(): string {
     "- show verification",
     "- show review",
     "- show ship",
+    "- show mutation",
     "- show github",
     "- show branch",
     "- show pr",
@@ -712,6 +736,9 @@ export async function handleInspectorCommand(cwd: string, inspection: RunInspect
   }
   if (trimmed === "show ship") {
     return renderDeliverShip(inspection);
+  }
+  if (trimmed === "show mutation") {
+    return renderGitHubMutation(inspection);
   }
   if (trimmed === "show github") {
     return renderGitHub(inspection);

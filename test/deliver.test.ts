@@ -45,19 +45,23 @@ async function seedSpecRun(repoDir: string): Promise<string> {
   return runId;
 }
 
-async function initGitRepo(repoDir: string): Promise<string> {
+async function initGitRepo(repoDir: string): Promise<{ remoteDir: string }> {
+  const remoteDir = await fs.mkdtemp(path.join(os.tmpdir(), "cstack-deliver-remote-"));
+  await execFileAsync("git", ["init", "--bare", remoteDir]);
   await execFileAsync("git", ["init", "-b", "main"], { cwd: repoDir });
   await execFileAsync("git", ["config", "user.name", "Test User"], { cwd: repoDir });
   await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: repoDir });
   await execFileAsync("git", ["config", "commit.gpgSign", "false"], { cwd: repoDir });
+  await execFileAsync("git", ["remote", "add", "origin", remoteDir], { cwd: repoDir });
   await execFileAsync("git", ["add", "."], { cwd: repoDir });
   await execFileAsync("git", ["commit", "-m", "test repo"], { cwd: repoDir });
-  const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repoDir });
-  return stdout.trim();
+  await execFileAsync("git", ["push", "-u", "origin", "main"], { cwd: repoDir });
+  return { remoteDir };
 }
 
 describe("runDeliver", () => {
   let repoDir: string;
+  let remoteDir: string;
 
   beforeEach(async () => {
     repoDir = await fs.mkdtemp(path.join(os.tmpdir(), "cstack-deliver-"));
@@ -91,6 +95,15 @@ describe("runDeliver", () => {
         'enabled = true',
         `command = "${fakeGhPath.replaceAll("\\", "\\\\")}"`,
         'repository = "ganesh47/cstack"',
+        'pushBranch = true',
+        'branchPrefix = "cstack"',
+        'commitChanges = true',
+        'createPullRequest = true',
+        'updatePullRequest = true',
+        'pullRequestBase = "main"',
+        'watchChecks = true',
+        'checkWatchTimeoutSeconds = 1',
+        'checkWatchPollSeconds = 0',
         'prRequired = true',
         'requireApprovedReview = true',
         'linkedIssuesRequired = true',
@@ -111,11 +124,13 @@ describe("runDeliver", () => {
     await fs.writeFile(path.join(repoDir, ".cstack", "prompts", "deliver.md"), "# test deliver prompt asset\n", "utf8");
     await fs.writeFile(path.join(repoDir, "docs", "specs", "cstack-spec-v0.1.md"), "# repo spec\n", "utf8");
     await fs.writeFile(path.join(repoDir, "docs", "research", "gstack-codex-interaction-model.md"), "# repo research\n", "utf8");
-    await initGitRepo(repoDir);
+    const initialized = await initGitRepo(repoDir);
+    remoteDir = initialized.remoteDir;
   });
 
   afterEach(async () => {
     await fs.rm(repoDir, { recursive: true, force: true });
+    await fs.rm(remoteDir, { recursive: true, force: true });
   });
 
   async function writeGitHubFixture(fixture: unknown): Promise<void> {
@@ -123,24 +138,14 @@ describe("runDeliver", () => {
   }
 
   it("creates a merge-ready deliver run with GitHub delivery evidence", async () => {
-    const { stdout: headShaOut } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repoDir });
-    const headSha = headShaOut.trim();
     await writeGitHubFixture({
       repoView: {
         nameWithOwner: "ganesh47/cstack",
         defaultBranchRef: { name: "main" }
       },
-      pullRequest: {
-        number: 42,
-        title: "Implement SSO with audit logging",
-        state: "OPEN",
-        isDraft: false,
+      createdPullRequest: {
         reviewDecision: "APPROVED",
-        url: "https://github.com/ganesh47/cstack/pull/42",
-        headRefName: "main",
-        baseRefName: "main",
-        mergeStateStatus: "CLEAN",
-        closingIssuesReferences: [{ number: 123 }]
+        mergeStateStatus: "CLEAN"
       },
       issues: [
         {
@@ -156,13 +161,14 @@ describe("runDeliver", () => {
         { name: "deliver/typecheck", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/11" }
       ],
       actions: [
-        { databaseId: 1, workflowName: "Release", status: "completed", conclusion: "success", url: "https://github.com/ganesh47/cstack/actions/runs/1", headSha, headBranch: "main" }
+        { databaseId: 1, workflowName: "Release", status: "completed", conclusion: "success", url: "https://github.com/ganesh47/cstack/actions/runs/1" }
       ],
       security: {
         dependabot: [],
         codeScanning: []
       }
     });
+    await fs.writeFile(path.join(repoDir, "src-change.txt"), "deliver change\n", "utf8");
     const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     try {
       await runDeliver(repoDir, ["Implement SSO with audit logging and release pipeline hardening for #123"]);
@@ -185,6 +191,12 @@ describe("runDeliver", () => {
       const verification = JSON.parse(
         await fs.readFile(path.join(runDir, "stages", "build", "artifacts", "verification.json"), "utf8")
       ) as { status: string };
+      const githubMutation = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "github-mutation.json"), "utf8")) as {
+        branch: { current: string; created: boolean; pushed: boolean };
+        commit: { created: boolean; sha?: string; changedFiles: string[] };
+        pullRequest: { created: boolean; url?: string; number?: number };
+        checks: { watched: boolean; completed: boolean };
+      };
       const githubDelivery = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "github-delivery.json"), "utf8")) as {
         pullRequest: { status: string; required: boolean };
         issues: { status: string; required: boolean };
@@ -196,8 +208,10 @@ describe("runDeliver", () => {
       };
       const finalBody = await fs.readFile(run.finalPath, "utf8");
       const deliveryReport = await fs.readFile(path.join(runDir, "artifacts", "delivery-report.md"), "utf8");
+      const mutationArtifact = await fs.readFile(path.join(runDir, "stages", "ship", "artifacts", "github-mutation.json"), "utf8");
       const checksArtifact = await fs.readFile(path.join(runDir, "stages", "ship", "artifacts", "checks.json"), "utf8");
       const actionsArtifact = await fs.readFile(path.join(runDir, "stages", "ship", "artifacts", "actions.json"), "utf8");
+      const remoteHeads = await execFileAsync("git", ["--git-dir", remoteDir, "for-each-ref", "--format=%(refname:short)", "refs/heads"]);
       const consoleOutput = stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join("");
 
       expect(run.workflow).toBe("deliver");
@@ -211,6 +225,15 @@ describe("runDeliver", () => {
       expect(shipRecord.readiness).toBe("ready");
       expect(session.mode).toBe("exec");
       expect(verification.status).toBe("passed");
+      expect(githubMutation.branch.created).toBe(true);
+      expect(githubMutation.branch.pushed).toBe(true);
+      expect(githubMutation.branch.current).toContain("cstack/");
+      expect(githubMutation.commit.created).toBe(true);
+      expect(githubMutation.commit.sha).toBeTruthy();
+      expect(githubMutation.commit.changedFiles).toContain("src-change.txt");
+      expect(githubMutation.pullRequest.created).toBe(true);
+      expect(githubMutation.pullRequest.url).toContain("/pull/");
+      expect(githubMutation.checks.watched).toBe(true);
       expect(githubDelivery.overall.status).toBe("ready");
       expect(githubDelivery.pullRequest).toMatchObject({ status: "ready", required: true });
       expect(githubDelivery.issues).toMatchObject({ status: "ready", required: true });
@@ -219,11 +242,14 @@ describe("runDeliver", () => {
       expect(githubDelivery.actions).toMatchObject({ status: "ready", required: true });
       expect(githubDelivery.security).toMatchObject({ status: "ready", required: true });
       expect(githubDelivery.issueReferences).toEqual([123]);
+      expect(mutationArtifact).toContain("\"created\": true");
       expect(checksArtifact).toContain("\"status\": \"ready\"");
       expect(actionsArtifact).toContain("\"workflowName\": \"Release\"");
+      expect(remoteHeads.stdout).toContain(githubMutation.branch.current);
       expect(finalBody).toContain("# Deliver Run Summary");
       expect(deliveryReport).toContain("# Deliver Run Summary");
       expect(consoleOutput).toContain("Workflow: deliver");
+      expect(consoleOutput).toContain("GitHub mutation:");
       expect(consoleOutput).toContain("Review verdict: ready");
     } finally {
       stdoutSpy.mockRestore();
@@ -232,8 +258,6 @@ describe("runDeliver", () => {
 
   it("creates a release-bearing deliver run when release evidence exists", async () => {
     const upstreamRunId = await seedSpecRun(repoDir);
-    const { stdout: headShaOut } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repoDir });
-    const headSha = headShaOut.trim();
     await writeGitHubFixture({
       repoView: {
         nameWithOwner: "ganesh47/cstack",
@@ -265,7 +289,7 @@ describe("runDeliver", () => {
         { name: "deliver/typecheck", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/13" }
       ],
       actions: [
-        { databaseId: 2, workflowName: "Release", status: "completed", conclusion: "success", url: "https://github.com/ganesh47/cstack/actions/runs/2", headSha, headBranch: "main" }
+        { databaseId: 2, workflowName: "Release", status: "completed", conclusion: "success", url: "https://github.com/ganesh47/cstack/actions/runs/2" }
       ],
       release: {
         tagName: "v1.2.3",
@@ -279,6 +303,7 @@ describe("runDeliver", () => {
         codeScanning: []
       }
     });
+    await fs.writeFile(path.join(repoDir, "release-change.txt"), "release change\n", "utf8");
     const configPath = path.join(repoDir, ".cstack", "config.toml");
     const configBody = await fs.readFile(configPath, "utf8");
     await fs.writeFile(
@@ -306,6 +331,9 @@ describe("runDeliver", () => {
       release: { status: string; required: boolean; observed: { tagName: string } | null };
       actions: { status: string };
     };
+    const githubMutation = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "github-mutation.json"), "utf8")) as {
+      pullRequest: { created: boolean; updated: boolean; url?: string };
+    };
     const releaseArtifact = await fs.readFile(path.join(runDir, "stages", "ship", "artifacts", "release.json"), "utf8");
     const promptBody = await fs.readFile(run.promptPath, "utf8");
 
@@ -316,6 +344,8 @@ describe("runDeliver", () => {
     expect(buildSession.linkedRunId).toBe(upstreamRunId);
     expect(buildSession.linkedRunWorkflow).toBe("spec");
     expect(buildSession.linkedArtifactPath).toContain("artifacts/spec.md");
+    expect(githubMutation.pullRequest.updated).toBe(true);
+    expect(githubMutation.pullRequest.url).toContain("/pull/");
     expect(githubDelivery.mode).toBe("release");
     expect(githubDelivery.release).toMatchObject({ status: "ready", required: true });
     expect(githubDelivery.release.observed?.tagName).toBe("v1.2.3");
@@ -325,24 +355,14 @@ describe("runDeliver", () => {
   });
 
   it("fails deliver when required GitHub security or checks are blocked", async () => {
-    const { stdout: headShaOut } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repoDir });
-    const headSha = headShaOut.trim();
     await writeGitHubFixture({
       repoView: {
         nameWithOwner: "ganesh47/cstack",
         defaultBranchRef: { name: "main" }
       },
-      pullRequest: {
-        number: 44,
-        title: "Blocked delivery",
-        state: "OPEN",
-        isDraft: false,
+      createdPullRequest: {
         reviewDecision: "APPROVED",
-        url: "https://github.com/ganesh47/cstack/pull/44",
-        headRefName: "main",
-        baseRefName: "main",
-        mergeStateStatus: "CLEAN",
-        closingIssuesReferences: [{ number: 789 }]
+        mergeStateStatus: "CLEAN"
       },
       issues: [
         {
@@ -358,7 +378,7 @@ describe("runDeliver", () => {
         { name: "deliver/typecheck", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/15" }
       ],
       actions: [
-        { databaseId: 3, workflowName: "Release", status: "completed", conclusion: "success", url: "https://github.com/ganesh47/cstack/actions/runs/3", headSha, headBranch: "main" }
+        { databaseId: 3, workflowName: "Release", status: "completed", conclusion: "success", url: "https://github.com/ganesh47/cstack/actions/runs/3" }
       ],
       security: {
         dependabot: [
@@ -372,6 +392,7 @@ describe("runDeliver", () => {
         codeScanning: []
       }
     });
+    await fs.writeFile(path.join(repoDir, "blocked-change.txt"), "blocked change\n", "utf8");
 
     await runDeliver(repoDir, ["Deliver a blocked change for #789"]);
 
@@ -387,9 +408,14 @@ describe("runDeliver", () => {
       security: { status: string; blockers: string[] };
       overall: { status: string; blockers: string[] };
     };
+    const githubMutation = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "github-mutation.json"), "utf8")) as {
+      pullRequest: { created: boolean; url?: string };
+    };
     const securityArtifact = await fs.readFile(path.join(runDir, "stages", "ship", "artifacts", "security.json"), "utf8");
 
     expect(run.status).toBe("failed");
+    expect(githubMutation.pullRequest.created).toBe(true);
+    expect(githubMutation.pullRequest.url).toContain("/pull/");
     expect(shipRecord.readiness).toBe("blocked");
     expect(githubDelivery.checks.status).toBe("blocked");
     expect(githubDelivery.security.status).toBe("blocked");
@@ -400,5 +426,55 @@ describe("runDeliver", () => {
     expect(githubDelivery.overall.blockers.join("\n")).toContain("Required check deliver/test");
     expect(shipRecord.unresolved.join("\n")).toContain("Dependabot alert");
     expect(securityArtifact).toContain("\"severity\": \"high\"");
+  });
+
+  it("fails deliver when pull request creation fails", async () => {
+    await writeGitHubFixture({
+      repoView: {
+        nameWithOwner: "ganesh47/cstack",
+        defaultBranchRef: { name: "main" }
+      },
+      prCreateError: "simulated PR create failure",
+      issues: [
+        {
+          number: 901,
+          title: "PR failure issue",
+          state: "CLOSED",
+          url: "https://github.com/ganesh47/cstack/issues/901",
+          closedAt: "2026-03-14T00:00:00.000Z"
+        }
+      ],
+      prChecks: [],
+      actions: [],
+      security: {
+        dependabot: [],
+        codeScanning: []
+      }
+    });
+    await fs.writeFile(path.join(repoDir, "mutation-failure.txt"), "mutation failure\n", "utf8");
+
+    await runDeliver(repoDir, ["Deliver a fix that will fail PR creation for #901"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const githubMutation = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "github-mutation.json"), "utf8")) as {
+      pullRequest: { created: boolean; updated: boolean };
+      blockers: string[];
+      summary: string;
+    };
+    const githubDelivery = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "github-delivery.json"), "utf8")) as {
+      overall: { status: string; blockers: string[] };
+      pullRequest: { status: string };
+    };
+
+    expect(run.status).toBe("failed");
+    expect(githubMutation.pullRequest.created).toBe(false);
+    expect(githubMutation.pullRequest.updated).toBe(false);
+    expect(githubMutation.summary).toContain("Failed to create or update the pull request");
+    expect(githubMutation.blockers.join("\n")).toContain("simulated PR create failure");
+    expect(githubDelivery.pullRequest.status).toBe("blocked");
+    expect(githubDelivery.overall.status).toBe("blocked");
+    expect(githubDelivery.overall.blockers.join("\n")).toContain("simulated PR create failure");
   });
 });

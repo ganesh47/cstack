@@ -173,6 +173,7 @@ export async function runDeliver(cwd: string, args: string[] = []): Promise<void
         : "failed";
     runRecord.updatedAt = new Date().toISOString();
     delete runRecord.currentStage;
+    runRecord.gitBranch = execution.githubMutationRecord.branch.current || gitBranch;
     runRecord.codexCommand = buildSession.codexCommand;
     if (buildSession.sessionId) {
       runRecord.sessionId = buildSession.sessionId;
@@ -207,10 +208,12 @@ export async function runDeliver(cwd: string, args: string[] = []): Promise<void
         buildSession.sessionId ? `Build session: ${buildSession.sessionId}` : "Build session: not observed",
         `Review verdict: ${execution.reviewVerdict.status}`,
         `Ship readiness: ${execution.shipRecord.readiness}`,
+        `GitHub mutation: ${execution.githubMutationRecord.summary}`,
         `GitHub delivery: ${execution.githubDeliveryRecord.overall.status}`,
         "Artifacts:",
         `  ${path.relative(cwd, finalPath)}`,
         `  ${path.relative(cwd, deliveryReportPath)}`,
+        `  ${path.relative(cwd, path.join(runDir, "artifacts", "github-mutation.json"))}`,
         `  ${path.relative(cwd, path.join(runDir, "artifacts", "github-delivery.json"))}`,
         `  ${path.relative(cwd, stageLineagePath)}`,
         `  ${path.relative(cwd, path.join(runDir, "stages", "build", "artifacts", "change-summary.md"))}`,
