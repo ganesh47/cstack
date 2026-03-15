@@ -271,6 +271,7 @@ describe("update command", () => {
   });
 
   it("suspends the dashboard while awaiting interactive confirmation and resumes afterward", async () => {
+    process.env.TERM = "xterm-256color";
     const stdout = makeStream(true);
     const stderr = makeStream(true);
     const prefixDir = path.join(tempDir, "npm-prefix");
