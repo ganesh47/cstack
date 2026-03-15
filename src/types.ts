@@ -156,6 +156,16 @@ export interface RunInspection {
   recentEvents: RunEvent[];
   finalBody: string;
   artifacts: ArtifactEntry[];
+  childRuns: ChildRunInspection[];
+}
+
+export interface ChildRunInspection {
+  stageName: StageName;
+  run: RunRecord;
+  runDir: string;
+  finalBody: string;
+  artifacts: ArtifactEntry[];
+  recentEvents: RunEvent[];
 }
 
 export type RunEventType =

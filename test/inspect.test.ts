@@ -259,6 +259,127 @@ async function seedIntentRun(repoDir: string): Promise<string> {
   return runId;
 }
 
+async function seedIntentFailedReviewRun(repoDir: string): Promise<string> {
+  const reviewRunId = await seedReviewRun(repoDir);
+  const runId = "2026-03-15T10-05-13-993Z-intent-what-are-the-gaps-in-this-project";
+  const runDir = path.join(repoDir, ".cstack", "runs", runId);
+  await fs.mkdir(path.join(runDir, "artifacts"), { recursive: true });
+
+  const run: RunRecord = {
+    id: runId,
+    workflow: "intent",
+    createdAt: "2026-03-15T10:05:13.000Z",
+    updatedAt: "2026-03-15T10:05:40.000Z",
+    status: "failed",
+    cwd: repoDir,
+    gitBranch: "main",
+    codexVersion: "fake",
+    codexCommand: ["codex", "exec"],
+    promptPath: path.join(runDir, "prompt.md"),
+    finalPath: path.join(runDir, "final.md"),
+    contextPath: path.join(runDir, "context.md"),
+    eventsPath: path.join(runDir, "events.jsonl"),
+    stdoutPath: path.join(runDir, "stdout.log"),
+    stderrPath: path.join(runDir, "stderr.log"),
+    configSources: [],
+    lastActivity: "Intent run finished with downstream workflow failures",
+    summary: "What are the gaps in this project",
+    error: `review failed via ${reviewRunId}`,
+    inputs: {
+      userPrompt: "What are the gaps in this project",
+      entrypoint: "intent",
+      plannedStages: ["discover", "spec", "review"],
+      selectedSpecialists: []
+    }
+  };
+
+  const routingPlan: RoutingPlan = {
+    intent: "What are the gaps in this project",
+    inferredAt: "2026-03-15T10:05:13.000Z",
+    entrypoint: "bare",
+    summary: "Infer discover -> spec -> review with no specialist reviews selected",
+    stages: [
+      { name: "discover", rationale: "Gather repo context.", status: "planned", executed: false },
+      { name: "spec", rationale: "Plan the implementation.", status: "planned", executed: false },
+      { name: "review", rationale: "Gap analysis implies critique.", status: "planned", executed: false }
+    ],
+    specialists: []
+  };
+
+  const childFailure =
+    "Delivery is not ready. The repo has unresolved contract, runtime, and configuration gaps, and there is no verification evidence for this review run.";
+  const lineage: StageLineage = {
+    intent: "What are the gaps in this project",
+    stages: [
+      { name: "discover", rationale: "Gather repo context.", status: "completed", executed: true },
+      { name: "spec", rationale: "Plan the implementation.", status: "completed", executed: true },
+      {
+        name: "review",
+        rationale: "Gap analysis implies critique.",
+        status: "failed",
+        executed: true,
+        childRunId: reviewRunId,
+        stageDir: path.join(repoDir, ".cstack", "runs", reviewRunId),
+        artifactPath: path.join(repoDir, ".cstack", "runs", reviewRunId, "artifacts", "verdict.json"),
+        notes: `Executed through downstream review run ${reviewRunId}. ${childFailure}`
+      }
+    ],
+    specialists: []
+  };
+
+  const events: RunEvent[] = [
+    {
+      timestamp: "2026-03-15T10:05:13.000Z",
+      elapsedMs: 0,
+      type: "starting",
+      message: "Routing intent across discover -> spec -> review"
+    },
+    {
+      timestamp: "2026-03-15T10:05:38.000Z",
+      elapsedMs: 25_000,
+      type: "activity",
+      message: `Downstream review: ${childFailure}`
+    },
+    {
+      timestamp: "2026-03-15T10:05:40.000Z",
+      elapsedMs: 27_000,
+      type: "failed",
+      message: "Intent run finished with downstream workflow failures"
+    }
+  ];
+
+  const finalBody = [
+    "# Intent Run Summary",
+    "",
+    "## Intent",
+    "What are the gaps in this project",
+    "",
+    "## Routing summary",
+    "Infer discover -> spec -> review with no specialist reviews selected",
+    "",
+    "## Stage status",
+    "- discover: completed (executed)",
+    "- spec: completed (executed)",
+    `- review: failed (executed) via ${reviewRunId}`,
+    `  note: Executed through downstream review run ${reviewRunId}. ${childFailure}`,
+    "",
+    "## Planned specialists",
+    "- none selected",
+    "",
+    "## Specialist status",
+    "- none executed",
+    ""
+  ].join("\n");
+
+  await fs.writeFile(path.join(runDir, "run.json"), `${JSON.stringify(run, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(runDir, "routing-plan.json"), `${JSON.stringify(routingPlan, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(runDir, "stage-lineage.json"), `${JSON.stringify(lineage, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(runDir, "events.jsonl"), `${events.map((event) => JSON.stringify(event)).join("\n")}\n`, "utf8");
+  await fs.writeFile(path.join(runDir, "final.md"), `${finalBody}\n`, "utf8");
+
+  return runId;
+}
+
 async function seedBuildRun(repoDir: string): Promise<string> {
   const runId = "2026-03-14T11-00-00-build-billing-cleanup";
   const runDir = path.join(repoDir, ".cstack", "runs", runId);
@@ -1084,5 +1205,21 @@ describe("inspect", () => {
     } finally {
       stdoutSpy.mockRestore();
     }
+  });
+
+  it("surfaces downstream review failure context from a parent intent run", async () => {
+    const failedIntentRunId = await seedIntentFailedReviewRun(repoDir);
+    const inspection = await loadRunInspection(repoDir, failedIntentRunId);
+
+    expect(inspection.childRuns).toHaveLength(1);
+    expect(inspection.childRuns[0]?.run.workflow).toBe("review");
+    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("downstream review failed");
+    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("inspect child run: cstack inspect");
+    await expect(handleInspectorCommand(repoDir, inspection, "artifacts")).resolves.toContain("Linked child runs:");
+    await expect(handleInspectorCommand(repoDir, inspection, "artifacts")).resolves.toContain("artifacts/verdict.json");
+    await expect(handleInspectorCommand(repoDir, inspection, "show stage review")).resolves.toContain("Linked child run:");
+    await expect(handleInspectorCommand(repoDir, inspection, "show stage review")).resolves.toContain("workflow: review");
+    await expect(handleInspectorCommand(repoDir, inspection, "what remains")).resolves.toContain("child summary:");
+    await expect(handleInspectorCommand(repoDir, inspection, "f")).resolves.toContain("note: Executed through downstream review run");
   });
 });

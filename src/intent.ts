@@ -46,6 +46,10 @@ interface AutoWorkflowHooks {
   suppressInteractiveInspect?: boolean;
 }
 
+function summarizeChildRunOutcome(childRun: RunRecord): string {
+  return childRun.error ?? childRun.lastActivity ?? `${childRun.workflow} ${childRun.status}`;
+}
+
 function ensureUniqueStages(stages: RoutingStagePlan[]): RoutingStagePlan[] {
   const seen = new Set<StageName>();
   return stages.filter((stage) => {
@@ -484,7 +488,7 @@ async function executeAutoWorkflow(options: {
               : stageName === "review"
                 ? path.join(childRunDir, "stages", "review", "artifacts", "verdict.json")
                 : path.join(childRunDir, "stages", "ship", "artifacts", "ship-summary.md"),
-          notes: `Executed through downstream deliver run ${childRunId}.`
+          notes: `Executed through downstream deliver run ${childRunId}. ${summarizeChildRunOutcome(childRun)}`
         });
       }
       return childRunId;
@@ -500,7 +504,7 @@ async function executeAutoWorkflow(options: {
         childRunId,
         stageDir: childRunDir,
         artifactPath: path.join(childRunDir, "artifacts", "verdict.json"),
-        notes: `Executed through downstream review run ${childRunId}.`
+        notes: `Executed through downstream review run ${childRunId}. ${summarizeChildRunOutcome(childRun)}`
       });
       return childRunId;
     }
@@ -515,7 +519,7 @@ async function executeAutoWorkflow(options: {
         childRunId,
         stageDir: childRunDir,
         artifactPath: path.join(childRunDir, "artifacts", "ship-summary.md"),
-        notes: `Executed through downstream ship run ${childRunId}.`
+        notes: `Executed through downstream ship run ${childRunId}. ${summarizeChildRunOutcome(childRun)}`
       });
       return childRunId;
     }
@@ -664,7 +668,9 @@ function startChildRunTracker(options: {
 function buildFinalSummary(intent: string, routingPlan: RoutingPlan, stageLineage: StageLineage): string {
   const stageLines = stageLineage.stages.map(
     (stage) =>
-      `- ${stage.name}: ${stage.status}${stage.executed ? " (executed)" : ""}${stage.childRunId ? ` via ${stage.childRunId}` : ""}`
+      `- ${stage.name}: ${stage.status}${stage.executed ? " (executed)" : ""}${stage.childRunId ? ` via ${stage.childRunId}` : ""}${
+        stage.notes ? `\n  note: ${stage.notes}` : ""
+      }`
   );
   const executedSpecialistLines =
     stageLineage.specialists.length > 0
