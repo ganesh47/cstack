@@ -16,6 +16,7 @@ export interface DeliverCliOptions {
 
 export interface DeliverRunHooks {
   onRunCreated?: (run: RunRecord) => Promise<void> | void;
+  suppressInteractiveInspect?: boolean;
 }
 
 async function readPromptFromStdin(): Promise<string> {
@@ -243,7 +244,9 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
         `  ${path.relative(cwd, path.join(runDir, "run.json"))}`
       ].join("\n") + "\n"
     );
-    await maybeOfferInteractiveInspect(cwd, runId);
+    if (!hooks.suppressInteractiveInspect) {
+      await maybeOfferInteractiveInspect(cwd, runId);
+    }
     return runId;
   } catch (error) {
     runRecord.status = "failed";
