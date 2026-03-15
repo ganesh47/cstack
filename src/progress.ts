@@ -353,8 +353,7 @@ export class ProgressReporter {
     }
     this.suspended = true;
     this.stopTicker();
-    this.lastRenderedLines = 0;
-    this.stream.write("\n");
+    this.clearRenderedDashboard();
     this.stream.write(ANSI.showCursor);
   }
 
@@ -417,6 +416,14 @@ export class ProgressReporter {
     this.stream.write(ANSI.clearToEnd);
     this.stream.write(`${formatted.join("\n")}\n`);
     this.lastRenderedLines = formatted.length;
+  }
+
+  private clearRenderedDashboard(): void {
+    if (this.lastRenderedLines > 0) {
+      this.stream.write(`\u001B[${this.lastRenderedLines}A`);
+    }
+    this.stream.write(ANSI.clearToEnd);
+    this.lastRenderedLines = 0;
   }
 
   private buildDashboardLines(): string[] {

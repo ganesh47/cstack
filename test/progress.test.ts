@@ -114,6 +114,7 @@ describe("ProgressReporter", () => {
     reporter.suspend();
     const suspendedOutput = stream.writes.join("");
 
+    expect(suspendedOutput).toContain("\u001B[");
     expect(suspendedOutput).toContain("\u001B[?25h");
 
     reporter.resume();
