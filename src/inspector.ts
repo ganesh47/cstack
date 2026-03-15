@@ -1037,19 +1037,19 @@ export async function executeInspectorCommand(cwd: string, inspection: RunInspec
     return { output: renderVerification(inspection) };
   }
   if (trimmed === "show validation") {
-    return renderValidation(inspection);
+    return { output: renderValidation(inspection) };
   }
   if (trimmed === "show pyramid") {
-    return renderValidationPyramid(inspection);
+    return { output: await renderValidationPyramid(inspection) };
   }
   if (trimmed === "show coverage") {
-    return renderValidationCoverage(inspection);
+    return { output: await renderValidationCoverage(inspection) };
   }
   if (trimmed === "show ci-validation") {
-    return renderValidationCi(inspection);
+    return { output: await renderValidationCi(inspection) };
   }
   if (trimmed === "show tool-research") {
-    return renderValidationToolResearch(inspection);
+    return { output: await renderValidationToolResearch(inspection) };
   }
   if (trimmed === "show review") {
     return { output: renderDeliverReview(inspection) };
