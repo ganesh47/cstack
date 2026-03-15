@@ -124,4 +124,36 @@ describe("runReview", () => {
       stdoutSpy.mockRestore();
     }
   });
+
+  it("suppresses post-run inspection prompts when invoked as a downstream child workflow", async () => {
+    const buildRunId = await seedBuildRun(repoDir);
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stdinIsTTY = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+    const stdoutIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
+
+    try {
+      await runReview(repoDir, ["--from-run", buildRunId, "Review billing cleanup and release safety"], {
+        suppressInteractiveInspect: true
+      });
+
+      const output = stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join("");
+      expect(output).toContain("Workflow: review");
+      expect(output).not.toContain("Inspect this run now?");
+    } finally {
+      if (stdinIsTTY) {
+        Object.defineProperty(process.stdin, "isTTY", stdinIsTTY);
+      } else {
+        delete (process.stdin as { isTTY?: boolean }).isTTY;
+      }
+      if (stdoutIsTTY) {
+        Object.defineProperty(process.stdout, "isTTY", stdoutIsTTY);
+      } else {
+        delete (process.stdout as { isTTY?: boolean }).isTTY;
+      }
+      stdoutSpy.mockRestore();
+    }
+  });
 });

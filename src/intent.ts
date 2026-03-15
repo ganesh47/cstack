@@ -43,6 +43,7 @@ interface StageExecutionResult {
 
 interface AutoWorkflowHooks {
   onRunCreated?: (run: RunRecord) => Promise<void> | void;
+  suppressInteractiveInspect?: boolean;
 }
 
 function ensureUniqueStages(stages: RoutingStagePlan[]): RoutingStagePlan[] {
@@ -913,6 +914,7 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
           workflow: autoWorkflow,
           stageLineage,
           hooks: {
+            suppressInteractiveInspect: true,
             onRunCreated: async (childRun) => {
               updateLineageStage(stageLineage, autoProgressStage, {
                 status: "running",
