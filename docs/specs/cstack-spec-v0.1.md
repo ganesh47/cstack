@@ -444,7 +444,7 @@ The live smoke lane may:
 - keep GitHub interactions fake or read-only
 - run only on explicit dispatch or another non-blocking trigger
 
-Release preparation must not publish the GitHub release directly. It prepares version state, pushes the release-prep commit, waits for required CI on that pushed commit, then pushes the tag and hands off to `Release`; `Release` is the sole publisher.
+Release preparation must not publish the GitHub release directly. It prepares version state, pushes the release-prep commit, dispatches and waits for required CI on that pushed commit, then pushes the tag and hands off to `Release`; `Release` is the sole publisher.
 
 ## Delegation Policy
 

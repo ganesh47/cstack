@@ -144,7 +144,7 @@ GitHub Actions is split into two lanes:
 
 The deterministic lane uses the fake Codex and fake GitHub fixtures and should stay stable enough for branch protection.
 The live smoke lane is only for periodic reality checks against the real Codex CLI.
-Release prep pushes the version bump commit, waits for the required `CI` run on that exact pushed SHA, then tags and dispatches `Release` so workflow-owned tags still publish correctly.
+Release prep pushes the version bump commit, dispatches and waits for the required `CI` run on that exact pushed SHA, then tags and dispatches `Release` so workflow-owned tags still publish correctly.
 
 ## Recent Git Timeline
 

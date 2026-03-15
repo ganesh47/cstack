@@ -555,7 +555,7 @@ Release flow:
 3. the workflow commits to the default branch
 4. the workflow creates and pushes a matching tag, for example `v0.1.0`
 5. `Prepare Release` pushes the release-prep commit to the default branch
-6. `Prepare Release` waits for the required `CI` run on that pushed commit
+6. `Prepare Release` dispatches `CI` for that pushed commit and waits for it to succeed
 7. `Prepare Release` pushes the tag and then dispatches `Release`
 8. `Release` reruns validation, smoke-tests the packaged install, and publishes the GitHub Release
 

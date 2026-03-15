@@ -106,6 +106,12 @@ jobs:
             git push origin "HEAD:${DEFAULT_BRANCH}"
           fi
 
+      - name: Dispatch CI for pushed release commit
+        if: steps.commit.outputs.created == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: gh workflow run ci.yml --ref "${DEFAULT_BRANCH}"
+
       - name: Wait for required CI on pushed release commit
         if: steps.commit.outputs.created == 'true'
         env:
@@ -114,7 +120,7 @@ jobs:
         run: |
           RELEASE_SHA="$(git rev-parse HEAD)"
           RUN_ID=""
-          for attempt in $(seq 1 20); do
+          for attempt in $(seq 1 30); do
             RUN_ID="$(gh run list --workflow ci.yml --commit "${RELEASE_SHA}" --json databaseId --jq '.[0].databaseId // empty' || true)"
             if [ -n "${RUN_ID}" ]; then
               break
