@@ -41,6 +41,10 @@ interface StageExecutionResult {
   artifactPath: string;
 }
 
+interface AutoWorkflowHooks {
+  onRunCreated?: (run: RunRecord) => Promise<void> | void;
+}
+
 function ensureUniqueStages(stages: RoutingStagePlan[]): RoutingStagePlan[] {
   const seen = new Set<StageName>();
   return stages.filter((stage) => {
@@ -456,12 +460,13 @@ async function executeAutoWorkflow(options: {
   runId: string;
   workflow: IntentAutoWorkflow;
   stageLineage: StageLineage;
+  hooks?: AutoWorkflowHooks;
 }): Promise<string> {
   const args = buildWorkflowArgs(options.intent, options.runId, options.workflow);
   switch (options.workflow) {
     case "deliver": {
       const { runDeliver } = await import("./commands/deliver.js");
-      const childRunId = await runDeliver(options.cwd, args);
+      const childRunId = await runDeliver(options.cwd, args, options.hooks);
       const childRun = await readRun(options.cwd, childRunId);
       const childStageLineage = await loadStageLineageForRun(options.cwd, childRunId);
       const childRunDir = path.dirname(childRun.finalPath);
@@ -485,7 +490,7 @@ async function executeAutoWorkflow(options: {
     }
     case "review": {
       const { runReview } = await import("./commands/review.js");
-      const childRunId = await runReview(options.cwd, args);
+      const childRunId = await runReview(options.cwd, args, options.hooks);
       const childRun = await readRun(options.cwd, childRunId);
       const childRunDir = path.dirname(childRun.finalPath);
       updateLineageStage(options.stageLineage, "review", {
@@ -500,7 +505,7 @@ async function executeAutoWorkflow(options: {
     }
     case "ship": {
       const { runShip } = await import("./commands/ship.js");
-      const childRunId = await runShip(options.cwd, args);
+      const childRunId = await runShip(options.cwd, args, options.hooks);
       const childRun = await readRun(options.cwd, childRunId);
       const childRunDir = path.dirname(childRun.finalPath);
       updateLineageStage(options.stageLineage, "ship", {
@@ -514,6 +519,145 @@ async function executeAutoWorkflow(options: {
       return childRunId;
     }
   }
+}
+
+function startChildRunTracker(options: {
+  cwd: string;
+  workflow: IntentAutoWorkflow;
+  childRunId: string;
+  runDir: string;
+  runRecord: RunRecord;
+  stageLineage: StageLineage;
+  stageLineagePath: string;
+  events: ReturnType<typeof createEventRecorder>;
+}): () => void {
+  const progressStage: StageName = options.workflow === "deliver" ? "build" : options.workflow;
+  let stopped = false;
+  let syncing = false;
+  let lastMirroredActivity = "";
+  let lastMirroredStage = "";
+  let lastMirroredSessionId = "";
+  let lastMirroredSpecialists = "";
+
+  const sync = async () => {
+    if (stopped || syncing) {
+      return;
+    }
+
+    syncing = true;
+    try {
+      const childRun = await readRun(options.cwd, options.childRunId).catch(() => null);
+      if (!childRun) {
+        return;
+      }
+
+      let runRecordChanged = false;
+      let lineageChanged = false;
+
+      if (childRun.sessionId && childRun.sessionId !== lastMirroredSessionId) {
+        options.runRecord.sessionId = childRun.sessionId;
+        lastMirroredSessionId = childRun.sessionId;
+        runRecordChanged = true;
+      }
+
+      const childCurrentStage = childRun.currentStage ?? options.workflow;
+      if (childCurrentStage !== lastMirroredStage) {
+        lastMirroredStage = childCurrentStage;
+        options.runRecord.currentStage = childCurrentStage;
+        runRecordChanged = true;
+        await options.events.emit("activity", `Downstream ${options.workflow} stage: ${childCurrentStage}`);
+      }
+
+      const childSpecialists = (childRun.activeSpecialists ?? []).join(",");
+      if (childSpecialists !== lastMirroredSpecialists) {
+        lastMirroredSpecialists = childSpecialists;
+        options.runRecord.activeSpecialists = childRun.activeSpecialists ?? [];
+        runRecordChanged = true;
+      }
+
+      if (childRun.lastActivity && childRun.lastActivity !== lastMirroredActivity) {
+        lastMirroredActivity = childRun.lastActivity;
+        await options.events.emit("activity", `Downstream ${options.workflow}: ${childRun.lastActivity}`);
+      }
+
+      const childStageLineage = await loadStageLineageForRun(options.cwd, options.childRunId);
+      if (childStageLineage) {
+        if (options.workflow === "deliver") {
+          for (const stageName of ["build", "review", "ship"] as const) {
+            const childStage = childStageLineage.stages.find((entry) => entry.name === stageName);
+            if (!childStage) {
+              continue;
+            }
+            const stageUpdate: Partial<RoutingStagePlan> = {
+              status: childStage.status,
+              executed: childStage.executed,
+              childRunId: options.childRunId,
+              notes: `Executing through downstream deliver run ${options.childRunId}.`
+            };
+            if (childStage.stageDir) {
+              stageUpdate.stageDir = childStage.stageDir;
+            }
+            if (childStage.artifactPath) {
+              stageUpdate.artifactPath = childStage.artifactPath;
+            }
+            updateLineageStage(options.stageLineage, stageName, stageUpdate);
+            lineageChanged = true;
+            options.events.markStage(stageName, childStage.status === "planned" ? "pending" : childStage.status);
+          }
+        } else {
+          const childStage = childStageLineage.stages.find((entry) => entry.name === options.workflow);
+          if (childStage) {
+            const stageUpdate: Partial<RoutingStagePlan> = {
+              status: childStage.status,
+              executed: childStage.executed,
+              childRunId: options.childRunId,
+              notes: `Executing through downstream ${options.workflow} run ${options.childRunId}.`
+            };
+            if (childStage.stageDir) {
+              stageUpdate.stageDir = childStage.stageDir;
+            }
+            if (childStage.artifactPath) {
+              stageUpdate.artifactPath = childStage.artifactPath;
+            }
+            updateLineageStage(options.stageLineage, options.workflow, stageUpdate);
+            lineageChanged = true;
+            options.events.markStage(options.workflow, childStage.status === "planned" ? "pending" : childStage.status);
+          }
+        }
+      } else {
+        updateLineageStage(options.stageLineage, progressStage, {
+          status: childRun.status === "running" ? "running" : childRun.status === "completed" ? "completed" : "failed",
+          executed: true,
+          childRunId: options.childRunId,
+          notes: `Executing through downstream ${options.workflow} run ${options.childRunId}.`
+        });
+        lineageChanged = true;
+        options.events.markStage(progressStage, childRun.status === "completed" ? "completed" : childRun.status === "failed" ? "failed" : "running");
+      }
+
+      if (lineageChanged) {
+        await writeJson(options.stageLineagePath, options.stageLineage);
+      }
+
+      if (runRecordChanged) {
+        options.runRecord.updatedAt = new Date().toISOString();
+        await writeRunRecord(options.runDir, options.runRecord);
+      }
+    } finally {
+      syncing = false;
+    }
+  };
+
+  const interval = setInterval(() => {
+    void sync();
+  }, 1_500);
+  interval.unref?.();
+  void sync();
+
+  return () => {
+    stopped = true;
+    clearInterval(interval);
+  };
 }
 
 function buildFinalSummary(intent: string, routingPlan: RoutingPlan, stageLineage: StageLineage): string {
@@ -747,18 +891,61 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
 
     const autoWorkflow = selectAutoWorkflow(routingPlan);
     if (autoWorkflow) {
-      runRecord.currentStage = autoWorkflow;
+      const autoProgressStage: StageName = autoWorkflow === "deliver" ? "build" : autoWorkflow;
+      updateLineageStage(stageLineage, autoProgressStage, {
+        status: "running",
+        executed: true,
+        notes: `Starting downstream ${autoWorkflow} workflow.`
+      });
+      events.markStage(autoProgressStage, "running");
+      runRecord.currentStage = autoProgressStage;
       runRecord.activeSpecialists = [];
       runRecord.updatedAt = new Date().toISOString();
       await writeRunRecord(runDir, runRecord);
+      await writeJson(stageLineagePath, stageLineage);
       await events.emit("activity", `Running downstream ${autoWorkflow} workflow from intent`);
-      await executeAutoWorkflow({
-        cwd,
-        intent: resolvedIntent,
-        runId,
-        workflow: autoWorkflow,
-        stageLineage
-      });
+      let stopTracking: (() => void) | undefined;
+      try {
+        await executeAutoWorkflow({
+          cwd,
+          intent: resolvedIntent,
+          runId,
+          workflow: autoWorkflow,
+          stageLineage,
+          hooks: {
+            onRunCreated: async (childRun) => {
+              updateLineageStage(stageLineage, autoProgressStage, {
+                status: "running",
+                executed: true,
+                childRunId: childRun.id,
+                notes: `Executing through downstream ${autoWorkflow} run ${childRun.id}.`
+              });
+              runRecord.currentStage = childRun.currentStage ?? autoProgressStage;
+              runRecord.activeSpecialists = childRun.activeSpecialists ?? [];
+              if (childRun.sessionId) {
+                runRecord.sessionId = childRun.sessionId;
+              }
+              runRecord.updatedAt = new Date().toISOString();
+              runRecord.lastActivity = `Downstream ${autoWorkflow} run ${childRun.id} started`;
+              await writeRunRecord(runDir, runRecord);
+              await writeJson(stageLineagePath, stageLineage);
+              await events.emit("activity", `Downstream ${autoWorkflow} run ${childRun.id} started`);
+              stopTracking = startChildRunTracker({
+                cwd,
+                workflow: autoWorkflow,
+                childRunId: childRun.id,
+                runDir,
+                runRecord,
+                stageLineage,
+                stageLineagePath,
+                events
+              });
+            }
+          }
+        });
+      } finally {
+        stopTracking?.();
+      }
       await writeJson(stageLineagePath, stageLineage);
       for (const stage of stageLineage.stages) {
         if (stage.executed) {

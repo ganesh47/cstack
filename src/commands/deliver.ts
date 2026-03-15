@@ -14,6 +14,10 @@ export interface DeliverCliOptions {
   allowDirty?: boolean;
 }
 
+export interface DeliverRunHooks {
+  onRunCreated?: (run: RunRecord) => Promise<void> | void;
+}
+
 async function readPromptFromStdin(): Promise<string> {
   if (process.stdin.isTTY) {
     return "";
@@ -78,7 +82,7 @@ function defaultDeliverPrompt(fromRunId?: string): string {
   return fromRunId ? `Deliver the approved change described by upstream run ${fromRunId}.` : "";
 }
 
-export async function runDeliver(cwd: string, args: string[] = []): Promise<string> {
+export async function runDeliver(cwd: string, args: string[] = [], hooks: DeliverRunHooks = {}): Promise<string> {
   const parsed = parseDeliverArgs(args);
   const stdinPrompt = parsed.prompt || parsed.options.fromRunId ? "" : await readPromptFromStdin();
   const resolvedPrompt = (parsed.prompt || stdinPrompt || defaultDeliverPrompt(parsed.options.fromRunId)).trim();
@@ -146,6 +150,7 @@ export async function runDeliver(cwd: string, args: string[] = []): Promise<stri
   };
 
   await writeRunRecord(runDir, runRecord);
+  await hooks.onRunCreated?.(runRecord);
 
   try {
     const execution = await runDeliverExecution({
