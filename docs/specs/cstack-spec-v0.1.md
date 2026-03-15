@@ -331,6 +331,85 @@ When a child session id is observed, the wrapper records that observation back i
 
 ## Run Ledger and Inspection
 
+## Active TTY Dashboard
+
+Active TTY runs use a bounded dashboard rather than an endlessly growing log tail.
+
+The dashboard contract is:
+
+- observable state only
+- bounded repainting
+- explicit header, body, and footer regions
+- live elapsed-time updates while the run is active
+- color and emoji as scanability aids, not as the only signal
+- readable plain-line fallback outside TTYs
+
+### Header
+
+The header must show at minimum:
+
+- workflow
+- run id or compact run id
+- current status
+- current stage when known
+- live elapsed time that visibly updates while work is still running
+- session id when relevant
+
+The elapsed counter must not remain static during active execution. A repaint-only dashboard that updates events but leaves elapsed time frozen is out of contract.
+
+### Body
+
+The body must show at minimum:
+
+- a stage progress strip
+- a specialist strip when relevant
+- bounded recent activity
+- a clear liveness signal so the operator knows the run is still alive
+
+The liveness signal may use:
+
+- an animated status glyph
+- a heartbeat indicator
+- a rotating progress marker
+- a freshness hint tied to recent activity
+
+It must remain:
+
+- bounded
+- readable
+- obviously alive
+- not spammy
+
+### Footer
+
+The footer must show at minimum:
+
+- artifact or inspection hints
+- the next useful operator action when appropriate
+- interactive hinting when a TTY-only follow-up is available
+
+### Visual Design
+
+TTY dashboards should be more expressive than plain logs, but still operationally trustworthy.
+
+Required design rules:
+
+- richer ANSI color is allowed and encouraged in TTYs
+- emoji may be used when they improve scanability or mood without obscuring meaning
+- status must remain understandable even with color disabled
+- the dashboard should feel alive, not noisy
+- the product must not display fake thought traces or fake internal reasoning
+
+### Non-TTY Behavior
+
+Non-interactive shells, CI logs, and redirected output must continue to use readable append-only progress lines.
+
+Non-TTY output must not depend on:
+
+- live repainting
+- emoji-only signaling
+- color-only signaling
+
 ### `runs`
 
 `cstack runs` is the run ledger over saved run directories.

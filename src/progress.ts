@@ -16,11 +16,14 @@ const ANSI = {
   green: "\u001B[32m",
   yellow: "\u001B[33m",
   red: "\u001B[31m",
+  magenta: "\u001B[35m",
   gray: "\u001B[90m",
   clearToEnd: "\u001B[J",
   hideCursor: "\u001B[?25l",
   showCursor: "\u001B[?25h"
 } as const;
+
+const SPINNER_FRAMES = ["🌱", "🚧", "⚙️", "🛰️", "✨", "🔄"] as const;
 
 interface ProgressStream {
   isTTY?: boolean;
@@ -90,6 +93,10 @@ function compactName(input: string): string {
   return input.replace(/-/g, " ");
 }
 
+function shortRunId(input: string): string {
+  return input.length > 28 ? `${input.slice(0, 12)}…${input.slice(-12)}` : input;
+}
+
 function statusColor(status: DashboardStatus): string {
   switch (status) {
     case "completed":
@@ -108,6 +115,24 @@ function statusColor(status: DashboardStatus): string {
   }
 }
 
+function statusIcon(status: DashboardStatus): string {
+  switch (status) {
+    case "completed":
+      return "✅";
+    case "failed":
+      return "❌";
+    case "running":
+      return "🟡";
+    case "deferred":
+      return "🟠";
+    case "skipped":
+      return "⏭️";
+    case "pending":
+    default:
+      return "⏳";
+  }
+}
+
 function statusLabel(status: DashboardStatus): string {
   switch (status) {
     case "completed":
@@ -123,6 +148,29 @@ function statusLabel(status: DashboardStatus): string {
     case "pending":
     default:
       return "plan";
+  }
+}
+
+function workflowIcon(workflow: WorkflowName): string {
+  switch (workflow) {
+    case "discover":
+      return "🧭";
+    case "spec":
+      return "📝";
+    case "build":
+      return "🛠️";
+    case "review":
+      return "🔎";
+    case "ship":
+      return "🚢";
+    case "deliver":
+      return "📦";
+    case "intent":
+      return "🎯";
+    case "update":
+      return "⬆️";
+    default:
+      return "⚙️";
   }
 }
 
@@ -183,12 +231,15 @@ export class ProgressReporter {
   private lastEvent: RunEvent | null = null;
   private started = false;
   private closed = false;
+  private startedAtMs: number | null = null;
+  private ticker: ReturnType<typeof setInterval> | null = null;
+  private spinnerIndex = 0;
 
   constructor(workflow: WorkflowName, runId: string, stream: ProgressStream = process.stdout) {
     this.workflow = workflow;
     this.runId = runId;
     this.stream = stream;
-    this.colorsEnabled = Boolean(stream.isTTY && process.env.NO_COLOR !== "1");
+    this.colorsEnabled = Boolean(stream.isTTY && !process.env.NO_COLOR);
     this.dashboardEnabled = Boolean(stream.isTTY && process.env.TERM && process.env.TERM !== "dumb");
     this.historyLimit = 6;
     this.stages =
@@ -258,6 +309,9 @@ export class ProgressReporter {
   }
 
   emit(event: RunEvent): void {
+    if (this.startedAtMs === null) {
+      this.startedAtMs = Date.now() - event.elapsedMs;
+    }
     this.lastEvent = event;
     this.history = [...this.history, event].slice(-this.historyLimit);
 
@@ -269,6 +323,7 @@ export class ProgressReporter {
     if (!this.started) {
       this.stream.write(ANSI.hideCursor);
       this.started = true;
+      this.startTicker();
     }
 
     if (event.type === "completed" || event.type === "failed") {
@@ -292,8 +347,33 @@ export class ProgressReporter {
     }
 
     this.closed = true;
+    this.stopTicker();
     this.stream.write("\n");
     this.stream.write(ANSI.showCursor);
+  }
+
+  private startTicker(): void {
+    if (this.ticker || !this.dashboardEnabled) {
+      return;
+    }
+
+    this.ticker = setInterval(() => {
+      if (this.closed) {
+        this.stopTicker();
+        return;
+      }
+      this.spinnerIndex = (this.spinnerIndex + 1) % SPINNER_FRAMES.length;
+      this.render();
+    }, 250);
+    this.ticker.unref?.();
+  }
+
+  private stopTicker(): void {
+    if (!this.ticker) {
+      return;
+    }
+    clearInterval(this.ticker);
+    this.ticker = null;
   }
 
   private render(): void {
@@ -311,23 +391,32 @@ export class ProgressReporter {
 
   private buildDashboardLines(): string[] {
     const status = this.lastEvent?.type === "failed" ? "failed" : this.lastEvent?.type === "completed" ? "completed" : "running";
-    const elapsed = this.lastEvent ? formatElapsed(this.lastEvent.elapsedMs) : "0:00";
+    const elapsed = formatElapsed(this.currentElapsedMs());
     const session = findLastEvent(this.history, (event) => event.type === "session")?.message ?? "pending";
     const lastActivity = this.lastEvent && this.lastEvent.type !== "activity" ? this.lastEvent.message : undefined;
     const recentObservedActivity =
       findLastEvent(this.history, (event) => event.type === "activity" || event.type === "heartbeat")?.message ??
       "waiting for activity";
     const currentLineMessage = lastActivity ?? recentObservedActivity;
-    const header = `${colorize("cstack", ANSI.bold, this.colorsEnabled)} ${colorize(this.workflow, ANSI.cyan, this.colorsEnabled)}  ${colorize(this.runId, ANSI.dim, this.colorsEnabled)}`;
+    const spinner = this.closed ? statusIcon(status) : SPINNER_FRAMES[this.spinnerIndex];
+    const currentStage = this.currentStageLabel();
+    const lastObservedAge = this.lastObservedAgeLabel();
+    const header = `${spinner} ${workflowIcon(this.workflow)} ${colorize("cstack", ANSI.bold, this.colorsEnabled)} ${colorize(
+      this.workflow,
+      ANSI.cyan,
+      this.colorsEnabled
+    )}  ${colorize(shortRunId(this.runId), ANSI.dim, this.colorsEnabled)}`;
     const statusLine = [
-      `status ${colorize(status, eventColor(this.lastEvent?.type ?? "starting"), this.colorsEnabled)}`,
-      `elapsed ${colorize(elapsed, ANSI.bold, this.colorsEnabled)}`,
-      `session ${colorize(session, ANSI.dim, this.colorsEnabled)}`
+      `${statusIcon(status)} status ${colorize(status, eventColor(this.lastEvent?.type ?? "starting"), this.colorsEnabled)}`,
+      `🎬 stage ${colorize(currentStage, ANSI.bold, this.colorsEnabled)}`,
+      `⏱ elapsed ${colorize(elapsed, ANSI.bold, this.colorsEnabled)}`,
+      `🧵 session ${colorize(session, ANSI.dim, this.colorsEnabled)}`
     ].join("  |  ");
-    const activityLine = `${colorize("observed", ANSI.bold, this.colorsEnabled)} ${currentLineMessage}`;
+    const activityLine = `${colorize("Observed", ANSI.bold, this.colorsEnabled)} ${currentLineMessage}`;
+    const pulseLine = `${colorize("Pulse", ANSI.bold, this.colorsEnabled)} ${spinner} alive  |  last activity ${lastObservedAge}`;
     const nextStage = this.stages.find((stage) => stage.status === "pending");
     const nextSpecialist = this.specialists.find((specialist) => specialist.status === "pending");
-    const nextLine = `${colorize("next", ANSI.bold, this.colorsEnabled)} ${
+    const nextLine = `${colorize("Next", ANSI.bold, this.colorsEnabled)} ${
       status === "completed"
         ? "inspect artifacts or move to the next workflow"
         : nextStage
@@ -337,28 +426,87 @@ export class ProgressReporter {
             : "waiting for the current step to finish"
     }`;
     const stageLine =
-      this.stages.length > 0 ? `${colorize("stages", ANSI.bold, this.colorsEnabled)} ${this.renderItems(this.stages)}` : undefined;
+      this.stages.length > 0 ? `${colorize("Stages", ANSI.bold, this.colorsEnabled)} ${this.renderItems(this.stages)}` : undefined;
     const specialistLine =
       this.specialists.length > 0
-        ? `${colorize("specialists", ANSI.bold, this.colorsEnabled)} ${this.renderItems(this.specialists)}`
+        ? `${colorize("Specialists", ANSI.bold, this.colorsEnabled)} ${this.renderItems(this.specialists)}`
         : undefined;
-    const activityHeader = colorize("recent activity", ANSI.bold, this.colorsEnabled);
-    const activityLines = this.history.slice(-5).map((event) => {
+    const activityHeader = colorize("Recent activity", ANSI.bold, this.colorsEnabled);
+    const activityLines = this.history.slice(-4).map((event) => {
       const label = colorize(`[${streamTag(event)} +${formatElapsed(event.elapsedMs)}]`, eventColor(event.type), this.colorsEnabled);
       return `${label} ${event.message}`;
     });
+    const footerDivider = colorize("─".repeat(24), ANSI.gray, this.colorsEnabled);
+    const footerHints = [
+      `${colorize("Footer", ANSI.bold, this.colorsEnabled)} 📂 inspect later with ${colorize(`cstack inspect ${this.runId}`, ANSI.dim, this.colorsEnabled)}`,
+      status === "completed"
+        ? `${colorize("Hint", ANSI.bold, this.colorsEnabled)} 🎉 run finished, open artifacts or enter the post-run inspector`
+        : `${colorize("Hint", ANSI.bold, this.colorsEnabled)} 👀 dashboard is live while the run is active`
+    ];
 
-    return [header, statusLine, stageLine, specialistLine, activityLine, nextLine, activityHeader, ...activityLines].filter(
-      Boolean
-    ) as string[];
+    return [
+      header,
+      statusLine,
+      colorize("─".repeat(24), ANSI.gray, this.colorsEnabled),
+      stageLine,
+      specialistLine,
+      activityLine,
+      pulseLine,
+      activityHeader,
+      ...activityLines,
+      footerDivider,
+      nextLine,
+      ...footerHints
+    ].filter(Boolean) as string[];
   }
 
   private renderItems(items: DashboardItem[]): string {
     return items
       .map((item) => {
-        const label = `${compactName(item.name)}:${statusLabel(item.status)}`;
+        const label = `${statusIcon(item.status)} ${compactName(item.name)}:${statusLabel(item.status)}`;
         return colorize(`[${label}]`, statusColor(item.status), this.colorsEnabled);
       })
       .join(" ");
+  }
+
+  private currentElapsedMs(): number {
+    if (this.startedAtMs === null) {
+      return this.lastEvent?.elapsedMs ?? 0;
+    }
+    if (this.closed) {
+      return this.lastEvent?.elapsedMs ?? Math.max(0, Date.now() - this.startedAtMs);
+    }
+    return Math.max(0, Date.now() - this.startedAtMs);
+  }
+
+  private currentStageLabel(): string {
+    const runningStage = this.stages.find((stage) => stage.status === "running");
+    if (runningStage) {
+      return compactName(runningStage.name);
+    }
+    const deferredStage = this.stages.find((stage) => stage.status === "deferred");
+    if (deferredStage) {
+      return compactName(deferredStage.name);
+    }
+    const failedStage = this.stages.find((stage) => stage.status === "failed");
+    if (failedStage) {
+      return compactName(failedStage.name);
+    }
+    const completedStage = [...this.stages].reverse().find((stage) => stage.status === "completed");
+    if (completedStage) {
+      return compactName(completedStage.name);
+    }
+    const nextStage = this.stages.find((stage) => stage.status === "pending");
+    return nextStage ? compactName(nextStage.name) : compactName(this.workflow);
+  }
+
+  private lastObservedAgeLabel(): string {
+    const recentObserved = findLastEvent(this.history, (event) => event.type === "activity" || event.type === "heartbeat");
+    if (!recentObserved) {
+      return "awaiting first signal";
+    }
+    const ageMs = Math.max(0, this.currentElapsedMs() - recentObserved.elapsedMs);
+    const seconds = Math.floor(ageMs / 1000);
+    return seconds === 0 ? "just now" : `${seconds}s ago`;
   }
 }

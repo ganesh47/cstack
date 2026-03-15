@@ -366,18 +366,21 @@ cstack inspect
 cstack inspect <run-id> --interactive
 ```
 
-While a run is active in a normal terminal, `cstack` now renders a bounded ANSI dashboard instead of endlessly appending log lines.
+While a run is active in a normal terminal, `cstack` renders a bounded ANSI dashboard instead of endlessly appending log lines.
 
 The live dashboard shows:
 
-- workflow, status, elapsed time, and session
-- stage strip
-- specialist strip when relevant
-- observed activity
-- inferred next step
+- a header with workflow, run id, status, current stage, live elapsed time, and session
+- a stage strip
+- a specialist strip when relevant
+- an observed activity line
+- a visible pulse/liveness indicator so you know the run is still moving
 - bounded recent activity
+- a footer with artifact and inspection hints
 
-In non-interactive shells, CI logs, or redirected output, it falls back to plain progress lines such as:
+The elapsed timer keeps ticking while the run is active. Color and a few emoji improve scanability in TTYs, but the dashboard still includes text labels so state remains understandable without color.
+
+In non-interactive shells, CI logs, or redirected output, it falls back to plain append-only progress lines such as:
 
 ```text
 [cstack discover <run-id> +0:00] Starting Codex run
