@@ -104,6 +104,29 @@ describe("ProgressReporter", () => {
     reporter.emit(buildEvent("completed", 2000, "Exit code 0"));
   });
 
+  it("coalesces bursty activity updates onto the ticker cadence", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-15T06:30:00Z"));
+    process.env.TERM = "xterm-256color";
+    const stream = makeStream(true);
+    const reporter = new ProgressReporter("review", "run-burst", stream);
+
+    reporter.emit(buildEvent("starting", 0, "Starting review"));
+    const writesAfterStart = stream.writes.length;
+
+    reporter.emit(buildEvent("activity", 25, "first stderr event", "stderr"));
+    reporter.emit(buildEvent("activity", 50, "second stdout event", "stdout"));
+    reporter.emit(buildEvent("activity", 75, "third stderr event", "stderr"));
+
+    expect(stream.writes.length).toBe(writesAfterStart);
+
+    vi.advanceTimersByTime(500);
+    expect(stream.writes.length).toBeGreaterThan(writesAfterStart);
+    expect(stream.writes.join("")).toContain("third stderr event");
+
+    reporter.emit(buildEvent("completed", 1000, "Exit code 0"));
+  });
+
   it("can suspend and resume a tty dashboard around interactive prompts", () => {
     process.env.TERM = "xterm-256color";
     const stream = makeStream(true);
