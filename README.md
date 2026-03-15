@@ -554,7 +554,10 @@ Release flow:
 2. the workflow updates `package.json`, `package-lock.json`, and the versioned README examples
 3. the workflow commits to the default branch
 4. the workflow creates and pushes a matching tag, for example `v0.1.0`
-5. the tag starts `Release`, which reruns validation, packs, checksums, and publishes the GitHub Release
+5. `Prepare Release` pushes the release-prep commit to the default branch
+6. `Prepare Release` waits for the required `CI` run on that pushed commit
+7. `Prepare Release` pushes the tag and then dispatches `Release`
+8. `Release` reruns validation, smoke-tests the packaged install, and publishes the GitHub Release
 
 Browser dispatch:
 

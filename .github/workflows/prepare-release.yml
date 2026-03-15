@@ -9,6 +9,7 @@ on:
         type: string
 
 permissions:
+  actions: write
   contents: write
 
 concurrency:
@@ -99,15 +100,42 @@ jobs:
           git commit -m "chore: prepare release ${TAG}"
           echo "created=true" >> "$GITHUB_OUTPUT"
 
-      - name: Create release tag
-        run: git tag "${TAG}"
-
-      - name: Push commit and tag
+      - name: Push release preparation commit
         run: |
           if [ "${{ steps.commit.outputs.created }}" = "true" ]; then
             git push origin "HEAD:${DEFAULT_BRANCH}"
           fi
-          git push origin "${TAG}"
 
-      - name: Note release handoff
-        run: echo "Tag ${TAG} pushed; the Release workflow will publish the GitHub release."
+      - name: Wait for required CI on pushed release commit
+        if: steps.commit.outputs.created == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          RELEASE_SHA="$(git rev-parse HEAD)"
+          RUN_ID=""
+          for attempt in $(seq 1 20); do
+            RUN_ID="$(gh run list --workflow ci.yml --commit "${RELEASE_SHA}" --json databaseId --jq '.[0].databaseId // empty' || true)"
+            if [ -n "${RUN_ID}" ]; then
+              break
+            fi
+            sleep 3
+          done
+
+          if [ -z "${RUN_ID}" ]; then
+            echo "Required CI run was not found for ${RELEASE_SHA}"
+            exit 1
+          fi
+
+          gh run watch "${RUN_ID}" --exit-status
+
+      - name: Create release tag
+        run: git tag "${TAG}"
+
+      - name: Push release tag
+        run: git push origin "${TAG}"
+
+      - name: Dispatch release workflow
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: gh workflow run release.yml -f tag="${TAG}"

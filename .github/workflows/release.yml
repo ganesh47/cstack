@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish, including the leading v"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -19,7 +25,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
-          ref: ${{ github.ref_name }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
       - name: Set up Node
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
@@ -28,7 +34,13 @@ jobs:
           cache: npm
 
       - name: Set release tag
-        run: echo "RELEASE_TAG=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "RELEASE_TAG=${{ inputs.tag }}" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_TAG=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+          fi
 
       - name: Install dependencies
         run: npm ci
@@ -63,6 +75,15 @@ jobs:
           PACKAGE_FILE="$(npm pack --pack-destination release | tail -n 1)"
           cp "release/${PACKAGE_FILE}" "release/cstack-latest.tgz"
           echo "PACKAGE_FILE=${PACKAGE_FILE}" >> "$GITHUB_ENV"
+
+      - name: Smoke-test packaged install
+        shell: bash
+        run: |
+          INSTALL_ROOT="${RUNNER_TEMP}/cstack-release-install"
+          rm -rf "${INSTALL_ROOT}"
+          mkdir -p "${INSTALL_ROOT}"
+          npm install -g "./release/${PACKAGE_FILE}" --prefix "${INSTALL_ROOT}"
+          "${INSTALL_ROOT}/bin/cstack" --help >/dev/null
 
       - name: Generate checksums
         shell: bash
@@ -126,13 +147,19 @@ jobs:
         shell: bash
         run: |
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
-            echo "Release ${RELEASE_TAG} already exists; refusing to mutate an existing tagged release."
-            exit 1
+            gh release upload "${RELEASE_TAG}" \
+              "release/${PACKAGE_FILE}" \
+              "release/cstack-latest.tgz" \
+              "release/SHA256SUMS.txt" \
+              --clobber
+            gh release edit "${RELEASE_TAG}" \
+              --title "cstack ${RELEASE_TAG}" \
+              --notes-file release/RELEASE_NOTES.md
+          else
+            gh release create "${RELEASE_TAG}" \
+              "release/${PACKAGE_FILE}" \
+              "release/cstack-latest.tgz" \
+              "release/SHA256SUMS.txt" \
+              --title "cstack ${RELEASE_TAG}" \
+              --notes-file release/RELEASE_NOTES.md
           fi
-
-          gh release create "${RELEASE_TAG}" \
-            "release/${PACKAGE_FILE}" \
-            "release/cstack-latest.tgz" \
-            "release/SHA256SUMS.txt" \
-            --title "cstack ${RELEASE_TAG}" \
-            --notes-file release/RELEASE_NOTES.md

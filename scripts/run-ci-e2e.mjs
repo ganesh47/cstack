@@ -281,6 +281,19 @@ async function main() {
     assert(deliverRun, "deliver run was not created");
     assert.equal(deliverRun.status, "completed");
     summary.runs.deliver = deliverRun.id;
+    const deliverRunDir = path.join(repoDir, ".cstack", "runs", normalizeRunId(deliverRun.id));
+    const deliverMutationArtifact = JSON.parse(
+      await fs.readFile(path.join(deliverRunDir, "artifacts", "github-mutation.json"), "utf8")
+    );
+    assert.equal(deliverMutationArtifact.branch.pushed, true);
+    assert.equal(deliverMutationArtifact.commit.created, true);
+    assert.equal(
+      Boolean(deliverMutationArtifact.pullRequest.created || deliverMutationArtifact.pullRequest.updated),
+      true
+    );
+    assert.match(deliverMutationArtifact.pullRequest.url, /\/pull\//);
+    const remoteHeads = await runGit(remoteDir, ["for-each-ref", "--format=%(refname:short)", "refs/heads"]);
+    assert.match(remoteHeads.stdout, new RegExp(deliverMutationArtifact.branch.current.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 
     const intentReviewIds = new Set((await readRuns(repoDir)).filter((run) => run.workflow === "review").map((run) => run.id));
     await runCli(repoDir, ["What are the gaps in the current project?"]);
@@ -316,7 +329,6 @@ async function main() {
     assert.match(inspectResult.stdout, /github delivery/i);
     summary.outputs.inspect = inspectResult.stdout.split("\n").slice(0, 8).join("\n");
 
-    const deliverRunDir = path.join(repoDir, ".cstack", "runs", normalizeRunId(deliverRun.id));
     const deliverGitHubArtifact = JSON.parse(
       await fs.readFile(path.join(deliverRunDir, "artifacts", "github-delivery.json"), "utf8")
     );
