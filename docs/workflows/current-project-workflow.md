@@ -151,16 +151,7 @@ Condensed progression:
 - `v0.10.0`: deliver umbrella workflow
 - `v0.11.0`: GitHub-complete deliver gating
 - `v0.12.0`: deliver GitHub mutation for branch and PR publication
-
-Current closure work completed after `v0.12.0`:
-
-- standalone `review`
-- standalone `ship`
-- wrapper-native `resume`
-- wrapper-native `fork`
-- wrapper-native `rerun`
-- explicit dirty-worktree consent for mutation workflows
-- active spec rewritten to match shipped behavior
+- `v0.13.0`: active spec closure with standalone review/ship and wrapper-native resume/fork/rerun
 
 ## Working Rule
 
