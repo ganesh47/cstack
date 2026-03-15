@@ -156,4 +156,31 @@ describe("runReview", () => {
       stdoutSpy.mockRestore();
     }
   });
+
+  it("keeps the review run completed when the verdict is blocked but the analysis succeeded", async () => {
+    const buildRunId = await seedBuildRun(repoDir);
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    try {
+      await runReview(repoDir, ["--from-run", buildRunId, "What are the gaps in this project"]);
+
+      const runs = await listRuns(repoDir);
+      const reviewRun = runs.find((run) => run.workflow === "review");
+      expect(reviewRun).toBeTruthy();
+
+      const run = await readRun(repoDir, reviewRun!.id);
+      const runDir = path.dirname(run.finalPath);
+      const verdict = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "verdict.json"), "utf8")) as {
+        status: string;
+        summary: string;
+      };
+
+      expect(run.status).toBe("completed");
+      expect(run.error).toBeUndefined();
+      expect(verdict.status).toBe("blocked");
+      expect(stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join("")).toContain("Verdict: blocked");
+    } finally {
+      stdoutSpy.mockRestore();
+    }
+  });
 });
