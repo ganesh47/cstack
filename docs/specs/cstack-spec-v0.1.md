@@ -237,16 +237,15 @@ Current intent behavior:
 - persist `stage-lineage.json`
 - execute `discover`
 - execute `spec`
-- attach bounded specialist reviews when the heuristic selects them
-- record later recommended stages such as `build`, `review`, or `ship` as deferred follow-on work
+- auto-execute downstream `review`, `ship`, or `deliver` when the inferred plan warrants it
+- keep bounded specialist reviews inside the intent run only when the router stops after planning
 
-This is an explicit product choice. The active intent contract is:
+The active intent contract is:
 
-- plan and execute deterministic planning stages
-- preserve downstream stage intent in lineage
-- recommend explicit `build` or `deliver` follow-ons when later execution is warranted
-
-It is not the active contract for intent runs to auto-execute every inferred stage.
+- plan and execute deterministic planning stages first
+- auto-carry analysis prompts into `review`
+- auto-carry implementation prompts into `deliver`
+- preserve child workflow lineage in the parent intent run
 
 ## GitHub-Scoped Engineering Delivery
 

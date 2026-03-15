@@ -151,16 +151,16 @@ What it does today:
 - infers an internal stage plan
 - persists `routing-plan.json` and `stage-lineage.json`
 - executes `discover` and `spec` inside one orchestrated run
-- attaches bounded specialist reviews when the intent suggests they are justified
+- auto-executes downstream `review`, `ship`, or `deliver` when the inferred plan warrants it
+- keeps bounded specialist reviews inside the intent run only when the router stops after planning
 
 Current intent behavior:
 
 - `discover` and `spec` are executed automatically inside the intent run
-- later stages such as `build`, `review`, and `ship` may still appear in the inferred plan
-- `build` is the focused implementation follow-on when you want a narrow execution workflow
-- `review` and `ship` are explicit follow-on workflows for narrower critique or handoff paths
-- `deliver` is the preferred umbrella follow-on workflow when the work clearly spans `build`, `review`, and `ship`
-- specialist reviews may run after the `spec` stage and are recorded under `delegates/`
+- review-shaped analysis prompts auto-run standalone `review`
+- implementation-shaped prompts auto-run `deliver`, which carries the work through internal `build -> review -> ship`
+- explicit `build`, `review`, `ship`, and `deliver` commands still exist when you want a narrower workflow than the routed front door
+- intent-level specialist delegates are only used when the router stops after planning instead of handing off into a downstream review-capable workflow
 
 Examples:
 

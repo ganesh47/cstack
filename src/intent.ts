@@ -6,7 +6,7 @@ import { runCodexExec } from "./codex.js";
 import { runDiscoverExecution } from "./discover.js";
 import { maybeOfferInteractiveInspect } from "./inspector.js";
 import { buildSpecPrompt, buildSpecialistPrompt, excerpt } from "./prompt.js";
-import { detectCodexVersion, detectGitBranch, ensureRunDir, makeRunId, writeRunRecord } from "./run.js";
+import { detectCodexVersion, detectGitBranch, ensureRunDir, makeRunId, readRun, writeRunRecord } from "./run.js";
 import type {
   CstackConfig,
   RoutingPlan,
@@ -28,7 +28,7 @@ const SPECIALIST_ORDER: SpecialistName[] = [
   "traceability-review"
 ];
 
-const EXECUTABLE_STAGES: StageName[] = ["discover", "spec"];
+const DIRECT_EXECUTABLE_STAGES: StageName[] = ["discover", "spec"];
 
 export interface IntentCommandOptions {
   dryRun: boolean;
@@ -69,16 +69,28 @@ function inferStagePlans(intent: string): RoutingStagePlan[] {
     }
   ];
 
-  if (/\b(add|build|implement|fix|refactor|migrate|introduce|create|change|update)\b/i.test(lower)) {
+  if (/\b(add|build|implement|fix|refactor|migrate|introduce|create|change|update|close|resolve)\b/i.test(lower)) {
     stages.push({
       name: "build",
       rationale: "The intent implies implementation work after planning.",
       status: "planned",
       executed: false
     });
+    stages.push({
+      name: "review",
+      rationale: "Implementation work should be critiqued before it is treated as complete.",
+      status: "planned",
+      executed: false
+    });
+    stages.push({
+      name: "ship",
+      rationale: "Implementation work should carry through to explicit engineering delivery.",
+      status: "planned",
+      executed: false
+    });
   }
 
-  if (/\b(review|audit|security|compliance|traceability|verify|check)\b/i.test(lower)) {
+  if (/\b(review|audit|security|compliance|traceability|verify|check|gap|gaps|missing|assess|assessment|evaluate|evaluation)\b/i.test(lower)) {
     stages.push({
       name: "review",
       rationale: "The intent carries explicit review or risk-checking language.",
@@ -97,6 +109,33 @@ function inferStagePlans(intent: string): RoutingStagePlan[] {
   }
 
   return ensureUniqueStages(stages);
+}
+
+type IntentAutoWorkflow = "review" | "ship" | "deliver";
+
+function hasPlannedStage(routingPlan: RoutingPlan, stageName: StageName): boolean {
+  return routingPlan.stages.some((stage) => stage.name === stageName);
+}
+
+function selectAutoWorkflow(routingPlan: RoutingPlan): IntentAutoWorkflow | null {
+  if (hasPlannedStage(routingPlan, "build")) {
+    return "deliver";
+  }
+  if (hasPlannedStage(routingPlan, "ship")) {
+    return "ship";
+  }
+  if (hasPlannedStage(routingPlan, "review")) {
+    return "review";
+  }
+  return null;
+}
+
+function inferReleaseMode(intent: string): boolean {
+  return /\b(release|publish|tag|version bump|version|cut a release)\b/i.test(intent);
+}
+
+function extractIssueNumbers(intent: string): number[] {
+  return [...intent.matchAll(/(?:^|\s)#(\d+)\b/g)].map((match) => Number.parseInt(match[1]!, 10));
 }
 
 export function inferSpecialists(intent: string): SpecialistSelection[] {
@@ -363,8 +402,110 @@ async function executeSpecialist(options: {
   }
 }
 
+function buildWorkflowArgs(intent: string, fromRunId: string, workflow: IntentAutoWorkflow): string[] {
+  const args = ["--from-run", fromRunId];
+  if ((workflow === "ship" || workflow === "deliver") && inferReleaseMode(intent)) {
+    args.push("--release");
+  }
+  for (const issueNumber of extractIssueNumbers(intent)) {
+    if (workflow === "ship" || workflow === "deliver") {
+      args.push("--issue", String(issueNumber));
+    }
+  }
+  args.push(intent);
+  return args;
+}
+
+async function loadStageLineageForRun(cwd: string, runId: string): Promise<StageLineage | null> {
+  const run = await readRun(cwd, runId);
+  const runDir = path.dirname(run.finalPath);
+  try {
+    const body = await fs.readFile(path.join(runDir, "stage-lineage.json"), "utf8");
+    return JSON.parse(body) as StageLineage;
+  } catch {
+    return null;
+  }
+}
+
+function updateLineageStage(stageLineage: StageLineage, stageName: StageName, update: Partial<RoutingStagePlan>): void {
+  const stage = stageLineage.stages.find((entry) => entry.name === stageName);
+  if (!stage) {
+    return;
+  }
+  Object.assign(stage, update);
+}
+
+async function executeAutoWorkflow(options: {
+  cwd: string;
+  intent: string;
+  runId: string;
+  workflow: IntentAutoWorkflow;
+  stageLineage: StageLineage;
+}): Promise<string> {
+  const args = buildWorkflowArgs(options.intent, options.runId, options.workflow);
+  switch (options.workflow) {
+    case "deliver": {
+      const { runDeliver } = await import("./commands/deliver.js");
+      const childRunId = await runDeliver(options.cwd, args);
+      const childRun = await readRun(options.cwd, childRunId);
+      const childStageLineage = await loadStageLineageForRun(options.cwd, childRunId);
+      const childRunDir = path.dirname(childRun.finalPath);
+      for (const stageName of ["build", "review", "ship"] as const) {
+        const childStage = childStageLineage?.stages.find((entry) => entry.name === stageName);
+        updateLineageStage(options.stageLineage, stageName, {
+          status: childStage?.status ?? (childRun.status === "completed" ? "completed" : "failed"),
+          executed: true,
+          childRunId,
+          stageDir: path.join(childRunDir, "stages", stageName),
+          artifactPath:
+            stageName === "build"
+              ? path.join(childRunDir, "stages", "build", "artifacts", "change-summary.md")
+              : stageName === "review"
+                ? path.join(childRunDir, "stages", "review", "artifacts", "verdict.json")
+                : path.join(childRunDir, "stages", "ship", "artifacts", "ship-summary.md"),
+          notes: `Executed through downstream deliver run ${childRunId}.`
+        });
+      }
+      return childRunId;
+    }
+    case "review": {
+      const { runReview } = await import("./commands/review.js");
+      const childRunId = await runReview(options.cwd, args);
+      const childRun = await readRun(options.cwd, childRunId);
+      const childRunDir = path.dirname(childRun.finalPath);
+      updateLineageStage(options.stageLineage, "review", {
+        status: childRun.status === "completed" ? "completed" : "failed",
+        executed: true,
+        childRunId,
+        stageDir: childRunDir,
+        artifactPath: path.join(childRunDir, "artifacts", "verdict.json"),
+        notes: `Executed through downstream review run ${childRunId}.`
+      });
+      return childRunId;
+    }
+    case "ship": {
+      const { runShip } = await import("./commands/ship.js");
+      const childRunId = await runShip(options.cwd, args);
+      const childRun = await readRun(options.cwd, childRunId);
+      const childRunDir = path.dirname(childRun.finalPath);
+      updateLineageStage(options.stageLineage, "ship", {
+        status: childRun.status === "completed" ? "completed" : "failed",
+        executed: true,
+        childRunId,
+        stageDir: childRunDir,
+        artifactPath: path.join(childRunDir, "artifacts", "ship-summary.md"),
+        notes: `Executed through downstream ship run ${childRunId}.`
+      });
+      return childRunId;
+    }
+  }
+}
+
 function buildFinalSummary(intent: string, routingPlan: RoutingPlan, stageLineage: StageLineage): string {
-  const stageLines = stageLineage.stages.map((stage) => `- ${stage.name}: ${stage.status}${stage.executed ? " (executed)" : ""}`);
+  const stageLines = stageLineage.stages.map(
+    (stage) =>
+      `- ${stage.name}: ${stage.status}${stage.executed ? " (executed)" : ""}${stage.childRunId ? ` via ${stage.childRunId}` : ""}`
+  );
   const executedSpecialistLines =
     stageLineage.specialists.length > 0
       ? stageLineage.specialists.map(
@@ -524,17 +665,7 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
         continue;
       }
 
-      if (!EXECUTABLE_STAGES.includes(stageName)) {
-        const prefersDeliver = routingPlan.stages.some((stage) => stage.name === "review" || stage.name === "ship");
-        lineageStage.status = "deferred";
-        lineageStage.notes =
-          stageName === "build"
-            ? prefersDeliver
-              ? `Planned by the router, but not auto-executed in this slice. Use \`cstack deliver --from-run ${runId}\` to carry the work through build, review, and ship.`
-              : `Planned by the router, but not auto-executed in this slice. Use \`cstack build --from-run ${runId}\` to start the implementation run.`
-            : "Planned by the router, but not executed in this first intent-runner slice.";
-        events.markStage(stageName, "deferred");
-        await writeJson(stageLineagePath, stageLineage);
+      if (!DIRECT_EXECUTABLE_STAGES.includes(stageName)) {
         continue;
       }
 
@@ -599,45 +730,79 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
       await writeJson(stageLineagePath, stageLineage);
     }
 
-    const selectedSpecialists = routingPlan.specialists.filter((specialist) => specialist.selected);
-    for (const specialist of selectedSpecialists) {
-      runRecord.currentStage = `specialist:${specialist.name}`;
-      runRecord.activeSpecialists = [specialist.name];
+    const autoWorkflow = selectAutoWorkflow(routingPlan);
+    if (autoWorkflow) {
+      runRecord.currentStage = autoWorkflow;
+      runRecord.activeSpecialists = [];
       runRecord.updatedAt = new Date().toISOString();
       await writeRunRecord(runDir, runRecord);
-      events.markSpecialist(specialist.name, "running");
-      await events.emit("activity", `Running specialist ${specialist.name}`);
-      const result = await executeSpecialist({
+      await events.emit("activity", `Running downstream ${autoWorkflow} workflow from intent`);
+      await executeAutoWorkflow({
         cwd,
-        runId,
-        runDir,
         intent: resolvedIntent,
-        config,
-        routingPlan,
-        specialist,
-        discoverFindings,
-        specOutput
+        runId,
+        workflow: autoWorkflow,
+        stageLineage
       });
-      stageLineage.specialists.push(result);
-      events.markSpecialist(specialist.name, result.status === "completed" ? "completed" : "failed");
       await writeJson(stageLineagePath, stageLineage);
+      for (const stage of stageLineage.stages) {
+        if (stage.executed) {
+          events.markStage(stage.name, stage.status === "completed" ? "completed" : "failed");
+        }
+      }
+      for (const specialist of routingPlan.specialists.filter((entry) => entry.selected)) {
+        events.markSpecialist(specialist.name, "skipped");
+      }
+    } else {
+      const selectedSpecialists = routingPlan.specialists.filter((specialist) => specialist.selected);
+      for (const specialist of selectedSpecialists) {
+        runRecord.currentStage = `specialist:${specialist.name}`;
+        runRecord.activeSpecialists = [specialist.name];
+        runRecord.updatedAt = new Date().toISOString();
+        await writeRunRecord(runDir, runRecord);
+        events.markSpecialist(specialist.name, "running");
+        await events.emit("activity", `Running specialist ${specialist.name}`);
+        const result = await executeSpecialist({
+          cwd,
+          runId,
+          runDir,
+          intent: resolvedIntent,
+          config,
+          routingPlan,
+          specialist,
+          discoverFindings,
+          specOutput
+        });
+        stageLineage.specialists.push(result);
+        events.markSpecialist(specialist.name, result.status === "completed" ? "completed" : "failed");
+        await writeJson(stageLineagePath, stageLineage);
+      }
     }
 
     const finalSummary = buildFinalSummary(resolvedIntent, routingPlan, stageLineage);
     await fs.writeFile(finalPath, finalSummary, "utf8");
-    runRecord.status = "completed";
+    runRecord.status = stageLineage.stages.some((stage) => stage.status === "failed") ? "failed" : "completed";
     runRecord.updatedAt = new Date().toISOString();
     delete runRecord.currentStage;
     runRecord.activeSpecialists = [];
-    runRecord.lastActivity = "Intent run completed";
+    runRecord.lastActivity =
+      runRecord.status === "completed" ? "Intent run completed" : "Intent run finished with downstream workflow failures";
+    if (runRecord.status === "failed") {
+      runRecord.error = stageLineage.stages
+        .filter((stage) => stage.status === "failed")
+        .map((stage) => `${stage.name} failed${stage.childRunId ? ` via ${stage.childRunId}` : ""}`)
+        .join("; ");
+    } else {
+      delete runRecord.error;
+    }
     await writeRunRecord(runDir, runRecord);
-    await events.emit("completed", "Intent run completed");
+    await events.emit(runRecord.status === "completed" ? "completed" : "failed", runRecord.lastActivity);
 
     process.stdout.write(
       [
         `Run: ${runId}`,
         `Workflow: intent`,
-        `Status: completed`,
+        `Status: ${runRecord.status}`,
         `Artifacts:`,
         `  ${path.relative(cwd, routingPlanPath)}`,
         `  ${path.relative(cwd, stageLineagePath)}`,

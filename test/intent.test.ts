@@ -57,28 +57,39 @@ describe("intent router", () => {
   });
 
   it("infers staged execution and specialists from intent", () => {
-    const plan = inferRoutingPlan("Introduce SSO with audit logging and hardened release checks", "bare");
+    const plan = inferRoutingPlan("Introduce SSO with audit logging and hardened security checks", "bare");
     expect(plan.stages.map((stage) => stage.name)).toEqual(["discover", "spec", "build", "review", "ship"]);
     expect(plan.specialists.filter((specialist) => specialist.selected).map((specialist) => specialist.name)).toEqual([
       "security-review",
-      "audit-review",
-      "release-pipeline-review"
+      "audit-review"
     ]);
   });
 
-  it("creates an intent run with routing artifacts, executed stages, and specialist outputs", async () => {
+  it("routes gap-analysis prompts into review after planning", () => {
+    const plan = inferRoutingPlan("What are the gaps in the current project?", "bare");
+    expect(plan.stages.map((stage) => stage.name)).toEqual(["discover", "spec", "review"]);
+  });
+
+  it("creates an intent run and auto-executes downstream delivery when the inferred plan warrants it", async () => {
     const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     try {
-      await runIntent(repoDir, "Introduce SSO with audit logging and hardened release checks", {
+      await runIntent(repoDir, "Introduce SSO with audit logging and hardened security checks", {
         entrypoint: "bare",
         dryRun: false
       });
 
       const runs = await listRuns(repoDir);
-      expect(runs).toHaveLength(1);
+      expect(runs.map((run) => run.workflow).sort()).toEqual(["deliver", "intent"]);
 
-      const run = await readRun(repoDir, runs[0]!.id);
+      const run = await readRun(
+        repoDir,
+        runs.find((entry) => entry.workflow === "intent")!.id
+      );
       const runDir = path.dirname(run.finalPath);
+      const deliverRun = await readRun(
+        repoDir,
+        runs.find((entry) => entry.workflow === "deliver")!.id
+      );
       const routingPlan = JSON.parse(await fs.readFile(path.join(runDir, "routing-plan.json"), "utf8")) as RoutingPlan;
       const lineage = JSON.parse(await fs.readFile(path.join(runDir, "stage-lineage.json"), "utf8")) as StageLineage;
       const discoverResearchPlan = JSON.parse(
@@ -88,12 +99,15 @@ describe("intent router", () => {
 
       expect(run.workflow).toBe("intent");
       expect(run.status).toBe("completed");
+      expect(deliverRun.workflow).toBe("deliver");
       expect(routingPlan.stages.map((stage) => stage.name)).toEqual(["discover", "spec", "build", "review", "ship"]);
       expect(lineage.stages.find((stage) => stage.name === "discover")?.status).toBe("completed");
       expect(lineage.stages.find((stage) => stage.name === "spec")?.status).toBe("completed");
-      expect(lineage.stages.find((stage) => stage.name === "build")?.status).toBe("deferred");
-      expect(lineage.specialists).toHaveLength(3);
-      expect(lineage.specialists.every((specialist) => specialist.disposition === "accepted")).toBe(true);
+      expect(lineage.stages.find((stage) => stage.name === "build")?.status).toBe("completed");
+      expect(lineage.stages.find((stage) => stage.name === "build")?.childRunId).toBe(deliverRun.id);
+      expect(lineage.stages.find((stage) => stage.name === "review")?.status).toBe("completed");
+      expect(lineage.stages.find((stage) => stage.name === "ship")?.status).toBe("completed");
+      expect(lineage.specialists).toHaveLength(0);
       expect(discoverResearchPlan.mode).toBe("research-team");
       expect(discoverResearchPlan.tracks.filter((track) => track.selected).map((track) => track.name)).toEqual([
         "repo-explorer",
@@ -110,11 +124,9 @@ describe("intent router", () => {
         "\"track\": \"risk-researcher\""
       );
       expect(await fs.readFile(path.join(runDir, "stages", "spec", "artifacts", "spec.md"), "utf8")).toContain("Fake Spec");
-      expect(await fs.readFile(path.join(runDir, "delegates", "security-review", "result.json"), "utf8")).toContain(
-        "\"disposition\": \"accepted\""
-      );
       expect(finalBody).toContain("Stage status");
       expect(finalBody).toContain("Specialist status");
+      expect(finalBody).toContain(deliverRun.id);
       expect(stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join("")).toContain("Inferred stages:");
     } finally {
       stdoutSpy.mockRestore();

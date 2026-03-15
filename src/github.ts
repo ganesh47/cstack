@@ -20,6 +20,12 @@ import type {
 } from "./types.js";
 
 const execFileAsync = promisify(execFile);
+const INTERNAL_RUN_ARTIFACT_PREFIX = ".cstack/runs/";
+
+function isInternalRunArtifactPath(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, "/").replace(/^\.?\//, "");
+  return normalized === ".cstack/runs" || normalized.startsWith(INTERNAL_RUN_ARTIFACT_PREFIX);
+}
 
 interface CommandResult {
   stdout: string;
@@ -219,7 +225,8 @@ async function listChangedFiles(cwd: string): Promise<string[]> {
       .split("\n")
       .filter(Boolean)
       .map((line) => line.slice(3).trim())
-      .filter(Boolean);
+      .filter(Boolean)
+      .filter((filePath) => !isInternalRunArtifactPath(filePath));
   } catch {
     return [];
   }
@@ -901,7 +908,13 @@ async function detectRelease(options: {
 
 export async function performGitHubDeliverMutations(options: PerformGitHubMutationOptions): Promise<PerformGitHubMutationResult> {
   const policy = options.policy;
-  const enabled = Boolean(policy.pushBranch || policy.commitChanges || policy.createPullRequest || policy.updatePullRequest || policy.watchChecks);
+  const enabled = Boolean(
+    policy.pushBranch ||
+      policy.commitChanges ||
+      policy.createPullRequest ||
+      policy.watchChecks ||
+      (policy.updatePullRequest && (policy.pushBranch || policy.createPullRequest || policy.commitChanges))
+  );
   const remote = await resolveRemoteForPush(options.cwd);
   const { repository } = await detectRepository(options.cwd, policy.repository);
   const ghCommand = policy.command || "gh";
@@ -968,6 +981,9 @@ export async function performGitHubDeliverMutations(options: PerformGitHubMutati
       try {
         commitMessage = buildCommitMessage(options.input, options.issueNumbers);
         await runGit(options.cwd, ["add", "-A"]);
+        try {
+          await runGit(options.cwd, ["reset", "--", ".cstack/runs"]);
+        } catch {}
         await runGit(options.cwd, ["commit", "-m", commitMessage]);
         commitCreated = true;
         commitSha = await currentHeadSha(options.cwd);
@@ -1142,7 +1158,7 @@ export async function collectGitHubDeliveryEvidence(options: CollectGitHubDelive
       policy.pushBranch ||
       policy.commitChanges ||
       policy.createPullRequest ||
-      policy.updatePullRequest ||
+      (policy.updatePullRequest && (policy.prRequired || policy.pushBranch || policy.createPullRequest || policy.commitChanges)) ||
       policy.watchChecks ||
       policy.prRequired ||
       policy.linkedIssuesRequired ||

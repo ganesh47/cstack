@@ -16,6 +16,12 @@ import type {
 } from "./types.js";
 
 const execFileAsync = promisify(execFile);
+const INTERNAL_RUN_ARTIFACT_PREFIX = ".cstack/runs/";
+
+function isInternalRunArtifactPath(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, "/").replace(/^\.?\//, "");
+  return normalized === ".cstack/runs" || normalized.startsWith(INTERNAL_RUN_ARTIFACT_PREFIX);
+}
 
 export interface LinkedBuildContext {
   run: RunRecord;
@@ -105,8 +111,8 @@ export async function resolveLinkedBuildContext(cwd: string, runId: string): Pro
 
 export async function detectDirtyWorktree(cwd: string): Promise<boolean> {
   try {
-    const { stdout } = await execFileAsync("git", ["status", "--porcelain"], { cwd });
-    return stdout.trim().length > 0;
+    const dirtyFiles = await listDirtyWorktreeFiles(cwd);
+    return dirtyFiles.length > 0;
   } catch {
     return false;
   }
@@ -119,7 +125,8 @@ export async function listDirtyWorktreeFiles(cwd: string): Promise<string[]> {
       .split("\n")
       .filter(Boolean)
       .map((line) => line.slice(3).trim())
-      .filter(Boolean);
+      .filter(Boolean)
+      .filter((filePath) => !isInternalRunArtifactPath(filePath));
   } catch {
     return [];
   }

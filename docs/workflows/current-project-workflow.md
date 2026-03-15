@@ -41,7 +41,7 @@ Implemented behavior:
 - `deliver` and `ship` can publish branches and create or update pull requests when repo policy enables it
 - `rerun` replays supported workflows into fresh run ids
 - `resume` and `fork` resolve run ids to Codex sessions
-- `intent` executes `discover` and `spec`, may attach specialist reviews, and records later execution recommendations explicitly
+- `intent` executes `discover` and `spec`, then auto-runs downstream `review`, `ship`, or `deliver` when the inferred plan warrants it
 - `runs` is the run ledger
 - `inspect` is the artifact-grounded inspector
 
@@ -80,7 +80,7 @@ cstack deliver --from-run <spec-or-intent-run-id> --issue 123
 
 ## Intent Front Door
 
-`cstack <intent>` is the planning front door.
+`cstack <intent>` is the orchestration front door.
 
 Current behavior:
 
@@ -88,10 +88,11 @@ Current behavior:
 - persist `routing-plan.json`
 - run `discover`
 - run `spec`
-- attach bounded specialist reviews when justified
-- record later stages such as `build`, `review`, and `ship` as explicit follow-on work
+- auto-run standalone `review` for review-shaped prompts
+- auto-run `deliver` for implementation-shaped prompts that imply engineering completion
+- keep bounded intent-level specialist reviews only when the router stops after planning
 
-Use `intent` when you want routing, planning, and inspectable recommendations.
+Use `intent` when you want routing plus end-to-end execution when the prompt warrants it.
 Use explicit workflows when you already know the narrow stage you want.
 
 ## Inspection and Continuation

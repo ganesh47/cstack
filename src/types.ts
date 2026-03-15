@@ -80,6 +80,7 @@ export interface RoutingStagePlan {
   notes?: string;
   stageDir?: string;
   artifactPath?: string;
+  childRunId?: string;
 }
 
 export interface SpecialistSelection {
