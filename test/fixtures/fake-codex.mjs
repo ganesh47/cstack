@@ -217,24 +217,48 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
     "No blocking gaps detected in the fake fixture."
   ].join("\n");
 } else if (prompt.includes("You are the `Review Lead` for a bounded `cstack deliver` workflow.")) {
-  body = JSON.stringify(
-    {
-      status: "ready",
-      summary: "Review completed with bounded follow-up.",
-      findings: [
-        {
-          severity: "warning",
-          title: "Release readiness follow-up",
-          detail: "Review the release checklist before merge."
-        }
-      ],
-      recommendedActions: ["Review the release checklist before merge."],
-      acceptedSpecialists: [],
-      reportMarkdown: "# Review Findings\n\nBounded follow-up required.\n"
-    },
-    null,
-    2
-  );
+  if (/what are the gaps/i.test(prompt)) {
+    body = JSON.stringify(
+      {
+        status: "blocked",
+        summary: "Major contract, behavior, and process gaps remain unresolved.",
+        findings: [
+          {
+            severity: "error",
+            title: "Contract drift",
+            detail: "The shipped interfaces and the planned contract are no longer aligned."
+          }
+        ],
+        recommendedActions: [
+          "Define a single source of truth for the API contract.",
+          "Add verification evidence before treating the project as delivery-ready."
+        ],
+        acceptedSpecialists: [],
+        reportMarkdown: "# Review Findings\n\nMajor gaps remain unresolved.\n"
+      },
+      null,
+      2
+    );
+  } else {
+    body = JSON.stringify(
+      {
+        status: "ready",
+        summary: "Review completed with bounded follow-up.",
+        findings: [
+          {
+            severity: "warning",
+            title: "Release readiness follow-up",
+            detail: "Review the release checklist before merge."
+          }
+        ],
+        recommendedActions: ["Review the release checklist before merge."],
+        acceptedSpecialists: [],
+        reportMarkdown: "# Review Findings\n\nBounded follow-up required.\n"
+      },
+      null,
+      2
+    );
+  }
 } else if (prompt.includes("You are the `Ship Lead` for a bounded `cstack deliver` workflow.")) {
   body = JSON.stringify(
     {

@@ -163,6 +163,37 @@ describe("intent router", () => {
     expect(eventsBody).toContain("Downstream review stage: review");
   });
 
+  it("keeps intent completed when downstream review finds blocked gaps", async () => {
+    await runIntent(repoDir, "What are the gaps in this project", {
+      entrypoint: "bare",
+      dryRun: false
+    });
+
+    const runs = await listRuns(repoDir);
+    const intentRun = await readRun(
+      repoDir,
+      runs.find((entry) => entry.workflow === "intent")!.id
+    );
+    const reviewRun = await readRun(
+      repoDir,
+      runs.find((entry) => entry.workflow === "review")!.id
+    );
+    const intentRunDir = path.dirname(intentRun.finalPath);
+    const reviewRunDir = path.dirname(reviewRun.finalPath);
+    const lineage = JSON.parse(await fs.readFile(path.join(intentRunDir, "stage-lineage.json"), "utf8")) as StageLineage;
+    const reviewVerdict = JSON.parse(await fs.readFile(path.join(reviewRunDir, "artifacts", "verdict.json"), "utf8")) as {
+      status: string;
+      summary: string;
+    };
+
+    expect(intentRun.status).toBe("completed");
+    expect(intentRun.error).toBeUndefined();
+    expect(reviewRun.status).toBe("completed");
+    expect(reviewVerdict.status).toBe("blocked");
+    expect(lineage.stages.find((stage) => stage.name === "review")?.status).toBe("completed");
+    expect(await fs.readFile(intentRun.finalPath, "utf8")).toContain("Major contract, behavior, and process gaps remain unresolved.");
+  });
+
   it("supports dry-run routing without executing stages", async () => {
     await runIntent(repoDir, "Plan a compliance-safe billing migration", {
       entrypoint: "run",

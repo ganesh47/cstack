@@ -135,13 +135,15 @@ export async function runReview(cwd: string, args: string[] = [], hooks: ReviewR
       ...(linkedContext ? { linkedContext } : {})
     });
 
-    runRecord.status = execution.reviewVerdict.status === "ready" ? "completed" : "failed";
+    runRecord.status = execution.executionSucceeded ? "completed" : "failed";
     runRecord.updatedAt = new Date().toISOString();
     delete runRecord.currentStage;
     runRecord.inputs.selectedSpecialists = execution.selectedSpecialists.map((specialist) => specialist.name);
     runRecord.lastActivity = execution.reviewVerdict.summary;
-    if (runRecord.status !== "completed") {
+    if (!execution.executionSucceeded) {
       runRecord.error = execution.reviewVerdict.summary;
+    } else {
+      delete runRecord.error;
     }
     await writeRunRecord(runDir, runRecord);
 

@@ -55,6 +55,7 @@ export interface ReviewExecutionResult {
   selectedSpecialists: SpecialistSelection[];
   stageLineage: StageLineage;
   finalBody: string;
+  executionSucceeded: boolean;
 }
 
 async function readJsonFile<T>(filePath: string): Promise<T | null> {
@@ -361,6 +362,7 @@ export async function runReviewExecution(options: ReviewExecutionOptions): Promi
     reviewVerdict,
     selectedSpecialists,
     stageLineage,
-    finalBody
+    finalBody,
+    executionSucceeded: reviewResult.code === 0
   };
 }
