@@ -40,6 +40,8 @@ Pre-v1 public installs are published through GitHub Releases.
 
 Links:
 
+- [CI workflow](./.github/workflows/ci.yml)
+- [Live Codex smoke workflow](./.github/workflows/live-codex-smoke.yml)
 - [Releases page](https://github.com/ganesh47/cstack/releases)
 - [Release workflow](./.github/workflows/release.yml)
 - [Prepare release workflow](./.github/workflows/prepare-release.yml)
@@ -522,10 +524,25 @@ npm install
 npm run typecheck
 npm test
 npm run build
+npm run ci:e2e
 node ./bin/cstack.js --help
 ```
 
 The binary entrypoint is `bin/cstack.js`, which loads the built CLI from `dist/`.
+
+## GitHub Actions
+
+The repo now uses two validation lanes:
+
+- `CI` is the required lane for pull requests and `main`. It runs `typecheck`, `test`, `build`, and a deterministic CLI end-to-end pass with the fake Codex and fake GitHub fixtures.
+- `Live Codex Smoke` is a manual, non-blocking lane intended for a self-hosted runner that already has Codex CLI installed and authenticated. It clones `sqlite-metadata-proposal`, uses real Codex plus fake GitHub, and smoke-tests the wrapper against a realistic repo without mutating GitHub state.
+
+Useful commands:
+
+```bash
+npm run ci:e2e
+npm run smoke:live
+```
 
 ## Releases
 
@@ -537,7 +554,7 @@ Release flow:
 2. the workflow updates `package.json`, `package-lock.json`, and the versioned README examples
 3. the workflow commits to the default branch
 4. the workflow creates and pushes a matching tag, for example `v0.1.0`
-5. the workflow builds, tests, packs, and publishes the GitHub Release
+5. the tag starts `Release`, which reruns validation, packs, checksums, and publishes the GitHub Release
 
 Browser dispatch:
 

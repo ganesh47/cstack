@@ -1,0 +1,40 @@
+name: Live Codex Smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-codex-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: self-hosted
+    continue-on-error: true
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+
+      - name: Set up Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Confirm Codex CLI is available on the runner
+        run: codex --version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Run live Codex smoke workflow
+        env:
+          CSTACK_SMOKE_REPO: https://github.com/ganesh47/sqlite-metadata-proposal.git
+        run: npm run smoke:live

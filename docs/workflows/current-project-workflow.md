@@ -44,6 +44,7 @@ Implemented behavior:
 - `intent` executes `discover` and `spec`, then auto-runs downstream `review`, `ship`, or `deliver` when the inferred plan warrants it
 - `runs` is the run ledger
 - `inspect` is the artifact-grounded inspector
+- GitHub Actions has a required deterministic `CI` lane plus an optional live Codex smoke lane
 
 ## Recommended Operator Loop
 
@@ -134,6 +135,16 @@ Continuation commands:
 - `build`, `ship`, and `deliver` require a clean worktree unless `--allow-dirty` or repo policy allows otherwise
 - GitHub mutation and GitHub delivery evidence must remain reconstructable from artifacts alone
 
+## CI And Validation
+
+GitHub Actions is split into two lanes:
+
+- `CI`: required on pull requests and `main`; runs `npm run typecheck`, `npm test`, `npm run build`, and `npm run ci:e2e`
+- `Live Codex Smoke`: manual and non-blocking; intended for a self-hosted runner with a logged-in Codex CLI and runs `npm run smoke:live`
+
+The deterministic lane uses the fake Codex and fake GitHub fixtures and should stay stable enough for branch protection.
+The live smoke lane is only for periodic reality checks against the real Codex CLI.
+
 ## Recent Git Timeline
 
 Condensed progression:
@@ -154,6 +165,7 @@ Condensed progression:
 - `v0.12.0`: deliver GitHub mutation for branch and PR publication
 - `v0.13.0`: active spec closure with standalone review/ship and wrapper-native resume/fork/rerun
 - `v0.14.0`: intent auto-executes downstream review and deliver workflows
+- current branch: deterministic GitHub Actions e2e CI plus optional live Codex smoke validation
 
 ## Working Rule
 

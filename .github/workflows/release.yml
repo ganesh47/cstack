@@ -53,6 +53,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Deterministic end-to-end workflow validation
+        run: npm run ci:e2e
+
       - name: Pack release tarball
         shell: bash
         run: |

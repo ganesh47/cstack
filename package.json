@@ -29,9 +29,11 @@
   ],
   "scripts": {
     "build": "npm run clean && tsc -p tsconfig.build.json",
+    "ci:e2e": "node scripts/run-ci-e2e.mjs",
     "clean": "rm -rf dist",
     "dev": "tsx src/cli.ts",
     "prepack": "npm run build",
+    "smoke:live": "node scripts/run-live-codex-smoke.mjs",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

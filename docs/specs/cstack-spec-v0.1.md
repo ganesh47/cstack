@@ -14,6 +14,11 @@ The product is intentionally narrow:
 
 The active contract is the shipped surface in this repository. The spec must not promise commands or workflow behavior that the product does not implement.
 
+The repository validation contract is also part of the shipped surface:
+
+- a required deterministic GitHub Actions lane validates the public CLI end to end with fake Codex and fake GitHub fixtures
+- an optional live Codex smoke lane exists for manual or periodic checks on a self-hosted runner with an authenticated Codex CLI
+
 Current top-level commands:
 
 - `cstack <intent>`
@@ -416,6 +421,30 @@ Important repo-policy knobs include:
 - dirty-worktree allowance
 - verification commands
 - GitHub delivery policy for ship and deliver
+
+## Repository Validation
+
+The repo must keep two distinct automation lanes:
+
+- required deterministic CI for branch protection and release confidence
+- optional live Codex smoke validation that does not block merges
+
+Deterministic CI must:
+
+- run `npm run typecheck`
+- run `npm test`
+- run `npm run build`
+- run a CLI-level end-to-end workflow pass through the public entrypoint
+- use fixture-backed Codex and GitHub binaries rather than live external services
+
+The live smoke lane may:
+
+- clone a public sample repository
+- use real Codex for bounded smoke prompts
+- keep GitHub interactions fake or read-only
+- run only on explicit dispatch or another non-blocking trigger
+
+Release preparation must not publish the GitHub release directly. It prepares version state and pushes the tag; the tag-triggered `Release` workflow is the sole publisher.
 
 ## Delegation Policy
 
