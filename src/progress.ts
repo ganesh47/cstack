@@ -234,6 +234,7 @@ export class ProgressReporter {
   private startedAtMs: number | null = null;
   private ticker: ReturnType<typeof setInterval> | null = null;
   private spinnerIndex = 0;
+  private suspended = false;
 
   constructor(workflow: WorkflowName, runId: string, stream: ProgressStream = process.stdout) {
     this.workflow = workflow;
@@ -326,6 +327,11 @@ export class ProgressReporter {
       this.startTicker();
     }
 
+    if (this.suspended) {
+      this.lastEvent = event;
+      return;
+    }
+
     if (event.type === "completed" || event.type === "failed") {
       if (this.stages.length === 1 && this.stages[0]?.name === this.workflow) {
         this.stages[0] = {
@@ -338,6 +344,27 @@ export class ProgressReporter {
       return;
     }
 
+    this.render();
+  }
+
+  suspend(): void {
+    if (!this.dashboardEnabled || this.closed || this.suspended || !this.started) {
+      return;
+    }
+    this.suspended = true;
+    this.stopTicker();
+    this.lastRenderedLines = 0;
+    this.stream.write("\n");
+    this.stream.write(ANSI.showCursor);
+  }
+
+  resume(): void {
+    if (!this.dashboardEnabled || this.closed || !this.suspended) {
+      return;
+    }
+    this.suspended = false;
+    this.stream.write(ANSI.hideCursor);
+    this.startTicker();
     this.render();
   }
 
@@ -377,6 +404,9 @@ export class ProgressReporter {
   }
 
   private render(): void {
+    if (this.suspended) {
+      return;
+    }
     const lines = this.buildDashboardLines();
     const width = Math.max(60, Math.min(this.stream.columns ?? 100, 120));
     const formatted = lines.map((line) => truncate(line, width));

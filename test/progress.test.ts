@@ -103,4 +103,26 @@ describe("ProgressReporter", () => {
 
     reporter.emit(buildEvent("completed", 2000, "Exit code 0"));
   });
+
+  it("can suspend and resume a tty dashboard around interactive prompts", () => {
+    process.env.TERM = "xterm-256color";
+    const stream = makeStream(true);
+    const reporter = new ProgressReporter("update", "self-update", stream);
+
+    reporter.emit(buildEvent("starting", 0, "Checking GitHub release v0.17.2"));
+    reporter.emit(buildEvent("activity", 100, "Awaiting confirmation to update to v0.17.2"));
+    reporter.suspend();
+    const suspendedOutput = stream.writes.join("");
+
+    expect(suspendedOutput).toContain("\u001B[?25h");
+
+    reporter.resume();
+    reporter.emit(buildEvent("activity", 250, "Installing verified release tarball"));
+    reporter.emit(buildEvent("completed", 500, "Installed v0.17.2"));
+
+    const resumedOutput = stream.writes.join("");
+    expect(resumedOutput).toContain("\u001B[?25l");
+    expect(resumedOutput).toContain("Installing verified release tarball");
+    expect(resumedOutput).toContain("Installed v0.17.2");
+  });
 });

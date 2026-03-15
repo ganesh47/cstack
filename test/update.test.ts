@@ -269,4 +269,67 @@ describe("update command", () => {
       }
     }
   });
+
+  it("suspends the dashboard while awaiting interactive confirmation and resumes afterward", async () => {
+    const stdout = makeStream(true);
+    const stderr = makeStream(true);
+    const prefixDir = path.join(tempDir, "npm-prefix");
+    const executablePath = path.join(tempDir, "installed", "bin", "cstack.js");
+    const prompts: string[] = [];
+    const executed: Array<{ file: string; args: string[] }> = [];
+
+    await fs.mkdir(path.dirname(executablePath), { recursive: true });
+    await fs.writeFile(executablePath, "", "utf8");
+    await fs.mkdir(prefixDir, { recursive: true });
+
+    const originalDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+    Object.defineProperty(process.stdin, "isTTY", {
+      configurable: true,
+      value: true
+    });
+    try {
+      const result = await runUpdate(
+        tempDir,
+        { check: false, dryRun: false, yes: false, verbose: false, channel: "stable" },
+        {
+          currentVersion: "0.17.1",
+          fetchImpl: makeFetch("0.17.2"),
+          executablePath,
+          stdout: stdout as unknown as NodeJS.WriteStream,
+          stderr: stderr as unknown as NodeJS.WriteStream,
+          confirmPrompt: async (message) => {
+            prompts.push(message);
+            return true;
+          },
+          execCommand: async (file, args) => {
+            executed.push({ file, args });
+            if (args[0] === "prefix") {
+              return { stdout: `${prefixDir}\n`, stderr: "" };
+            }
+            if (args[0] === "install") {
+              return { stdout: "installed\n", stderr: "" };
+            }
+            throw new Error(`Unexpected command: ${file} ${args.join(" ")}`);
+          }
+        }
+      );
+
+      expect(result.status).toBe("updated");
+      expect(prompts).toEqual(["Update cstack from v0.17.1 to v0.17.2?"]);
+      expect(executed.some((call) => call.args[0] === "install")).toBe(true);
+      const output = stdout.writes.join("");
+      expect(output).toContain("Inspecting installation context");
+      expect(output).toContain("Awaiting confirmation to update to v0.17.2");
+      expect(output).toContain("Installing verified release tarball");
+      expect(output).toContain("Updated cstack from v0.17.1 to v0.17.2.");
+      expect(output).toContain("\u001B[?25h");
+      expect(output).toContain("\u001B[?25l");
+    } finally {
+      if (originalDescriptor) {
+        Object.defineProperty(process.stdin, "isTTY", originalDescriptor);
+      } else {
+        delete (process.stdin as { isTTY?: boolean }).isTTY;
+      }
+    }
+  });
 });
