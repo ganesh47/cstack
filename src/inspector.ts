@@ -419,6 +419,9 @@ async function startMitigationWorkflow(cwd: string, inspection: RunInspection, t
 
   const prompt = buildMitigationPrompt(inspection, workflow, selectedActions);
   const args: string[] = ["--from-run", inspection.run.id];
+  if (workflow === "build" || workflow === "ship" || workflow === "deliver") {
+    args.push("--allow-dirty");
+  }
   if ((workflow === "deliver" || workflow === "ship") && inspection.run.inputs.deliveryMode === "release") {
     args.push("--release");
   }
@@ -1103,7 +1106,7 @@ export async function executeInspectorCommand(cwd: string, inspection: RunInspec
       ? `Fork this run with:\n\ncstack fork ${inspection.run.id}`
       : "This run has no recorded session id, so fork is unavailable." };
   }
-  if (trimmed === "help") {
+  if (trimmed === "help" || trimmed === "?") {
     return { output: helpText() };
   }
   if (trimmed === "q" || trimmed === "exit" || trimmed === "quit") {

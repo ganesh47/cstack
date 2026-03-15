@@ -1,11 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { chmodSync } from "node:fs";
+import { promisify } from "node:util";
 import { runBuild } from "../src/commands/build.js";
 import { listRuns, readRun } from "../src/run.js";
 import type { RunRecord } from "../src/types.js";
+
+const execFileAsync = promisify(execFile);
+
+async function runGit(repoDir: string, args: string[]): Promise<void> {
+  await execFileAsync("git", args, { cwd: repoDir });
+}
 
 async function seedSpecRun(repoDir: string): Promise<string> {
   const runId = "2026-03-14T10-00-00-spec-billing-retry";
@@ -148,5 +156,24 @@ describe("runBuild", () => {
     expect(session.linkedArtifactPath).toContain("artifacts/spec.md");
     expect(promptBody).toContain(upstreamRunId);
     expect(promptBody).toContain("Implement the queued billing retry cleanup");
+  });
+
+  it("ignores untracked .cstack run artifacts when enforcing a clean worktree", async () => {
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    try {
+      await runGit(repoDir, ["init", "-b", "main"]);
+      await runGit(repoDir, ["config", "user.name", "cstack test"]);
+      await runGit(repoDir, ["config", "user.email", "cstack-test@example.com"]);
+      await runGit(repoDir, ["add", "."]);
+      await runGit(repoDir, ["commit", "-m", "fixture"]);
+
+      await fs.mkdir(path.join(repoDir, ".cstack", "runs", "transient"), { recursive: true });
+      await fs.writeFile(path.join(repoDir, ".cstack", "runs", "transient", "run.json"), "{}\n", "utf8");
+
+      await expect(runBuild(repoDir, ["--exec", "Implement the queued billing retry cleanup"])).resolves.toBeTruthy();
+    } finally {
+      stdoutSpy.mockRestore();
+    }
   });
 });

@@ -1,11 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { chmodSync } from "node:fs";
+import { promisify } from "node:util";
 import { runInspect } from "../src/commands/inspect.js";
 import { executeInspectorCommand, handleInspectorCommand, loadRunInspection, runInteractiveInspector } from "../src/inspector.js";
 import type { RoutingPlan, RunEvent, RunRecord, StageLineage } from "../src/types.js";
+
+const execFileAsync = promisify(execFile);
+
+async function runGit(repoDir: string, args: string[]): Promise<void> {
+  await execFileAsync("git", args, { cwd: repoDir });
+}
 
 async function seedDiscoverRun(repoDir: string): Promise<string> {
   const runId = "2026-03-14T10-00-00-discover-research";
@@ -932,6 +940,11 @@ describe("inspect", () => {
     await fs.writeFile(path.join(repoDir, ".cstack", "prompts", "deliver.md"), "# deliver prompt asset\n", "utf8");
     await fs.writeFile(path.join(repoDir, "docs", "specs", "cstack-spec-v0.1.md"), "# repo spec\n", "utf8");
     await fs.writeFile(path.join(repoDir, "docs", "research", "gstack-codex-interaction-model.md"), "# repo research\n", "utf8");
+    await runGit(repoDir, ["init", "-b", "main"]);
+    await runGit(repoDir, ["config", "user.name", "cstack inspect"]);
+    await runGit(repoDir, ["config", "user.email", "cstack-inspect@example.com"]);
+    await runGit(repoDir, ["add", "."]);
+    await runGit(repoDir, ["commit", "-m", "fixture"]);
     runId = await seedIntentRun(repoDir);
   });
 
@@ -1049,12 +1062,15 @@ describe("inspect", () => {
 
   it("can launch a mitigation workflow directly from a review inspection", async () => {
     const reviewRunId = await seedReviewRun(repoDir);
+    await fs.mkdir(path.join(repoDir, ".cstack", "runs", "local-dirty"), { recursive: true });
+    await fs.writeFile(path.join(repoDir, ".cstack", "runs", "local-dirty", "payload.json"), "{}\n", "utf8");
     const inspection = await loadRunInspection(repoDir, reviewRunId);
     const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
     try {
       await expect(handleInspectorCommand(repoDir, inspection, "show mitigations")).resolves.toContain("default workflow: build");
       await expect(handleInspectorCommand(repoDir, inspection, "show mitigations")).resolves.toContain("Choose one source of truth for API routes");
+      await expect(handleInspectorCommand(repoDir, inspection, "?")).resolves.toContain("Inspector commands:");
 
       const response = await executeInspectorCommand(repoDir, inspection, "mitigate 1");
       expect(response.output).toContain("Started mitigation workflow: build");
@@ -1063,6 +1079,7 @@ describe("inspect", () => {
       const mitigationInspection = await loadRunInspection(repoDir, response.switchToRunId);
       expect(mitigationInspection.run.workflow).toBe("build");
       expect(mitigationInspection.run.inputs.linkedRunId).toBe(reviewRunId);
+      expect(mitigationInspection.run.inputs.allowDirty).toBe(true);
       expect(mitigationInspection.run.summary).toContain("mitigate the findings");
     } finally {
       stdoutSpy.mockRestore();

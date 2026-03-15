@@ -21,6 +21,7 @@ import type {
 
 const execFileAsync = promisify(execFile);
 const INTERNAL_RUN_ARTIFACT_PREFIX = ".cstack/runs/";
+const GIT_STATUS_PORCELAIN_ARGS = ["status", "--porcelain", "--untracked-files=all"] as const;
 
 function isInternalRunArtifactPath(filePath: string): boolean {
   const normalized = filePath.replace(/\\/g, "/").replace(/^\.?\//, "");
@@ -220,7 +221,7 @@ function buildMutationBranchName(prefix: string, runId: string, input: string): 
 
 async function listChangedFiles(cwd: string): Promise<string[]> {
   try {
-    const { stdout } = await runGit(cwd, ["status", "--porcelain"]);
+    const { stdout } = await runGit(cwd, [...GIT_STATUS_PORCELAIN_ARGS]);
     return stdout
       .split("\n")
       .filter(Boolean)

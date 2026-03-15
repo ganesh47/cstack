@@ -14,6 +14,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const cliPath = path.join(repoRoot, "bin", "cstack.js");
 const fakeCodexPath = path.join(repoRoot, "test", "fixtures", "fake-codex.mjs");
 const fakeGhPath = path.join(repoRoot, "test", "fixtures", "fake-gh.mjs");
+const distInspectorPath = path.join(repoRoot, "dist", "inspector.js");
 
 chmodSync(fakeCodexPath, 0o755);
 chmodSync(fakeGhPath, 0o755);
@@ -63,8 +64,16 @@ async function readRuns(repoDir) {
     if (!entry.isDirectory()) {
       continue;
     }
-    const body = await fs.readFile(path.join(runsDir, entry.name, "run.json"), "utf8");
-    runs.push(JSON.parse(body));
+    const runPath = path.join(runsDir, entry.name, "run.json");
+    try {
+      const body = await fs.readFile(runPath, "utf8");
+      runs.push(JSON.parse(body));
+    } catch (error) {
+      if ((error && typeof error === "object" && "code" in error && error.code === "ENOENT")) {
+        continue;
+      }
+      throw error;
+    }
   }
   runs.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   return runs;
@@ -74,6 +83,12 @@ async function latestRun(repoDir, workflow, excludeIds = new Set()) {
   const runs = await readRuns(repoDir);
   const matches = runs.filter((run) => run.workflow === workflow && !excludeIds.has(run.id));
   return matches.at(-1) ?? null;
+}
+
+async function readRun(repoDir, runId) {
+  const runPath = path.join(repoDir, ".cstack", "runs", normalizeRunId(runId), "run.json");
+  const body = await fs.readFile(runPath, "utf8");
+  return JSON.parse(body);
 }
 
 async function ensureFixtureRepo(repoDir) {
@@ -303,6 +318,20 @@ async function main() {
     const downstreamReviewRun = await latestRun(repoDir, "review", intentReviewIds);
     assert(downstreamReviewRun, "downstream review child run was not created");
     summary.runs.intentReview = intentReviewRun.id;
+
+    await fs.mkdir(path.join(repoDir, ".cstack", "runs", "local-dirty"), { recursive: true });
+    await fs.writeFile(path.join(repoDir, ".cstack", "runs", "local-dirty", "payload.json"), "{}\n", "utf8");
+    const { loadRunInspection, executeInspectorCommand } = await import(distInspectorPath);
+    const reviewInspection = await loadRunInspection(repoDir, downstreamReviewRun.id);
+    const mitigationResponse = await executeInspectorCommand(repoDir, reviewInspection, "mitigate 1");
+    assert.match(mitigationResponse.output, /Started mitigation workflow: build/);
+    assert.ok(mitigationResponse.switchToRunId, "mitigation did not create a follow-on run");
+    const mitigationRun = await readRun(repoDir, mitigationResponse.switchToRunId);
+    assert.equal(mitigationRun.workflow, "build");
+    assert.equal(mitigationRun.status, "completed");
+    assert.equal(mitigationRun.inputs.linkedRunId, downstreamReviewRun.id);
+    assert.equal(mitigationRun.inputs.allowDirty, true);
+    summary.runs.mitigation = mitigationRun.id;
 
     await fs.writeFile(path.join(repoDir, "intent-deliver-change.txt"), "intent deliver change\n", "utf8");
     const intentDeliverIds = new Set((await readRuns(repoDir)).filter((run) => run.workflow === "deliver").map((run) => run.id));

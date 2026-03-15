@@ -17,6 +17,7 @@ import type {
 
 const execFileAsync = promisify(execFile);
 const INTERNAL_RUN_ARTIFACT_PREFIX = ".cstack/runs/";
+const GIT_STATUS_PORCELAIN_ARGS = ["status", "--porcelain", "--untracked-files=all"] as const;
 
 function isInternalRunArtifactPath(filePath: string): boolean {
   const normalized = filePath.replace(/\\/g, "/").replace(/^\.?\//, "");
@@ -120,7 +121,7 @@ export async function detectDirtyWorktree(cwd: string): Promise<boolean> {
 
 export async function listDirtyWorktreeFiles(cwd: string): Promise<string[]> {
   try {
-    const { stdout } = await execFileAsync("git", ["status", "--porcelain"], { cwd });
+    const { stdout } = await execFileAsync("git", [...GIT_STATUS_PORCELAIN_ARGS], { cwd });
     return stdout
       .split("\n")
       .filter(Boolean)
