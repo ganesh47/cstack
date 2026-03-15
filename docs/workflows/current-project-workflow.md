@@ -153,6 +153,7 @@ Condensed progression:
 - `v0.11.0`: GitHub-complete deliver gating
 - `v0.12.0`: deliver GitHub mutation for branch and PR publication
 - `v0.13.0`: active spec closure with standalone review/ship and wrapper-native resume/fork/rerun
+- `v0.14.0`: intent auto-executes downstream review and deliver workflows
 
 ## Working Rule
 
