@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import readline from "node:readline/promises";
 import type {
   ArtifactEntry,
+  ChildRunInspection,
   BuildSessionRecord,
   BuildVerificationRecord,
   DeliverValidationLocalRecord,
@@ -56,6 +57,49 @@ async function readJsonFile<T>(filePath: string): Promise<T | null> {
   } catch {
     return null;
   }
+}
+
+function summarizeChildFailure(child: ChildRunInspection): string {
+  return child.run.error ?? child.run.lastActivity ?? `${child.run.workflow} ${child.run.status}`;
+}
+
+async function loadChildRuns(cwd: string, stageLineage: StageLineage | null): Promise<ChildRunInspection[]> {
+  if (!stageLineage) {
+    return [];
+  }
+
+  const childStages = stageLineage.stages.filter((stage) => stage.childRunId);
+  const loaded = await Promise.all(
+    childStages.map(async (stage) => {
+      const childRunId = stage.childRunId;
+      if (!childRunId) {
+        return null;
+      }
+      try {
+        const run = await readRun(cwd, childRunId);
+        const runDir = runDirForId(cwd, childRunId);
+        const [finalBody, recentEvents, artifacts] = await Promise.all([
+          fs.readFile(run.finalPath, "utf8").catch(() => ""),
+          readRecentEvents(run.eventsPath),
+          walkArtifacts(runDir)
+        ]);
+        return {
+          stageName: stage.name,
+          run,
+          runDir,
+          finalBody,
+          artifacts: artifacts
+            .filter((artifact) => artifact.path !== "context.md" && artifact.path !== "events.jsonl")
+            .slice(0, 8),
+          recentEvents
+        } satisfies ChildRunInspection;
+      } catch {
+        return null;
+      }
+    })
+  );
+
+  return loaded.filter((entry): entry is ChildRunInspection => Boolean(entry));
 }
 
 function badge(name: string, status: string): string {
@@ -519,6 +563,7 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     readJsonFile<GitHubMutationRecord>(githubMutationPath),
     walkArtifacts(runDir)
   ]);
+  const childRuns = await loadChildRuns(cwd, stageLineage);
 
   let finalBody = "";
   try {
@@ -544,7 +589,8 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     githubMutationRecord,
     recentEvents,
     finalBody,
-    artifacts
+    artifacts,
+    childRuns
   };
 }
 
@@ -616,6 +662,7 @@ function renderLineageSection(inspection: RunInspection): string[] {
 
 export function renderInspectionSummary(cwd: string, inspection: RunInspection): string {
   const { run, recentEvents, finalBody } = inspection;
+  const failedChildRuns = inspection.childRuns.filter((child) => child.run.status === "failed");
 
   return (
     [
@@ -640,6 +687,10 @@ export function renderInspectionSummary(cwd: string, inspection: RunInspection):
       inspection.deliverShipRecord ? `- ship readiness: ${inspection.deliverShipRecord.readiness}` : undefined,
       inspection.githubMutationRecord ? `- github mutation: ${inspection.githubMutationRecord.summary}` : undefined,
       inspection.githubDeliveryRecord ? `- github delivery: ${renderGitHubSummary(inspection.githubDeliveryRecord)}` : undefined,
+      ...failedChildRuns.flatMap((child) => [
+        `- downstream ${child.stageName} failed: ${summarizeChildFailure(child)}`,
+        `- inspect child run: cstack inspect ${child.run.id}`
+      ]),
       "",
       "Plan",
       `- stages: ${renderStageStrip(inspection)}`,
@@ -667,7 +718,16 @@ export function renderInspectionSummary(cwd: string, inspection: RunInspection):
 
 function renderArtifacts(inspection: RunInspection): string {
   const artifactLines = inspection.artifacts.map((artifact) => `- ${artifact.path} (${artifact.kind})`);
-  return ["Artifacts:", ...(artifactLines.length > 0 ? artifactLines : ["- none found"])].join("\n");
+  const childLines = inspection.childRuns.flatMap((child) => [
+    `- child ${child.stageName}: ${child.run.id} (${child.run.status})`,
+    `  final: ${path.relative(inspection.run.cwd, child.run.finalPath)}`,
+    ...child.artifacts.slice(0, 4).map((artifact) => `  artifact: ${path.relative(inspection.run.cwd, path.join(child.runDir, artifact.path))}`)
+  ]);
+  return [
+    "Artifacts:",
+    ...(artifactLines.length > 0 ? artifactLines : ["- none found"]),
+    ...(childLines.length > 0 ? ["", "Linked child runs:", ...childLines] : [])
+  ].join("\n");
 }
 
 function renderSession(inspection: RunInspection): string {
@@ -814,6 +874,13 @@ function renderStages(inspection: RunInspection): string {
       if (stage.executed) {
         details.push("executed");
       }
+      const child = stage.childRunId ? inspection.childRuns.find((entry) => entry.run.id === stage.childRunId) : undefined;
+      if (child) {
+        details.push(`child ${child.run.workflow}=${child.run.status}`);
+        if (child.run.status === "failed") {
+          details.push(summarizeChildFailure(child));
+        }
+      }
       if (stage.notes) {
         details.push(stage.notes);
       }
@@ -912,6 +979,12 @@ function renderWhatRemains(inspection: RunInspection): string {
 
   for (const stage of outstandingStages) {
     lines.push(`- stage ${stage.name}: ${stage.status}${stage.notes ? ` (${stage.notes})` : ""}`);
+    const child = stage.childRunId ? inspection.childRuns.find((entry) => entry.run.id === stage.childRunId) : undefined;
+    if (child) {
+      lines.push(`- child ${child.run.workflow} run ${child.run.id}: ${child.run.status}`);
+      lines.push(`- child summary: ${summarizeChildFailure(child)}`);
+      lines.push(`- inspect child with: cstack inspect ${child.run.id}`);
+    }
   }
   for (const specialist of skippedSpecialists) {
     lines.push(`- specialist ${specialist.name}: planned but not executed`);
@@ -1118,7 +1191,33 @@ export async function executeInspectorCommand(cwd: string, inspection: RunInspec
   if (trimmed.startsWith("show stage ")) {
     const stageName = trimmed.slice("show stage ".length).trim();
     const stage = inspection.stageLineage?.stages.find((entry) => entry.name === stageName);
-    return { output: stage ? `${JSON.stringify(stage, null, 2)}\n` : `No stage named \`${stageName}\` was recorded for this run.` };
+    if (!stage) {
+      return { output: `No stage named \`${stageName}\` was recorded for this run.` };
+    }
+    const child = stage.childRunId ? inspection.childRuns.find((entry) => entry.run.id === stage.childRunId) : undefined;
+    return {
+      output:
+        [
+          JSON.stringify(stage, null, 2),
+          child
+            ? [
+                "",
+                "Linked child run:",
+                `- run: ${child.run.id}`,
+                `- workflow: ${child.run.workflow}`,
+                `- status: ${child.run.status}`,
+                child.run.error ? `- error: ${child.run.error}` : undefined,
+                child.run.lastActivity ? `- last activity: ${child.run.lastActivity}` : undefined,
+                `- final: ${path.relative(cwd, child.run.finalPath)}`,
+                `- inspect child with: cstack inspect ${child.run.id}`
+              ]
+                .filter(Boolean)
+                .join("\n")
+            : undefined
+        ]
+          .filter(Boolean)
+          .join("\n") + "\n"
+    };
   }
   if (trimmed.startsWith("show specialist ")) {
     const specialistName = trimmed.slice("show specialist ".length).trim();
