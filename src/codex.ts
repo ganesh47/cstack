@@ -47,6 +47,14 @@ export interface CodexSubcommandResult {
   sessionId?: string;
 }
 
+interface WritableWithOptionalEvents {
+  end(chunk?: string): void;
+  on?(event: "error", listener: (error: NodeJS.ErrnoException) => void): this;
+  once?(event: "error", listener: (error: NodeJS.ErrnoException) => void): this;
+  off?(event: "error", listener: (error: NodeJS.ErrnoException) => void): this;
+  removeListener?(event: "error", listener: (error: NodeJS.ErrnoException) => void): this;
+}
+
 function summarizeCommandLine(line: string): string | null {
   const toolMatch = line.match(/^(.+?) in .+ (succeeded|failed) in \d+ms:?$/);
   if (!toolMatch?.[1] || !toolMatch[2]) {
@@ -110,6 +118,39 @@ function resolveCommand(command: string, args: string[]): { file: string; args: 
   return {
     file: command,
     args
+  };
+}
+
+export function writePromptToChildStdin(
+  stream: WritableWithOptionalEvents,
+  prompt: string,
+  onError?: (error: NodeJS.ErrnoException) => void
+): () => void {
+  const handleError = (error: NodeJS.ErrnoException) => {
+    if (error.code === "EPIPE" || error.code === "ERR_STREAM_DESTROYED") {
+      return;
+    }
+    onError?.(error);
+  };
+
+  if (stream.on) {
+    stream.on("error", handleError);
+  } else if (stream.once) {
+    stream.once("error", handleError);
+  }
+
+  try {
+    stream.end(prompt);
+  } catch (error) {
+    handleError(error as NodeJS.ErrnoException);
+  }
+
+  return () => {
+    if (stream.off) {
+      stream.off("error", handleError);
+    } else if (stream.removeListener) {
+      stream.removeListener("error", handleError);
+    }
   };
 }
 
@@ -298,8 +339,11 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
     }, 1_000);
 
     emit("starting", `Running codex exec in ${options.cwd}`);
-    child.stdin.write(options.prompt);
-    child.stdin.end();
+    const detachStdinError = writePromptToChildStdin(child.stdin, options.prompt, (error) => {
+      clearInterval(heartbeat);
+      reporter?.close();
+      void closeStreams().finally(() => reject(error));
+    });
 
     child.stdout.on("data", (chunk: Buffer) => {
       stdout.write(chunk);
@@ -328,12 +372,14 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
     });
 
     child.on("error", (error) => {
+      detachStdinError();
       clearInterval(heartbeat);
       reporter?.close();
       void closeStreams().finally(() => reject(error));
     });
 
     child.on("close", async (code, signal) => {
+      detachStdinError();
       clearInterval(heartbeat);
       flushLines("stdout", true);
       flushLines("stderr", true);
