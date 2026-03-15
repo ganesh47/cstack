@@ -344,6 +344,10 @@ export class ProgressReporter {
       return;
     }
 
+    if (event.type === "activity" || event.type === "heartbeat") {
+      return;
+    }
+
     this.render();
   }
 
@@ -390,7 +394,7 @@ export class ProgressReporter {
       }
       this.spinnerIndex = (this.spinnerIndex + 1) % SPINNER_FRAMES.length;
       this.render();
-    }, 250);
+    }, 500);
     this.ticker.unref?.();
   }
 
