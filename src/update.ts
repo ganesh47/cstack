@@ -442,6 +442,7 @@ export async function runUpdate(cwd: string, options: UpdateOptions, deps: Updat
       };
     }
 
+    emit("activity", "Inspecting installation context");
     const installContext = await detectInstallContext(cwd, deps);
     if (installContext.sourceCheckout) {
       throw new UpdateCommandError(
@@ -490,7 +491,14 @@ export async function runUpdate(cwd: string, options: UpdateOptions, deps: Updat
         };
       }
 
-      const confirmed = await confirmPrompt(`Update cstack from v${currentVersion} to v${release.version}?`);
+      emit("activity", `Awaiting confirmation to ${action} to v${release.version}`);
+      reporter.suspend();
+      let confirmed: boolean;
+      try {
+        confirmed = await confirmPrompt(`Update cstack from v${currentVersion} to v${release.version}?`);
+      } finally {
+        reporter.resume();
+      }
       if (!confirmed) {
         emit("completed", "Update cancelled");
         stdout.write("Update cancelled.\n");
