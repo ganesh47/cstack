@@ -19,6 +19,13 @@ import type {
   StageLineage
 } from "./types.js";
 import { listRunLedger, listRuns, readRun, runDirForId } from "./run.js";
+import type { WorkflowName } from "./types.js";
+
+interface InspectorCommandResponse {
+  output?: string | null;
+  switchToRunId?: string;
+  exit?: boolean;
+}
 
 async function readRecentEvents(eventsPath?: string): Promise<RunEvent[]> {
   if (!eventsPath) {
@@ -98,6 +105,10 @@ function renderSuggestedActions(inspection: RunInspection): string[] {
   }
   if (inspection.run.workflow === "review") {
     lines.push("- inspect the review verdict with `show review`");
+    if (hasMitigationActions(inspection)) {
+      lines.push("- review mitigation options with `show mitigations`");
+      lines.push("- start the default mitigation workflow with `mitigate`");
+    }
   }
   if (inspection.run.workflow === "ship") {
     lines.push("- inspect ship readiness with `show ship`");
@@ -107,6 +118,14 @@ function renderSuggestedActions(inspection: RunInspection): string[] {
     if (inspection.githubDeliveryRecord) {
       lines.push("- inspect GitHub delivery evidence with `show github`");
     }
+    if (hasMitigationActions(inspection)) {
+      lines.push("- review mitigation options with `show mitigations`");
+      lines.push("- start the default mitigation workflow with `mitigate`");
+    }
+  }
+  if (inspection.run.workflow === "deliver" && hasMitigationActions(inspection)) {
+    lines.push("- review mitigation options with `show mitigations`");
+    lines.push("- start the default mitigation workflow with `mitigate`");
   }
   for (const stage of deferredStages.slice(0, 2)) {
     lines.push(`- inspect why ${stage.name} is ${stage.status}`);
@@ -212,6 +231,209 @@ function renderGitHubSummary(record: GitHubDeliveryRecord | null): string {
     return record.overall.status;
   }
   return `${record.overall.status} (${blockingGates.join(", ")})`;
+}
+
+function uniqueLines(values: string[]): string[] {
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const value of values.map((entry) => entry.trim()).filter(Boolean)) {
+    if (seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    lines.push(value);
+  }
+  return lines;
+}
+
+function collectMitigationActions(inspection: RunInspection): string[] {
+  return uniqueLines([
+    ...(inspection.deliverReviewVerdict?.recommendedActions ?? []),
+    ...(inspection.deliverShipRecord?.nextActions ?? []),
+    ...(inspection.deliverShipRecord?.unresolved ?? []),
+    ...(inspection.githubMutationRecord?.blockers ?? []),
+    ...(inspection.githubDeliveryRecord?.overall.blockers ?? []),
+    inspection.deliverReviewVerdict?.summary ?? "",
+    inspection.deliverShipRecord?.summary ?? "",
+    inspection.run.error ?? "",
+    inspection.run.lastActivity ?? ""
+  ]);
+}
+
+function defaultMitigationWorkflow(inspection: RunInspection): WorkflowName | null {
+  switch (inspection.run.workflow) {
+    case "review":
+      return "build";
+    case "ship":
+    case "deliver":
+      return "deliver";
+    default:
+      return null;
+  }
+}
+
+function hasMitigationActions(inspection: RunInspection): boolean {
+  return defaultMitigationWorkflow(inspection) !== null && collectMitigationActions(inspection).length > 0;
+}
+
+function renderMitigations(inspection: RunInspection): string {
+  const actions = collectMitigationActions(inspection);
+  const defaultWorkflow = defaultMitigationWorkflow(inspection);
+  if (!defaultWorkflow || actions.length === 0) {
+    return "No mitigation actions are recorded for this run.";
+  }
+
+  return [
+    "Mitigation options:",
+    `- default workflow: ${defaultWorkflow}`,
+    `- source run: ${inspection.run.id}`,
+    "",
+    "Recorded actions:",
+    ...actions.map((action, index) => `- ${index + 1}: ${action}`),
+    "",
+    "Commands:",
+    "- mitigate",
+    "- mitigate <n>",
+    `- mitigate ${defaultWorkflow}`,
+    `- mitigate ${defaultWorkflow} <n>`
+  ].join("\n");
+}
+
+function buildMitigationPrompt(inspection: RunInspection, workflow: WorkflowName, actions: string[]): string {
+  const focus = actions.length > 0 ? actions.join(" ") : inspection.run.summary ?? inspection.run.inputs.userPrompt;
+  switch (workflow) {
+    case "build":
+      return `Implement changes to mitigate the findings from ${inspection.run.workflow} run ${inspection.run.id}. Focus on: ${focus}`;
+    case "deliver":
+      return `Mitigate the blockers from ${inspection.run.workflow} run ${inspection.run.id} and carry the work through delivery. Focus on: ${focus}`;
+    case "review":
+      return `Re-review the mitigations for ${inspection.run.workflow} run ${inspection.run.id}. Focus on: ${focus}`;
+    case "ship":
+      return `Retry ship readiness for ${inspection.run.workflow} run ${inspection.run.id}. Focus on: ${focus}`;
+    case "spec":
+      return `Turn the findings from ${inspection.run.workflow} run ${inspection.run.id} into an executable plan. Focus on: ${focus}`;
+    default:
+      return `Mitigate the findings from ${inspection.run.workflow} run ${inspection.run.id}. Focus on: ${focus}`;
+  }
+}
+
+function parseMitigationCommand(trimmed: string): { workflow?: WorkflowName; actionIndex?: number } | null {
+  if (!trimmed.startsWith("mitigate")) {
+    return null;
+  }
+
+  const tokens = trimmed.split(/\s+/).filter(Boolean);
+  if (tokens[0] !== "mitigate") {
+    return null;
+  }
+
+  let workflow: WorkflowName | null = null;
+  let actionIndex: number | undefined;
+
+  for (const token of tokens.slice(1)) {
+    if (/^\d+$/.test(token)) {
+      actionIndex = Number.parseInt(token, 10);
+      continue;
+    }
+    if (["spec", "build", "review", "ship", "deliver"].includes(token)) {
+      workflow = token as WorkflowName;
+      continue;
+    }
+    return null;
+  }
+
+  return {
+    ...(workflow ? { workflow } : {}),
+    ...(typeof actionIndex === "number" ? { actionIndex } : {})
+  };
+}
+
+async function runWorkflowFromInspector(cwd: string, workflow: WorkflowName, args: string[]): Promise<string> {
+  const previous = process.env.CSTACK_NO_POSTRUN_INSPECT;
+  process.env.CSTACK_NO_POSTRUN_INSPECT = "1";
+
+  try {
+    switch (workflow) {
+      case "build": {
+        const { runBuild } = await import("./commands/build.js");
+        return await runBuild(cwd, args);
+      }
+      case "deliver": {
+        const { runDeliver } = await import("./commands/deliver.js");
+        return await runDeliver(cwd, args);
+      }
+      case "review": {
+        const { runReview } = await import("./commands/review.js");
+        return await runReview(cwd, args);
+      }
+      case "ship": {
+        const { runShip } = await import("./commands/ship.js");
+        return await runShip(cwd, args);
+      }
+      case "spec": {
+        const { runSpec } = await import("./commands/spec.js");
+        return await runSpec(cwd, args);
+      }
+      default:
+        throw new Error(`Unsupported mitigation workflow: ${workflow}`);
+    }
+  } finally {
+    if (typeof previous === "string") {
+      process.env.CSTACK_NO_POSTRUN_INSPECT = previous;
+    } else {
+      delete process.env.CSTACK_NO_POSTRUN_INSPECT;
+    }
+  }
+}
+
+async function startMitigationWorkflow(cwd: string, inspection: RunInspection, trimmed: string): Promise<InspectorCommandResponse> {
+  const parsed = parseMitigationCommand(trimmed);
+  const defaultWorkflow = defaultMitigationWorkflow(inspection);
+  if (!parsed || !defaultWorkflow) {
+    return { output: "This run does not expose mitigation actions." };
+  }
+
+  const workflow = parsed.workflow ?? defaultWorkflow;
+  const actions = collectMitigationActions(inspection);
+  if (actions.length === 0) {
+    return { output: "No mitigation actions are recorded for this run." };
+  }
+
+  const selectedActions =
+    typeof parsed.actionIndex === "number"
+      ? (() => {
+          const action = actions[parsed.actionIndex - 1];
+          if (!action) {
+            throw new Error(`Mitigation action ${parsed.actionIndex} is not available. Use \`show mitigations\` to inspect choices.`);
+          }
+          return [action];
+        })()
+      : actions;
+
+  const prompt = buildMitigationPrompt(inspection, workflow, selectedActions);
+  const args: string[] = ["--from-run", inspection.run.id];
+  if ((workflow === "deliver" || workflow === "ship") && inspection.run.inputs.deliveryMode === "release") {
+    args.push("--release");
+  }
+  if ((workflow === "deliver" || workflow === "ship") && inspection.run.inputs.issueNumbers?.length) {
+    for (const issueNumber of inspection.run.inputs.issueNumbers) {
+      args.push("--issue", String(issueNumber));
+    }
+  }
+  if ((workflow === "build" || workflow === "deliver") && inspection.run.inputs.observedMode === "exec") {
+    args.push("--exec");
+  }
+  args.push(prompt);
+
+  const runId = await runWorkflowFromInspector(cwd, workflow, args);
+  return {
+    output: [
+      `Started mitigation workflow: ${workflow}`,
+      `Run: ${runId}`,
+      `Focus: ${selectedActions.join(" | ")}`
+    ].join("\n"),
+    switchToRunId: runId
+  };
 }
 
 function renderGitHubGate<T>(label: string, gate: GitHubGateEvaluation<T>): string {
@@ -681,6 +903,7 @@ function helpText(): string {
     "- show session",
     "- show verification",
     "- show review",
+    "- show mitigations",
     "- show ship",
     "- show mutation",
     "- show github",
@@ -698,6 +921,10 @@ function helpText(): string {
     "- show artifact <relative-path>",
     "- why deferred <stage>",
     "- what remains",
+    "- mitigate",
+    "- mitigate <n>",
+    "- mitigate <workflow>",
+    "- mitigate <workflow> <n>",
     "- resume",
     "- fork",
     "- help",
@@ -705,134 +932,148 @@ function helpText(): string {
   ].join("\n");
 }
 
-export async function handleInspectorCommand(cwd: string, inspection: RunInspection, input: string): Promise<string | null> {
+export async function executeInspectorCommand(cwd: string, inspection: RunInspection, input: string): Promise<InspectorCommandResponse> {
   const trimmed = input.trim();
   if (!trimmed) {
-    return null;
+    return {};
   }
 
   if (trimmed === "1" || trimmed === "summary") {
-    return renderInspectionSummary(cwd, inspection).trimEnd();
+    return { output: renderInspectionSummary(cwd, inspection).trimEnd() };
   }
   if (trimmed === "2" || trimmed === "stages") {
-    return renderStages(inspection);
+    return { output: renderStages(inspection) };
   }
   if (trimmed === "3" || trimmed === "specialists") {
-    return renderSpecialists(inspection);
+    return { output: renderSpecialists(inspection) };
   }
   if (trimmed === "4" || trimmed === "artifacts") {
-    return renderArtifacts(inspection);
+    return { output: renderArtifacts(inspection) };
   }
   if (trimmed === "f" || trimmed === "show final") {
-    return inspection.finalBody || "(missing)";
+    return { output: inspection.finalBody || "(missing)" };
   }
   if (trimmed === "r" || trimmed === "show routing") {
-    return inspection.routingPlan ? `${JSON.stringify(inspection.routingPlan, null, 2)}\n` : "No routing plan recorded for this run.";
+    return { output: inspection.routingPlan ? `${JSON.stringify(inspection.routingPlan, null, 2)}\n` : "No routing plan recorded for this run." };
   }
   if (trimmed === "show research") {
     if (!inspection.discoverResearchPlan) {
-      return "No discover research plan was recorded for this run.";
+      return { output: "No discover research plan was recorded for this run." };
     }
-    return [
+    return { output: [
       JSON.stringify(inspection.discoverResearchPlan, null, 2),
       "",
       renderDiscoverDelegates(inspection)
-    ].join("\n");
+    ].join("\n") };
   }
   if (trimmed === "show session") {
-    return renderSession(inspection);
+    return { output: renderSession(inspection) };
   }
   if (trimmed === "show verification") {
-    return renderVerification(inspection);
+    return { output: renderVerification(inspection) };
   }
   if (trimmed === "show review") {
-    return renderDeliverReview(inspection);
+    return { output: renderDeliverReview(inspection) };
+  }
+  if (trimmed === "show mitigations") {
+    return { output: renderMitigations(inspection) };
   }
   if (trimmed === "show ship") {
-    return renderDeliverShip(inspection);
+    return { output: renderDeliverShip(inspection) };
   }
   if (trimmed === "show mutation") {
-    return renderGitHubMutation(inspection);
+    return { output: renderGitHubMutation(inspection) };
   }
   if (trimmed === "show github") {
-    return renderGitHub(inspection);
+    return { output: renderGitHub(inspection) };
   }
   if (trimmed === "show branch") {
-    return renderGitHubBranch(inspection);
+    return { output: renderGitHubBranch(inspection) };
   }
   if (trimmed === "show pr") {
-    return renderGitHubPullRequest(inspection);
+    return { output: renderGitHubPullRequest(inspection) };
   }
   if (trimmed === "show issues") {
-    return renderGitHubIssues(inspection);
+    return { output: renderGitHubIssues(inspection) };
   }
   if (trimmed === "show checks") {
-    return renderGitHubChecks(inspection);
+    return { output: renderGitHubChecks(inspection) };
   }
   if (trimmed === "show actions") {
-    return renderGitHubActions(inspection);
+    return { output: renderGitHubActions(inspection) };
   }
   if (trimmed === "show security") {
-    return renderGitHubSecurity(inspection);
+    return { output: renderGitHubSecurity(inspection) };
   }
   if (trimmed === "show release") {
-    return renderGitHubRelease(inspection);
+    return { output: renderGitHubRelease(inspection) };
   }
   if (trimmed === "what remains") {
-    return renderWhatRemains(inspection);
+    return { output: renderWhatRemains(inspection) };
+  }
+  if (trimmed === "mitigate" || trimmed.startsWith("mitigate ")) {
+    return startMitigationWorkflow(cwd, inspection, trimmed);
   }
   if (trimmed === "resume") {
-    return inspection.run.sessionId
+    return { output: inspection.run.sessionId
       ? `Resume this run with:\n\ncstack resume ${inspection.run.id}`
-      : "This run has no recorded session id, so resume is unavailable.";
+      : "This run has no recorded session id, so resume is unavailable." };
   }
   if (trimmed === "fork") {
-    return inspection.run.sessionId
+    return { output: inspection.run.sessionId
       ? `Fork this run with:\n\ncstack fork ${inspection.run.id}`
-      : "This run has no recorded session id, so fork is unavailable.";
+      : "This run has no recorded session id, so fork is unavailable." };
   }
   if (trimmed === "help") {
-    return helpText();
+    return { output: helpText() };
   }
   if (trimmed === "q" || trimmed === "exit" || trimmed === "quit") {
-    return "__EXIT__";
+    return { exit: true };
   }
   if (trimmed.startsWith("why deferred ")) {
-    return renderWhyDeferred(inspection, trimmed.slice("why deferred ".length).trim());
+    return { output: renderWhyDeferred(inspection, trimmed.slice("why deferred ".length).trim()) };
   }
   if (trimmed.startsWith("show stage ")) {
     const stageName = trimmed.slice("show stage ".length).trim();
     const stage = inspection.stageLineage?.stages.find((entry) => entry.name === stageName);
-    return stage ? `${JSON.stringify(stage, null, 2)}\n` : `No stage named \`${stageName}\` was recorded for this run.`;
+    return { output: stage ? `${JSON.stringify(stage, null, 2)}\n` : `No stage named \`${stageName}\` was recorded for this run.` };
   }
   if (trimmed.startsWith("show specialist ")) {
     const specialistName = trimmed.slice("show specialist ".length).trim();
     const specialist = inspection.stageLineage?.specialists.find((entry) => entry.name === specialistName);
     if (specialist) {
-      return `${JSON.stringify(specialist, null, 2)}\n`;
+      return { output: `${JSON.stringify(specialist, null, 2)}\n` };
     }
     const planned = inspection.routingPlan?.specialists.find((entry) => entry.name === specialistName);
-    return planned ? `${JSON.stringify(planned, null, 2)}\n` : `No specialist named \`${specialistName}\` was recorded for this run.`;
+    return { output: planned ? `${JSON.stringify(planned, null, 2)}\n` : `No specialist named \`${specialistName}\` was recorded for this run.` };
   }
   if (trimmed.startsWith("show delegate ")) {
     const track = trimmed.slice("show delegate ".length).trim();
     const delegate = inspection.discoverDelegates.find((entry) => entry.track === track);
-    return delegate ? `${JSON.stringify(delegate, null, 2)}\n` : `No discover delegate named \`${track}\` was recorded for this run.`;
+    return { output: delegate ? `${JSON.stringify(delegate, null, 2)}\n` : `No discover delegate named \`${track}\` was recorded for this run.` };
   }
   if (trimmed.startsWith("show sources ")) {
     const track = trimmed.slice("show sources ".length).trim();
     const delegate = inspection.discoverDelegates.find((entry) => entry.track === track);
     if (!delegate) {
-      return `No discover delegate named \`${track}\` was recorded for this run.`;
+      return { output: `No discover delegate named \`${track}\` was recorded for this run.` };
     }
-    return `${JSON.stringify(delegate.sources, null, 2)}\n`;
+    return { output: `${JSON.stringify(delegate.sources, null, 2)}\n` };
   }
   if (trimmed.startsWith("show artifact ")) {
     const relativePath = trimmed.slice("show artifact ".length).trim();
-    return readRelativeArtifact(inspection, relativePath);
+    return { output: await readRelativeArtifact(inspection, relativePath) };
   }
 
-  return `Unknown inspector command: ${trimmed}\n\n${helpText()}`;
+  return { output: `Unknown inspector command: ${trimmed}\n\n${helpText()}` };
+}
+
+export async function handleInspectorCommand(cwd: string, inspection: RunInspection, input: string): Promise<string | null> {
+  const response = await executeInspectorCommand(cwd, inspection, input);
+  if (response.exit) {
+    return "__EXIT__";
+  }
+  return response.output ?? null;
 }
 
 export async function runInteractiveInspector(
@@ -851,8 +1092,9 @@ export async function runInteractiveInspector(
   });
 
   try {
+    let currentInspection = inspection;
     io.output.write("Entering cstack run inspector. Type `help` for commands.\n");
-    io.output.write(renderInspectionSummary(cwd, inspection));
+    io.output.write(renderInspectionSummary(cwd, currentInspection));
     while (true) {
       let answer: string;
       try {
@@ -871,15 +1113,22 @@ export async function runInteractiveInspector(
       }
 
       for (const command of commands) {
-        const response = await handleInspectorCommand(cwd, inspection, command);
-        if (!response) {
+        const response = await executeInspectorCommand(cwd, currentInspection, command);
+        if (!response.output && !response.exit && !response.switchToRunId) {
           continue;
         }
-        if (response === "__EXIT__") {
+        if (response.exit) {
           io.output.write("Leaving inspector.\n");
           return;
         }
-        io.output.write(`${response}\n`);
+        if (response.output) {
+          io.output.write(`${response.output}\n`);
+        }
+        if (response.switchToRunId) {
+          currentInspection = await loadRunInspection(cwd, response.switchToRunId);
+          io.output.write(`Switched inspector context to ${response.switchToRunId}.\n`);
+          io.output.write(renderInspectionSummary(cwd, currentInspection));
+        }
       }
     }
   } finally {

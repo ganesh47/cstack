@@ -108,11 +108,16 @@ Key inspector commands:
 - `show session`
 - `show verification`
 - `show review`
+- `show mitigations`
 - `show ship`
 - `show mutation`
 - `show github`
 - `show branch`
 - `show pr`
+- `mitigate`
+- `mitigate <n>`
+- `mitigate <workflow>`
+- `mitigate <workflow> <n>`
 - `show issues`
 - `show checks`
 - `show actions`

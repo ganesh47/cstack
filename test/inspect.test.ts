@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
+import { chmodSync } from "node:fs";
 import { runInspect } from "../src/commands/inspect.js";
-import { handleInspectorCommand, loadRunInspection, runInteractiveInspector } from "../src/inspector.js";
+import { executeInspectorCommand, handleInspectorCommand, loadRunInspection, runInteractiveInspector } from "../src/inspector.js";
 import type { RoutingPlan, RunEvent, RunRecord, StageLineage } from "../src/types.js";
 
 async function seedDiscoverRun(repoDir: string): Promise<string> {
@@ -335,6 +336,104 @@ async function seedBuildRun(repoDir: string): Promise<string> {
       null,
       2
     )}\n`,
+    "utf8"
+  );
+
+  return runId;
+}
+
+async function seedReviewRun(repoDir: string): Promise<string> {
+  const runId = "2026-03-15T05-36-07-789Z-review-what-are-the-gaps-in-the-current-project";
+  const runDir = path.join(repoDir, ".cstack", "runs", runId);
+  await fs.mkdir(path.join(runDir, "artifacts"), { recursive: true });
+
+  const run: RunRecord = {
+    id: runId,
+    workflow: "review",
+    createdAt: "2026-03-15T05:36:07.000Z",
+    updatedAt: "2026-03-15T05:36:38.070Z",
+    status: "failed",
+    cwd: repoDir,
+    gitBranch: "main",
+    codexVersion: "fake",
+    codexCommand: ["codex", "exec"],
+    promptPath: path.join(runDir, "prompt.md"),
+    finalPath: path.join(runDir, "final.md"),
+    contextPath: path.join(runDir, "context.md"),
+    eventsPath: path.join(runDir, "events.jsonl"),
+    stdoutPath: path.join(runDir, "stdout.log"),
+    stderrPath: path.join(runDir, "stderr.log"),
+    configSources: [],
+    lastActivity: "Delivery is not ready. The repo has unresolved contract, runtime, and configuration gaps, and there is no verification evidence for this review run.",
+    summary: "What are the gaps in the current project",
+    error: "Delivery is not ready. The repo has unresolved contract, runtime, and configuration gaps, and there is no verification evidence for this review run.",
+    inputs: {
+      userPrompt: "What are the gaps in the current project",
+      linkedRunId: "2026-03-15T05-28-16-672Z-intent-what-are-the-gaps-in-the-current-project"
+    }
+  };
+
+  await fs.writeFile(path.join(runDir, "run.json"), `${JSON.stringify(run, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(runDir, "final.md"), "# Review Run Summary\n\nChanges requested.\n", "utf8");
+  await fs.writeFile(
+    path.join(runDir, "stage-lineage.json"),
+    `${JSON.stringify(
+      {
+        intent: "What are the gaps in the current project",
+        stages: [{ name: "review", rationale: "Critique current readiness.", status: "completed", executed: true }],
+        specialists: []
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(runDir, "artifacts", "verdict.json"),
+    `${JSON.stringify(
+      {
+        status: "changes-requested",
+        summary:
+          "Delivery is not ready. The repo has unresolved contract, runtime, and configuration gaps, and there is no verification evidence for this review run.",
+        findings: [],
+        recommendedActions: [
+          "Choose one source of truth for API routes, status codes, and ingest/heartbeat semantics, then align API code, Java clients, integration tests, and docs to it.",
+          "Run the intended API, CLI, and connector verification commands and attach the results to the next review."
+        ],
+        acceptedSpecialists: [],
+        reportMarkdown: "# Review Findings\n\nChanges requested.\n"
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  await fs.writeFile(path.join(runDir, "artifacts", "findings.md"), "# Review Findings\n\nChanges requested.\n", "utf8");
+  await fs.writeFile(
+    path.join(runDir, "artifacts", "findings.json"),
+    `${JSON.stringify(
+      {
+        findings: [],
+        recommendedActions: [
+          "Choose one source of truth for API routes, status codes, and ingest/heartbeat semantics, then align API code, Java clients, integration tests, and docs to it.",
+          "Run the intended API, CLI, and connector verification commands and attach the results to the next review."
+        ],
+        acceptedSpecialists: []
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(runDir, "events.jsonl"),
+    `${JSON.stringify({
+      timestamp: "2026-03-15T05:36:38.070Z",
+      elapsedMs: 30_000,
+      type: "completed",
+      message: "Exit code 0"
+    })}\n`,
     "utf8"
   );
 
@@ -687,6 +786,25 @@ describe("inspect", () => {
   beforeEach(async () => {
     repoDir = await fs.mkdtemp(path.join(os.tmpdir(), "cstack-inspect-"));
     await fs.mkdir(path.join(repoDir, ".cstack", "runs"), { recursive: true });
+    await fs.mkdir(path.join(repoDir, ".cstack", "prompts"), { recursive: true });
+    await fs.mkdir(path.join(repoDir, "docs", "specs"), { recursive: true });
+    await fs.mkdir(path.join(repoDir, "docs", "research"), { recursive: true });
+    const fakeCodexPath = path.resolve("test/fixtures/fake-codex.mjs");
+    chmodSync(fakeCodexPath, 0o755);
+    await fs.writeFile(
+      path.join(repoDir, ".cstack", "config.toml"),
+      [
+        "[codex]",
+        `command = "${fakeCodexPath.replaceAll("\\", "\\\\")}"`,
+        'sandbox = "workspace-write"',
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    await fs.writeFile(path.join(repoDir, ".cstack", "prompts", "build.md"), "# build prompt asset\n", "utf8");
+    await fs.writeFile(path.join(repoDir, ".cstack", "prompts", "deliver.md"), "# deliver prompt asset\n", "utf8");
+    await fs.writeFile(path.join(repoDir, "docs", "specs", "cstack-spec-v0.1.md"), "# repo spec\n", "utf8");
+    await fs.writeFile(path.join(repoDir, "docs", "research", "gstack-codex-interaction-model.md"), "# repo research\n", "utf8");
     runId = await seedIntentRun(repoDir);
   });
 
@@ -793,5 +911,27 @@ describe("inspect", () => {
     await expect(handleInspectorCommand(repoDir, inspection, "what remains")).resolves.toContain("no deferred or missing work recorded");
     await expect(handleInspectorCommand(repoDir, inspection, "show artifact stages/ship/artifacts/release.json")).resolves.toContain("\"tagName\": \"v1.2.3\"");
     await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("github delivery: ready");
+  });
+
+  it("can launch a mitigation workflow directly from a review inspection", async () => {
+    const reviewRunId = await seedReviewRun(repoDir);
+    const inspection = await loadRunInspection(repoDir, reviewRunId);
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    try {
+      await expect(handleInspectorCommand(repoDir, inspection, "show mitigations")).resolves.toContain("default workflow: build");
+      await expect(handleInspectorCommand(repoDir, inspection, "show mitigations")).resolves.toContain("Choose one source of truth for API routes");
+
+      const response = await executeInspectorCommand(repoDir, inspection, "mitigate 1");
+      expect(response.output).toContain("Started mitigation workflow: build");
+      expect(response.switchToRunId).toBeTruthy();
+
+      const mitigationInspection = await loadRunInspection(repoDir, response.switchToRunId);
+      expect(mitigationInspection.run.workflow).toBe("build");
+      expect(mitigationInspection.run.inputs.linkedRunId).toBe(reviewRunId);
+      expect(mitigationInspection.run.summary).toContain("mitigate the findings");
+    } finally {
+      stdoutSpy.mockRestore();
+    }
   });
 });

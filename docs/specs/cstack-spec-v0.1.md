@@ -364,6 +364,8 @@ Current inspector views include:
 - delegate and artifact drilldowns
 - `what remains`
 
+For failed or blocked `review`, `ship`, and `deliver` runs, the interactive inspector may also surface explicit mitigation commands. Those commands must derive their prompts from recorded artifacts, link the new run back to the inspected run, and switch the inspector to the newly started workflow once it exists.
+
 ## Artifacts and Storage
 
 Run directories live under:

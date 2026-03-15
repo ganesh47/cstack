@@ -228,11 +228,16 @@ Useful inspector commands:
 - `show session`
 - `show verification`
 - `show review`
+- `show mitigations`
 - `show ship`
 - `show mutation`
 - `show github`
 - `show delegate <track>`
 - `show sources <track>`
+- `mitigate`
+- `mitigate <n>`
+- `mitigate <workflow>`
+- `mitigate <workflow> <n>`
 - `show stage <name>`
 - `show specialist <name>`
 - `show artifact <relative-path>`
