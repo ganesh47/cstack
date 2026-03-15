@@ -11,6 +11,7 @@ import {
   buildDeliverSpecialistPrompt
 } from "./prompt.js";
 import { inferRoutingPlan } from "./intent.js";
+import { runDeliverValidationExecution, type DeliverValidationExecutionResult } from "./validation.js";
 import type {
   CstackConfig,
   DeliverTargetMode,
@@ -54,6 +55,7 @@ export interface DeliverExecutionOptions {
 
 export interface DeliverExecutionResult {
   buildExecution: BuildExecutionResult;
+  validationExecution: DeliverValidationExecutionResult;
   reviewVerdict: DeliverReviewVerdict;
   shipRecord: DeliverShipRecord;
   githubDeliveryRecord: GitHubDeliveryRecord;
@@ -72,8 +74,14 @@ function buildDeliverStages(): RoutingStagePlan[] {
       executed: false
     },
     {
+      name: "validation",
+      rationale: "Profile the repo, design the validation pyramid, and execute selected validation commands.",
+      status: "planned",
+      executed: false
+    },
+    {
       name: "review",
-      rationale: "Challenge correctness, security, and release risk using bounded specialist reviews.",
+      rationale: "Challenge correctness, security, and release risk using bounded specialist reviews plus validation evidence.",
       status: "planned",
       executed: false
     },
@@ -97,7 +105,7 @@ async function writeJson(filePath: string, value: unknown): Promise<void> {
 function createDeliverEventRecorder(runId: string, eventsPath: string) {
   const reporter = new ProgressReporter("deliver", runId);
   const startedAt = Date.now();
-  reporter.setStages(["build", "review", "ship"]);
+  reporter.setStages(["build", "validation", "review", "ship"]);
 
   return {
     async emit(type: RunEvent["type"], message: string): Promise<void> {
@@ -105,7 +113,7 @@ function createDeliverEventRecorder(runId: string, eventsPath: string) {
       await fs.appendFile(eventsPath, `${JSON.stringify(event)}\n`, "utf8");
       reporter.emit(event);
     },
-    markStage(name: "build" | "review" | "ship", status: "pending" | "running" | "completed" | "failed" | "deferred" | "skipped") {
+    markStage(name: "build" | "validation" | "review" | "ship", status: "pending" | "running" | "completed" | "failed" | "deferred" | "skipped") {
       reporter.markStage(name, status);
     },
     setSpecialists(names: string[]) {
@@ -120,7 +128,7 @@ function createDeliverEventRecorder(runId: string, eventsPath: string) {
   };
 }
 
-function deliverStageDir(runDir: string, stage: "build" | "review" | "ship"): string {
+function deliverStageDir(runDir: string, stage: "build" | "validation" | "review" | "ship"): string {
   return path.join(runDir, "stages", stage);
 }
 
@@ -227,6 +235,7 @@ function buildDeliverFinalSummary(options: {
   input: string;
   linkedContext?: LinkedBuildContext;
   stageLineage: StageLineage;
+  validationExecution: DeliverValidationExecutionResult;
   reviewVerdict: DeliverReviewVerdict;
   shipRecord: DeliverShipRecord;
   githubDeliveryRecord: GitHubDeliveryRecord;
@@ -243,6 +252,12 @@ function buildDeliverFinalSummary(options: {
     "",
     "## Stage status",
     ...options.stageLineage.stages.map((stage) => `- ${stage.name}: ${stage.status}${stage.notes ? ` (${stage.notes})` : ""}`),
+    "",
+    "## Validation",
+    `- status: ${options.validationExecution.validationPlan.status}`,
+    `- summary: ${options.validationExecution.validationPlan.summary}`,
+    `- local validation: ${options.validationExecution.localValidationRecord.status}`,
+    ...options.validationExecution.coverageSummary.gaps.map((gap) => `- gap: ${gap}`),
     "",
     "## Review verdict",
     `- status: ${options.reviewVerdict.status}`,
@@ -305,7 +320,7 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
 
   const events = createDeliverEventRecorder(options.runId, options.paths.eventsPath);
   events.setSpecialists(selectedSpecialists.map((specialist) => specialist.name));
-  await events.emit("starting", "Running deliver workflow across build -> review -> ship");
+  await events.emit("starting", "Running deliver workflow across build -> validation -> review -> ship");
 
   const buildStageDir = deliverStageDir(options.paths.runDir, "build");
   await fs.mkdir(path.join(buildStageDir, "artifacts"), { recursive: true });
@@ -348,7 +363,60 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
   }
   await writeJson(options.paths.stageLineagePath, stageLineage);
   events.markStage("build", buildExecution.result.code === 0 ? "completed" : "failed");
-  await events.emit("activity", "Build stage finished, starting review synthesis");
+  await events.emit("activity", "Build stage finished, starting validation synthesis");
+
+  const validationStageDir = deliverStageDir(options.paths.runDir, "validation");
+  await fs.mkdir(path.join(validationStageDir, "artifacts"), { recursive: true });
+  const validationStage = stageLineage.stages.find((stage) => stage.name === "validation")!;
+  validationStage.status = "running";
+  await writeJson(options.paths.stageLineagePath, stageLineage);
+  events.markStage("validation", "running");
+
+  const validationExecution = await runDeliverValidationExecution({
+    cwd: options.cwd,
+    runId: options.runId,
+    input: options.input,
+    config: options.config,
+    paths: {
+      stageDir: validationStageDir,
+      promptPath: path.join(validationStageDir, "prompt.md"),
+      contextPath: path.join(validationStageDir, "context.md"),
+      finalPath: path.join(validationStageDir, "final.md"),
+      eventsPath: path.join(validationStageDir, "events.jsonl"),
+      stdoutPath: path.join(validationStageDir, "stdout.log"),
+      stderrPath: path.join(validationStageDir, "stderr.log"),
+      repoProfilePath: path.join(validationStageDir, "repo-profile.json"),
+      validationPlanPath: path.join(validationStageDir, "validation-plan.json"),
+      toolResearchPath: path.join(validationStageDir, "tool-research.json"),
+      testPyramidPath: path.join(validationStageDir, "artifacts", "test-pyramid.md"),
+      coverageSummaryPath: path.join(validationStageDir, "artifacts", "coverage-summary.json"),
+      coverageGapsPath: path.join(validationStageDir, "artifacts", "coverage-gaps.md"),
+      localValidationPath: path.join(validationStageDir, "artifacts", "local-validation.json"),
+      ciValidationPath: path.join(validationStageDir, "artifacts", "ci-validation.json"),
+      githubActionsPlanPath: path.join(validationStageDir, "artifacts", "github-actions-plan.md"),
+      testInventoryPath: path.join(validationStageDir, "artifacts", "test-inventory.json")
+    },
+    buildSummary: buildExecution.finalBody,
+    buildVerificationRecord: buildExecution.verificationRecord
+  });
+
+  stageLineage.specialists.push(...validationExecution.specialistExecutions);
+  validationStage.status =
+    validationExecution.validationPlan.status === "ready"
+      ? "completed"
+      : validationExecution.validationPlan.status === "partial"
+        ? "deferred"
+        : "failed";
+  validationStage.executed = true;
+  validationStage.stageDir = validationStageDir;
+  validationStage.artifactPath = path.join(validationStageDir, "artifacts", "test-pyramid.md");
+  validationStage.notes = validationExecution.validationPlan.summary;
+  await writeJson(options.paths.stageLineagePath, stageLineage);
+  events.markStage(
+    "validation",
+    validationStage.status === "completed" ? "completed" : validationStage.status === "deferred" ? "deferred" : "failed"
+  );
+  await events.emit("activity", "Validation stage finished, starting review synthesis");
 
   const reviewStageDir = deliverStageDir(options.paths.runDir, "review");
   await fs.mkdir(path.join(reviewStageDir, "artifacts"), { recursive: true });
@@ -384,6 +452,8 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
     input: options.input,
     buildSummary: buildExecution.finalBody,
     verificationRecord: buildExecution.verificationRecord,
+    validationPlan: validationExecution.validationPlan,
+    validationLocalRecord: validationExecution.localValidationRecord,
     specialistResults
   });
   await fs.writeFile(path.join(reviewStageDir, "prompt.md"), reviewLeadPrompt.prompt, "utf8");
@@ -470,6 +540,8 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
     cwd: options.cwd,
     input: options.input,
     buildSummary: buildExecution.finalBody,
+    validationPlan: validationExecution.validationPlan,
+    validationLocalRecord: validationExecution.localValidationRecord,
     reviewVerdict,
     verificationRecord: buildExecution.verificationRecord,
     githubMutationRecord: githubMutation.record,
@@ -552,6 +624,7 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
   const finalBody = buildDeliverFinalSummary({
     input: options.input,
     stageLineage,
+    validationExecution,
     reviewVerdict,
     shipRecord,
     githubMutationRecord: githubMutation.record,
@@ -563,6 +636,7 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
 
   return {
     buildExecution,
+    validationExecution,
     reviewVerdict,
     shipRecord,
     githubDeliveryRecord,

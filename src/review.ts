@@ -7,6 +7,8 @@ import { inferRoutingPlan } from "./intent.js";
 import type {
   BuildVerificationRecord,
   CstackConfig,
+  DeliverValidationLocalRecord,
+  DeliverValidationPlan,
   DeliverReviewVerdict,
   SpecialistExecution,
   SpecialistSelection,
@@ -21,6 +23,8 @@ export interface LinkedReviewContext {
   artifactBody: string;
   buildSummary: string;
   verificationRecord: BuildVerificationRecord;
+  validationPlan?: DeliverValidationPlan;
+  validationLocalRecord?: DeliverValidationLocalRecord;
 }
 
 export interface ReviewPaths {
@@ -218,14 +222,20 @@ export async function resolveLinkedReviewContext(cwd: string, runId: string): Pr
   if (linked.run.workflow === "deliver") {
     const buildSummaryPath = path.join(runDir, "stages", "build", "artifacts", "change-summary.md");
     const verificationPath = path.join(runDir, "stages", "build", "artifacts", "verification.json");
+    const validationPlanPath = path.join(runDir, "stages", "validation", "validation-plan.json");
+    const validationLocalPath = path.join(runDir, "stages", "validation", "artifacts", "local-validation.json");
     const buildSummary = (await fs.readFile(buildSummaryPath, "utf8").catch(() => linked.artifactBody)) || linked.artifactBody;
+    const validationPlan = await readJsonFile<DeliverValidationPlan>(validationPlanPath);
+    const validationLocalRecord = await readJsonFile<DeliverValidationLocalRecord>(validationLocalPath);
     return {
       runId: linked.run.id,
       workflow: linked.run.workflow,
       artifactPath: buildSummaryPath,
       artifactBody: buildSummary,
       buildSummary,
-      verificationRecord: (await readJsonFile<BuildVerificationRecord>(verificationPath)) ?? notRunVerificationRecord()
+      verificationRecord: (await readJsonFile<BuildVerificationRecord>(verificationPath)) ?? notRunVerificationRecord(),
+      ...(validationPlan ? { validationPlan } : {}),
+      ...(validationLocalRecord ? { validationLocalRecord } : {})
     };
   }
 
@@ -284,6 +294,8 @@ export async function runReviewExecution(options: ReviewExecutionOptions): Promi
     input: options.input,
     buildSummary,
     verificationRecord,
+    ...(linkedContext?.validationPlan ? { validationPlan: linkedContext.validationPlan } : {}),
+    ...(linkedContext?.validationLocalRecord ? { validationLocalRecord: linkedContext.validationLocalRecord } : {}),
     specialistResults
   });
   await fs.writeFile(options.paths.promptPath, reviewPrompt.prompt, "utf8");

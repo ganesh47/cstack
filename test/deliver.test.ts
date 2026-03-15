@@ -183,6 +183,13 @@ describe("runDeliver", () => {
       const reviewVerdict = JSON.parse(await fs.readFile(path.join(runDir, "stages", "review", "artifacts", "verdict.json"), "utf8")) as {
         status: string;
       };
+      const validationPlan = JSON.parse(await fs.readFile(path.join(runDir, "stages", "validation", "validation-plan.json"), "utf8")) as {
+        status: string;
+        ciValidation: { jobs: Array<{ name: string }> };
+      };
+      const localValidation = JSON.parse(
+        await fs.readFile(path.join(runDir, "stages", "validation", "artifacts", "local-validation.json"), "utf8")
+      ) as { status: string };
       const shipRecord = JSON.parse(await fs.readFile(path.join(runDir, "stages", "ship", "artifacts", "ship-record.json"), "utf8")) as {
         readiness: string;
       };
@@ -220,8 +227,11 @@ describe("runDeliver", () => {
       expect(run.inputs.requestedMode).toBe("interactive");
       expect(run.inputs.observedMode).toBe("exec");
       expect(run.inputs.selectedSpecialists?.length).toBeGreaterThan(0);
-      expect(lineage.stages.map((stage) => stage.name)).toEqual(["build", "review", "ship"]);
+      expect(lineage.stages.map((stage) => stage.name)).toEqual(["build", "validation", "review", "ship"]);
       expect(lineage.stages.every((stage) => stage.executed)).toBe(true);
+      expect(validationPlan.status).toBe("ready");
+      expect(localValidation.status).toBe("passed");
+      expect(validationPlan.ciValidation.jobs.map((job) => job.name)).toContain("validation");
       expect(reviewVerdict.status).toBe("ready");
       expect(shipRecord.readiness).toBe("ready");
       expect(session.mode).toBe("exec");
@@ -250,6 +260,7 @@ describe("runDeliver", () => {
       expect(finalBody).toContain("# Deliver Run Summary");
       expect(deliveryReport).toContain("# Deliver Run Summary");
       expect(consoleOutput).toContain("Workflow: deliver");
+      expect(consoleOutput).toContain("Validation: ready");
       expect(consoleOutput).toContain("GitHub mutation:");
       expect(consoleOutput).toContain("Review verdict: ready");
     } finally {

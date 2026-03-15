@@ -111,6 +111,111 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
       ? "Linked context included."
       : "Linked context missing."
   ].join("\n");
+} else if (prompt.includes("You are the `Validation Lead` for a bounded `cstack deliver` workflow.")) {
+  body = JSON.stringify(
+    {
+      status: "ready",
+      summary: "Validation plan completed with bounded local and CI validation.",
+      profileSummary: "Detected a JavaScript/TypeScript repository with GitHub Actions and packaging validation needs.",
+      layers: [
+        {
+          name: "static",
+          selected: true,
+          status: "ready",
+          rationale: "Static checks catch syntax, types, and workflow errors early.",
+          selectedTools: ["actionlint", "zizmor"],
+          localCommands: ["node -e \"process.stdout.write('deliver verify ok')\""],
+          ciCommands: ["node -e \"process.stdout.write('deliver verify ok')\""],
+          coverageIntent: ["type and workflow correctness"],
+          notes: []
+        },
+        {
+          name: "unit-component",
+          selected: true,
+          status: "ready",
+          rationale: "Unit checks protect the common regression surface.",
+          selectedTools: ["vitest"],
+          localCommands: ["node -e \"process.stdout.write('deliver verify ok')\""],
+          ciCommands: ["node -e \"process.stdout.write('deliver verify ok')\""],
+          coverageIntent: ["behavioral regressions"],
+          notes: []
+        },
+        {
+          name: "integration-contract",
+          selected: false,
+          status: "skipped",
+          rationale: "No service contract was inferred in the fake fixture.",
+          selectedTools: [],
+          localCommands: [],
+          ciCommands: [],
+          coverageIntent: [],
+          notes: []
+        },
+        {
+          name: "e2e-system",
+          selected: false,
+          status: "skipped",
+          rationale: "No browser or mobile runtime was inferred in the fake fixture.",
+          selectedTools: [],
+          localCommands: [],
+          ciCommands: [],
+          coverageIntent: [],
+          notes: []
+        },
+        {
+          name: "packaging-smoke",
+          selected: true,
+          status: "ready",
+          rationale: "Build and packaging smoke should stay in the delivery path.",
+          selectedTools: ["github_actions"],
+          localCommands: ["node -e \"process.stdout.write('deliver verify ok')\""],
+          ciCommands: ["node -e \"process.stdout.write('deliver verify ok')\""],
+          coverageIntent: ["packaging confidence"],
+          notes: []
+        }
+      ],
+      selectedSpecialists: [],
+      localValidation: {
+        commands: ["node -e \"process.stdout.write('deliver verify ok')\""],
+        prerequisites: ["linux-default"],
+        notes: []
+      },
+      ciValidation: {
+        workflowFiles: [".github/workflows/release.yml"],
+        jobs: [
+          {
+            name: "validation",
+            runner: "ubuntu-latest",
+            purpose: "Run selected validation commands.",
+            commands: ["node -e \"process.stdout.write('deliver verify ok')\""],
+            artifacts: ["test-reports"]
+          }
+        ],
+        notes: []
+      },
+      coverage: {
+        confidence: "medium",
+        summary: "Coverage is layered and centered on the highest-signal checks for this fake fixture.",
+        signals: ["build verification carried forward", "validation pyramid created"],
+        gaps: []
+      },
+      recommendedChanges: ["Keep local and CI validation commands aligned."],
+      unsupported: [],
+      pyramidMarkdown: "# Test Pyramid\n\n- static\n- unit-component\n- packaging-smoke\n",
+      reportMarkdown: "# Validation Summary\n\nValidation completed.\n",
+      githubActionsPlanMarkdown: "# GitHub Actions Validation Plan\n\nUse one `validation` job on `ubuntu-latest`.\n"
+    },
+    null,
+    2
+  );
+} else if (prompt.includes("specialist for the `validation` stage inside `cstack deliver`")) {
+  body = [
+    "# Validation Specialist Findings",
+    "",
+    "Validation specialist review completed.",
+    "",
+    "No blocking gaps detected in the fake fixture."
+  ].join("\n");
 } else if (prompt.includes("You are the `Review Lead` for a bounded `cstack deliver` workflow.")) {
   body = JSON.stringify(
     {
