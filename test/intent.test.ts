@@ -133,6 +133,36 @@ describe("intent router", () => {
     }
   });
 
+  it("tracks downstream review progress in the parent intent run", async () => {
+    await runIntent(repoDir, "What are the gaps in the current project?", {
+      entrypoint: "bare",
+      dryRun: false
+    });
+
+    const runs = await listRuns(repoDir);
+    expect(runs.map((run) => run.workflow).sort()).toEqual(["intent", "review"]);
+
+    const intentRun = await readRun(
+      repoDir,
+      runs.find((entry) => entry.workflow === "intent")!.id
+    );
+    const reviewRun = await readRun(
+      repoDir,
+      runs.find((entry) => entry.workflow === "review")!.id
+    );
+    const intentRunDir = path.dirname(intentRun.finalPath);
+    const lineage = JSON.parse(await fs.readFile(path.join(intentRunDir, "stage-lineage.json"), "utf8")) as StageLineage;
+    const eventsBody = await fs.readFile(path.join(intentRunDir, "events.jsonl"), "utf8");
+
+    expect(intentRun.status).toBe("completed");
+    expect(intentRun.sessionId).toBe(reviewRun.sessionId);
+    expect(lineage.stages.find((stage) => stage.name === "review")?.status).toBe("completed");
+    expect(lineage.stages.find((stage) => stage.name === "review")?.childRunId).toBe(reviewRun.id);
+    expect(eventsBody).toContain("Running downstream review workflow from intent");
+    expect(eventsBody).toContain(`Downstream review run ${reviewRun.id} started`);
+    expect(eventsBody).toContain("Downstream review stage: review");
+  });
+
   it("supports dry-run routing without executing stages", async () => {
     await runIntent(repoDir, "Plan a compliance-safe billing migration", {
       entrypoint: "run",

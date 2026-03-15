@@ -9,6 +9,10 @@ export interface ReviewCliOptions {
   fromRunId?: string;
 }
 
+export interface ReviewRunHooks {
+  onRunCreated?: (run: RunRecord) => Promise<void> | void;
+}
+
 async function readPromptFromStdin(): Promise<string> {
   if (process.stdin.isTTY) {
     return "";
@@ -52,7 +56,7 @@ function defaultReviewPrompt(fromRunId?: string): string {
   return fromRunId ? `Review the linked upstream run ${fromRunId} and decide whether it is ready.` : "";
 }
 
-export async function runReview(cwd: string, args: string[] = []): Promise<string> {
+export async function runReview(cwd: string, args: string[] = [], hooks: ReviewRunHooks = {}): Promise<string> {
   const parsed = parseReviewArgs(args);
   const stdinPrompt = parsed.prompt || parsed.options.fromRunId ? "" : await readPromptFromStdin();
   const resolvedPrompt = (parsed.prompt || stdinPrompt || defaultReviewPrompt(parsed.options.fromRunId)).trim();
@@ -106,6 +110,7 @@ export async function runReview(cwd: string, args: string[] = []): Promise<strin
     }
   };
   await writeRunRecord(runDir, runRecord);
+  await hooks.onRunCreated?.(runRecord);
 
   try {
     const execution = await runReviewExecution({

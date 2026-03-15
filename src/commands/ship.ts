@@ -13,6 +13,10 @@ export interface ShipCliOptions {
   allowDirty?: boolean;
 }
 
+export interface ShipRunHooks {
+  onRunCreated?: (run: RunRecord) => Promise<void> | void;
+}
+
 async function readPromptFromStdin(): Promise<string> {
   if (process.stdin.isTTY) {
     return "";
@@ -73,7 +77,7 @@ function defaultShipPrompt(fromRunId?: string): string {
   return fromRunId ? `Ship the linked upstream run ${fromRunId} and evaluate GitHub readiness.` : "";
 }
 
-export async function runShip(cwd: string, args: string[] = []): Promise<string> {
+export async function runShip(cwd: string, args: string[] = [], hooks: ShipRunHooks = {}): Promise<string> {
   const parsed = parseShipArgs(args);
   const stdinPrompt = parsed.prompt || parsed.options.fromRunId ? "" : await readPromptFromStdin();
   const resolvedPrompt = (parsed.prompt || stdinPrompt || defaultShipPrompt(parsed.options.fromRunId)).trim();
@@ -139,6 +143,7 @@ export async function runShip(cwd: string, args: string[] = []): Promise<string>
     }
   };
   await writeRunRecord(runDir, runRecord);
+  await hooks.onRunCreated?.(runRecord);
 
   try {
     const execution = await runShipExecution({
