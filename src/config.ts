@@ -62,6 +62,23 @@ const DEFAULT_CONFIG: CstackConfig = {
         enabled: true,
         maxAgents: 4
       },
+      validation: {
+        enabled: true,
+        mode: "smart",
+        requireCiParity: true,
+        maxAgents: 5,
+        allowWorkflowMutation: true,
+        allowTestScaffolding: true,
+        coverage: {
+          requireSummary: true,
+          minimumSignal: "strong"
+        },
+        mobile: {
+          allowMacosRunners: true,
+          allowAndroidEmulator: true,
+          allowIosSimulator: true
+        }
+      },
       github: {
         enabled: false,
         mode: "merge-ready",

@@ -5,6 +5,8 @@ import type {
   ArtifactEntry,
   BuildSessionRecord,
   BuildVerificationRecord,
+  DeliverValidationLocalRecord,
+  DeliverValidationPlan,
   DeliverReviewVerdict,
   DeliverShipRecord,
   DiscoverDelegateResult,
@@ -16,7 +18,9 @@ import type {
   RunEvent,
   RunInspection,
   RunLedgerEntry,
-  StageLineage
+  StageLineage,
+  ValidationRepoProfile,
+  ValidationToolResearch
 } from "./types.js";
 import { listRunLedger, listRuns, readRun, runDirForId } from "./run.js";
 
@@ -81,6 +85,9 @@ function renderSuggestedActions(inspection: RunInspection): string[] {
     );
     lines.push("- inspect verification with `show verification`");
     if (inspection.run.workflow === "deliver") {
+      lines.push("- inspect validation planning with `show validation`");
+      lines.push("- inspect the test pyramid with `show pyramid`");
+      lines.push("- inspect CI validation with `show ci-validation`");
       lines.push("- inspect the review verdict with `show review`");
       lines.push("- inspect ship readiness with `show ship`");
       if (inspection.githubMutationRecord) {
@@ -242,6 +249,10 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
   const verificationPath = path.join(runDir, "artifacts", "verification.json");
   const deliverBuildSessionPath = path.join(runDir, "stages", "build", "session.json");
   const deliverBuildVerificationPath = path.join(runDir, "stages", "build", "artifacts", "verification.json");
+  const deliverValidationProfilePath = path.join(runDir, "stages", "validation", "repo-profile.json");
+  const deliverValidationPlanPath = path.join(runDir, "stages", "validation", "validation-plan.json");
+  const deliverValidationToolResearchPath = path.join(runDir, "stages", "validation", "tool-research.json");
+  const deliverValidationLocalPath = path.join(runDir, "stages", "validation", "artifacts", "local-validation.json");
   const deliverReviewVerdictPath = path.join(runDir, "stages", "review", "artifacts", "verdict.json");
   const deliverShipRecordPath = path.join(runDir, "stages", "ship", "artifacts", "ship-record.json");
   const reviewVerdictPath = path.join(runDir, "artifacts", "verdict.json");
@@ -256,6 +267,10 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     discoverDelegates,
     sessionRecord,
     verificationRecord,
+    validationRepoProfile,
+    validationPlan,
+    validationToolResearch,
+    validationLocalRecord,
     deliverReviewVerdict,
     deliverShipRecord,
     githubDeliveryRecord,
@@ -269,6 +284,10 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     loadDiscoverDelegates(runDir),
     readJsonFile<BuildSessionRecord>(run.workflow === "deliver" ? deliverBuildSessionPath : run.workflow === "build" ? sessionPath : ""),
     readJsonFile<BuildVerificationRecord>(run.workflow === "deliver" ? deliverBuildVerificationPath : run.workflow === "build" ? verificationPath : ""),
+    readJsonFile<ValidationRepoProfile>(deliverValidationProfilePath),
+    readJsonFile<DeliverValidationPlan>(deliverValidationPlanPath),
+    readJsonFile<ValidationToolResearch>(deliverValidationToolResearchPath),
+    readJsonFile<DeliverValidationLocalRecord>(deliverValidationLocalPath),
     readJsonFile<DeliverReviewVerdict>(run.workflow === "deliver" ? deliverReviewVerdictPath : run.workflow === "review" ? reviewVerdictPath : ""),
     readJsonFile<DeliverShipRecord>(run.workflow === "deliver" ? deliverShipRecordPath : run.workflow === "ship" ? shipRecordPath : ""),
     readJsonFile<GitHubDeliveryRecord>(githubDeliveryPath),
@@ -290,6 +309,10 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     discoverDelegates,
     sessionRecord,
     verificationRecord,
+    validationRepoProfile,
+    validationPlan,
+    validationToolResearch,
+    validationLocalRecord,
     deliverReviewVerdict,
     deliverShipRecord,
     githubDeliveryRecord,
@@ -386,6 +409,8 @@ export function renderInspectionSummary(cwd: string, inspection: RunInspection):
       inspection.sessionRecord ? `- mode: requested ${inspection.sessionRecord.requestedMode}, observed ${inspection.sessionRecord.mode}` : undefined,
       inspection.sessionRecord?.linkedRunId ? `- linked run: ${inspection.sessionRecord.linkedRunId}` : undefined,
       inspection.verificationRecord ? `- verification: ${renderVerificationSummary(inspection.verificationRecord)}` : undefined,
+      inspection.validationPlan ? `- validation: ${inspection.validationPlan.status}` : undefined,
+      inspection.validationLocalRecord ? `- local validation: ${inspection.validationLocalRecord.status}` : undefined,
       inspection.deliverReviewVerdict ? `- review verdict: ${inspection.deliverReviewVerdict.status}` : undefined,
       inspection.deliverShipRecord ? `- ship readiness: ${inspection.deliverShipRecord.readiness}` : undefined,
       inspection.githubMutationRecord ? `- github mutation: ${inspection.githubMutationRecord.summary}` : undefined,
@@ -434,6 +459,34 @@ function renderVerification(inspection: RunInspection): string {
   }
 
   return `${JSON.stringify(inspection.verificationRecord, null, 2)}\n`;
+}
+
+function renderValidation(inspection: RunInspection): string {
+  if (!inspection.validationPlan) {
+    return "No validation plan was recorded for this run.";
+  }
+
+  return [
+    JSON.stringify(inspection.validationPlan, null, 2),
+    "",
+    inspection.validationLocalRecord ? JSON.stringify(inspection.validationLocalRecord, null, 2) : "No local validation record was recorded for this run."
+  ].join("\n");
+}
+
+async function renderValidationPyramid(inspection: RunInspection): Promise<string> {
+  return readRelativeArtifact(inspection, "stages/validation/artifacts/test-pyramid.md");
+}
+
+async function renderValidationCoverage(inspection: RunInspection): Promise<string> {
+  return readRelativeArtifact(inspection, "stages/validation/artifacts/coverage-summary.json");
+}
+
+async function renderValidationCi(inspection: RunInspection): Promise<string> {
+  return readRelativeArtifact(inspection, "stages/validation/artifacts/ci-validation.json");
+}
+
+async function renderValidationToolResearch(inspection: RunInspection): Promise<string> {
+  return readRelativeArtifact(inspection, "stages/validation/tool-research.json");
 }
 
 function renderDeliverReview(inspection: RunInspection): string {
@@ -587,12 +640,11 @@ function renderWhatRemains(inspection: RunInspection): string {
     ) ?? [];
 
   const lines = ["Remaining work:"];
-  if (outstandingStages.length === 0 && skippedSpecialists.length === 0) {
+  const appendGitHubBlockers = () => {
     if (inspection.githubMutationRecord?.blockers.length) {
       for (const blocker of inspection.githubMutationRecord.blockers) {
         lines.push(`- github mutation: ${blocker}`);
       }
-      return lines.join("\n");
     }
     if (inspection.githubDeliveryRecord) {
       const githubLines = [
@@ -620,8 +672,14 @@ function renderWhatRemains(inspection: RunInspection): string {
       ].filter((line): line is string => Boolean(line));
       if (githubLines.length > 0) {
         lines.push(...githubLines);
-        return lines.join("\n");
       }
+    }
+  };
+
+  if (outstandingStages.length === 0 && skippedSpecialists.length === 0) {
+    appendGitHubBlockers();
+    if (lines.length > 1) {
+      return lines.join("\n");
     }
     lines.push("- no deferred or missing work recorded");
     return lines.join("\n");
@@ -633,6 +691,7 @@ function renderWhatRemains(inspection: RunInspection): string {
   for (const specialist of skippedSpecialists) {
     lines.push(`- specialist ${specialist.name}: planned but not executed`);
   }
+  appendGitHubBlockers();
   return lines.join("\n");
 }
 
@@ -680,6 +739,11 @@ function helpText(): string {
     "- show research",
     "- show session",
     "- show verification",
+    "- show validation",
+    "- show pyramid",
+    "- show coverage",
+    "- show ci-validation",
+    "- show tool-research",
     "- show review",
     "- show ship",
     "- show mutation",
@@ -744,6 +808,21 @@ export async function handleInspectorCommand(cwd: string, inspection: RunInspect
   }
   if (trimmed === "show verification") {
     return renderVerification(inspection);
+  }
+  if (trimmed === "show validation") {
+    return renderValidation(inspection);
+  }
+  if (trimmed === "show pyramid") {
+    return renderValidationPyramid(inspection);
+  }
+  if (trimmed === "show coverage") {
+    return renderValidationCoverage(inspection);
+  }
+  if (trimmed === "show ci-validation") {
+    return renderValidationCi(inspection);
+  }
+  if (trimmed === "show tool-research") {
+    return renderValidationToolResearch(inspection);
   }
   if (trimmed === "show review") {
     return renderDeliverReview(inspection);

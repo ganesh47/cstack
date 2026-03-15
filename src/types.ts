@@ -3,7 +3,7 @@ export type RunStatus = "running" | "completed" | "failed";
 export type WorkflowMode = "exec" | "interactive";
 export type DeliverTargetMode = "merge-ready" | "release";
 
-export type StageName = "discover" | "spec" | "build" | "review" | "ship";
+export type StageName = "discover" | "spec" | "build" | "validation" | "review" | "ship";
 
 export type StageStatus =
   | "planned"
@@ -18,7 +18,12 @@ export type SpecialistName =
   | "devsecops-review"
   | "traceability-review"
   | "audit-review"
-  | "release-pipeline-review";
+  | "release-pipeline-review"
+  | "mobile-validation-specialist"
+  | "container-validation-specialist"
+  | "browser-e2e-specialist"
+  | "api-contract-specialist"
+  | "workflow-security-specialist";
 
 export type SpecialistDisposition = "accepted" | "partial" | "discarded";
 export type DiscoverTrackName = "repo-explorer" | "external-researcher" | "risk-researcher";
@@ -140,6 +145,10 @@ export interface RunInspection {
   discoverDelegates: DiscoverDelegateResult[];
   sessionRecord: BuildSessionRecord | null;
   verificationRecord: BuildVerificationRecord | null;
+  validationRepoProfile: ValidationRepoProfile | null;
+  validationPlan: DeliverValidationPlan | null;
+  validationToolResearch: ValidationToolResearch | null;
+  validationLocalRecord: DeliverValidationLocalRecord | null;
   deliverReviewVerdict: DeliverReviewVerdict | null;
   deliverShipRecord: DeliverShipRecord | null;
   githubDeliveryRecord: GitHubDeliveryRecord | null;
@@ -185,6 +194,7 @@ export interface WorkflowConfig {
     enabled?: boolean;
     allowWeb?: boolean;
   };
+  validation?: DeliverValidationConfig;
   github?: DeliverGitHubConfig;
 }
 
@@ -203,6 +213,24 @@ export interface CstackConfig {
     deliver: WorkflowConfig;
   };
   verification?: VerificationConfig;
+}
+
+export interface DeliverValidationConfig {
+  enabled?: boolean;
+  mode?: "smart" | "plan-only";
+  requireCiParity?: boolean;
+  maxAgents?: number;
+  allowWorkflowMutation?: boolean;
+  allowTestScaffolding?: boolean;
+  coverage?: {
+    requireSummary?: boolean;
+    minimumSignal?: "basic" | "strong";
+  };
+  mobile?: {
+    allowMacosRunners?: boolean;
+    allowAndroidEmulator?: boolean;
+    allowIosSimulator?: boolean;
+  };
 }
 
 export interface DeliverGitHubSecurityConfig {
@@ -312,6 +340,127 @@ export interface DeliverShipRecord {
   unresolved: string[];
   nextActions: string[];
   reportMarkdown: string;
+}
+
+export interface ValidationToolCandidate {
+  tool: string;
+  category: string;
+  selected: boolean;
+  rationale: string;
+  localSupport: "native" | "scripted" | "optional" | "unsupported";
+  ciSupport: "native" | "scripted" | "optional" | "unsupported";
+  source: string;
+}
+
+export interface ValidationToolResearch {
+  generatedAt: string;
+  summary: string;
+  candidates: ValidationToolCandidate[];
+  selectedTools: string[];
+  limitations: string[];
+}
+
+export interface ValidationDetectedScript {
+  name: string;
+  command: string;
+}
+
+export interface ValidationExistingTestSuite {
+  kind: "unit" | "component" | "integration" | "e2e" | "workflow" | "smoke" | "unknown";
+  location: string;
+  tool?: string;
+}
+
+export interface ValidationRepoProfile {
+  detectedAt: string;
+  languages: string[];
+  buildSystems: string[];
+  surfaces: string[];
+  packageManagers: string[];
+  ciSystems: string[];
+  runnerConstraints: string[];
+  manifests: string[];
+  workflowFiles: string[];
+  existingTests: ValidationExistingTestSuite[];
+  packageScripts: ValidationDetectedScript[];
+  detectedTools: string[];
+  limitations: string[];
+}
+
+export interface ValidationLayerPlan {
+  name: "static" | "unit-component" | "integration-contract" | "e2e-system" | "packaging-smoke";
+  selected: boolean;
+  status: "planned" | "ready" | "partial" | "blocked" | "skipped";
+  rationale: string;
+  selectedTools: string[];
+  localCommands: string[];
+  ciCommands: string[];
+  coverageIntent: string[];
+  notes?: string[];
+}
+
+export interface DeliverValidationPlan {
+  status: "ready" | "partial" | "blocked";
+  summary: string;
+  profileSummary: string;
+  layers: ValidationLayerPlan[];
+  selectedSpecialists: Array<{
+    name: SpecialistName;
+    disposition: SpecialistDisposition;
+    reason: string;
+  }>;
+  localValidation: {
+    commands: string[];
+    prerequisites: string[];
+    notes: string[];
+  };
+  ciValidation: {
+    workflowFiles: string[];
+    jobs: Array<{
+      name: string;
+      runner: string;
+      purpose: string;
+      commands: string[];
+      artifacts: string[];
+    }>;
+    notes: string[];
+  };
+  coverage: {
+    confidence: "low" | "medium" | "high";
+    summary: string;
+    signals: string[];
+    gaps: string[];
+  };
+  recommendedChanges: string[];
+  unsupported: string[];
+  pyramidMarkdown: string;
+  reportMarkdown: string;
+  githubActionsPlanMarkdown: string;
+}
+
+export interface ValidationCommandRecord {
+  command: string;
+  exitCode: number;
+  status: "passed" | "failed";
+  durationMs: number;
+  stdoutPath: string;
+  stderrPath: string;
+}
+
+export interface DeliverValidationLocalRecord {
+  status: "not-run" | "passed" | "failed";
+  requestedCommands: string[];
+  results: ValidationCommandRecord[];
+  notes?: string;
+}
+
+export interface ValidationCoverageSummary {
+  status: "ready" | "partial" | "blocked";
+  confidence: "low" | "medium" | "high";
+  summary: string;
+  signals: string[];
+  gaps: string[];
+  localValidationStatus: DeliverValidationLocalRecord["status"];
 }
 
 export type GitHubGateStatus = "ready" | "blocked" | "not-applicable" | "unknown";

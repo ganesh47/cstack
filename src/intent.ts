@@ -160,7 +160,12 @@ export function inferSpecialists(intent: string): SpecialistSelection[] {
     "release-pipeline-review":
       /\b(release|ship|pipeline|rollout|rollback|deploy|version)\b/i.test(lower)
         ? "The intent suggests release-path or rollback risk."
-        : null
+        : null,
+    "mobile-validation-specialist": null,
+    "container-validation-specialist": null,
+    "browser-e2e-specialist": null,
+    "api-contract-specialist": null,
+    "workflow-security-specialist": null
   };
 
   const selected = new Set<SpecialistName>(
@@ -205,6 +210,16 @@ function specialistArtifactName(name: SpecialistName): string {
       return "audit-findings.md";
     case "release-pipeline-review":
       return "release-review.md";
+    case "mobile-validation-specialist":
+      return "mobile-validation-findings.md";
+    case "container-validation-specialist":
+      return "container-validation-findings.md";
+    case "browser-e2e-specialist":
+      return "browser-e2e-findings.md";
+    case "api-contract-specialist":
+      return "api-contract-findings.md";
+    case "workflow-security-specialist":
+      return "workflow-security-findings.md";
   }
 }
 

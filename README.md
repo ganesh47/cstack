@@ -113,7 +113,7 @@ cstack build --from-run <run-id> --allow-dirty
 cstack review --from-run <build-run-id> "Review the billing retry cleanup"
 cstack ship --from-run <review-run-id> --issue 123 "Ship the billing retry cleanup"
 
-# Launch the umbrella delivery workflow across build, review, and ship
+# Launch the umbrella delivery workflow across build, validation, review, and ship
 cstack deliver "Implement the queued billing retry cleanup"
 cstack deliver --from-run <run-id>
 cstack deliver --from-run <run-id> --release --issue 123
@@ -158,7 +158,7 @@ Current intent behavior:
 
 - `discover` and `spec` are executed automatically inside the intent run
 - review-shaped analysis prompts auto-run standalone `review`
-- implementation-shaped prompts auto-run `deliver`, which carries the work through internal `build -> review -> ship`
+- implementation-shaped prompts auto-run `deliver`, which carries the work through internal `build -> validation -> review -> ship`
 - explicit `build`, `review`, `ship`, and `deliver` commands still exist when you want a narrower workflow than the routed front door
 - intent-level specialist delegates are only used when the router stops after planning instead of handing off into a downstream review-capable workflow
 
@@ -225,6 +225,11 @@ Useful inspector commands:
 - `show research`
 - `show session`
 - `show verification`
+- `show validation`
+- `show pyramid`
+- `show coverage`
+- `show ci-validation`
+- `show tool-research`
 - `show review`
 - `show ship`
 - `show mutation`
@@ -319,6 +324,13 @@ mode = "exec"
 [workflows.ship]
 mode = "exec"
 allowDirty = false
+
+[workflows.deliver.validation]
+enabled = true
+mode = "smart"
+requireCiParity = true
+allowWorkflowMutation = true
+allowTestScaffolding = true
 
 [workflows.discover.delegation]
 enabled = true
@@ -416,6 +428,13 @@ mode = "exec"
 mode = "exec"
 allowDirty = false
 
+[workflows.deliver.validation]
+enabled = true
+mode = "smart"
+requireCiParity = true
+allowWorkflowMutation = true
+allowTestScaffolding = true
+
 [workflows.discover.delegation]
 enabled = true
 maxAgents = 2
@@ -462,7 +481,9 @@ Current artifact set:
 - `artifacts/github-delivery.json` for GitHub-scoped deliver evidence
 - `artifacts/github-mutation.json` for `ship` and `deliver`
 - `artifacts/rerun.json` for rerun lineage
-- `stages/build/...`, `stages/review/...`, and `stages/ship/...` for deliver stage-local artifacts
+- `stages/build/...`, `stages/validation/...`, `stages/review/...`, and `stages/ship/...` for deliver stage-local artifacts
+- `stages/validation/repo-profile.json`, `validation-plan.json`, and `tool-research.json` for deliver validation intelligence
+- `stages/validation/artifacts/test-pyramid.md`, `coverage-summary.json`, `coverage-gaps.md`, `local-validation.json`, `ci-validation.json`, and `github-actions-plan.md` for deliver validation outcomes
 - `stages/ship/artifacts/github-state.json`, `pull-request.json`, `issues.json`, `checks.json`, `actions.json`, `security.json`, and `release.json` for deliver GitHub evidence
 - `stages/discover/artifacts/discovery-report.md` for discover-team synthesis
 - `stages/discover/research-plan.json` for discover-team activation, capability, and track decisions
@@ -505,15 +526,16 @@ Ship notes:
 
 Deliver notes:
 
-- `deliver` is the operator-facing umbrella workflow over internal `build`, `review`, and `ship` stages
-- stage-local artifacts live under `stages/build`, `stages/review`, and `stages/ship`
+- `deliver` is the operator-facing umbrella workflow over internal `build`, `validation`, `review`, and `ship` stages
+- the validation stage profiles the repo, chooses a layered validation strategy, records OSS tool research, and runs the selected local validation commands
+- stage-local artifacts live under `stages/build`, `stages/validation`, `stages/review`, and `stages/ship`
 - when repo policy enables it, `deliver` can create or reuse a working branch, auto-commit the deliver change set, push it to `origin`, and create or update the GitHub pull request
 - `deliver` now evaluates GitHub-scoped engineering completion, including PR, checks, Actions, issue linkage, release evidence, and security gates when policy requires them
 - `deliver` fails closed when required GitHub evidence is missing or blocked
 - `deliver --release` switches the run into release-bearing mode and expects tag and release evidence
 - `deliver --issue <n>` links a specific GitHub issue into deliver evaluation
 - `deliver` requires a clean worktree unless `--allow-dirty` or repo policy allows otherwise
-- `cstack inspect <run-id>` supports `show review`, `show ship`, `show mutation`, and `show github` for deliver runs
+- `cstack inspect <run-id>` supports `show validation`, `show pyramid`, `show coverage`, `show ci-validation`, `show tool-research`, `show review`, `show ship`, `show mutation`, and `show github` for deliver runs
 
 ## Development
 

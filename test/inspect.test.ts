@@ -357,6 +357,7 @@ async function seedDeliverRun(
       : "2026-03-14T12-16-00-deliver-billing-cleanup-ready";
   const runDir = path.join(repoDir, ".cstack", "runs", runId);
   await fs.mkdir(path.join(runDir, "stages", "build", "artifacts"), { recursive: true });
+  await fs.mkdir(path.join(runDir, "stages", "validation", "artifacts"), { recursive: true });
   await fs.mkdir(path.join(runDir, "stages", "review", "artifacts"), { recursive: true });
   await fs.mkdir(path.join(runDir, "stages", "ship", "artifacts"), { recursive: true });
   await fs.mkdir(path.join(runDir, "artifacts"), { recursive: true });
@@ -399,6 +400,7 @@ async function seedDeliverRun(
         intent: "Deliver billing cleanup",
         stages: [
           { name: "build", rationale: "Implement", status: "completed", executed: true },
+          { name: "validation", rationale: "Validate", status: blocked ? "deferred" : "completed", executed: true, notes: blocked ? "Validation completed but GitHub parity remains blocked." : "Validation completed." },
           { name: "review", rationale: "Critique", status: "completed", executed: true },
           { name: "ship", rationale: "Prepare release", status: "completed", executed: true }
         ],
@@ -437,6 +439,131 @@ async function seedDeliverRun(
     "utf8"
   );
   await fs.writeFile(path.join(runDir, "stages", "build", "artifacts", "change-summary.md"), "# Build Summary\n", "utf8");
+  await fs.writeFile(
+    path.join(runDir, "stages", "validation", "repo-profile.json"),
+    `${JSON.stringify(
+      {
+        detectedAt: "2026-03-14T12:15:11.000Z",
+        languages: ["typescript"],
+        buildSystems: ["npm"],
+        surfaces: ["cli-binary", "github-workflows"],
+        packageManagers: ["npm"],
+        ciSystems: ["github-actions"],
+        runnerConstraints: ["linux-default"],
+        manifests: ["package.json"],
+        workflowFiles: [".github/workflows/release.yml"],
+        existingTests: [{ kind: "unit", location: "test/inspect.test.ts", tool: "vitest" }],
+        packageScripts: [{ name: "test", command: "npm test" }],
+        detectedTools: ["vitest"],
+        limitations: []
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(runDir, "stages", "validation", "tool-research.json"),
+    `${JSON.stringify(
+      {
+        generatedAt: "2026-03-14T12:15:12.000Z",
+        summary: "Selected OSS validation tools for the repo.",
+        candidates: [{ tool: "actionlint", category: "static", selected: true, rationale: "Validate Actions workflows.", localSupport: "optional", ciSupport: "native", source: "https://github.com/rhysd/actionlint" }],
+        selectedTools: ["actionlint"],
+        limitations: []
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(runDir, "stages", "validation", "validation-plan.json"),
+    `${JSON.stringify(
+      {
+        status: blocked ? "partial" : "ready",
+        summary: "Validation planning completed with local and CI parity guidance.",
+        profileSummary: "CLI plus GitHub workflow validation.",
+        layers: [
+          {
+            name: "static",
+            selected: true,
+            status: "ready",
+            rationale: "Static checks protect workflows and code hygiene.",
+            selectedTools: ["actionlint"],
+            localCommands: ["npm test"],
+            ciCommands: ["npm test"],
+            coverageIntent: ["workflow correctness"],
+            notes: []
+          }
+        ],
+        selectedSpecialists: [],
+        localValidation: { commands: ["npm test"], prerequisites: ["linux-default"], notes: [] },
+        ciValidation: {
+          workflowFiles: [".github/workflows/release.yml"],
+          jobs: [{ name: "validation", runner: "ubuntu-latest", purpose: "Run tests.", commands: ["npm test"], artifacts: ["test-reports"] }],
+          notes: []
+        },
+        coverage: {
+          confidence: "medium",
+          summary: "Coverage is layered across static and unit validation.",
+          signals: ["validation plan recorded"],
+          gaps: blocked ? ["GitHub parity remains blocked by required checks."] : []
+        },
+        recommendedChanges: [],
+        unsupported: [],
+        pyramidMarkdown: "# Test Pyramid\n\n- static\n- unit-component\n",
+        reportMarkdown: "# Validation Summary\n\nValidation complete.\n",
+        githubActionsPlanMarkdown: "# GitHub Actions Validation Plan\n\nUse one validation job.\n"
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(runDir, "stages", "validation", "artifacts", "local-validation.json"),
+    `${JSON.stringify(
+      {
+        status: "passed",
+        requestedCommands: ["npm test"],
+        results: []
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+  await fs.writeFile(path.join(runDir, "stages", "validation", "artifacts", "test-pyramid.md"), "# Test Pyramid\n\n- static\n- unit-component\n", "utf8");
+  await fs.writeFile(
+    path.join(runDir, "stages", "validation", "artifacts", "coverage-summary.json"),
+    `${JSON.stringify(
+      {
+        status: blocked ? "partial" : "ready",
+        confidence: "medium",
+        summary: "Coverage is layered.",
+        signals: ["static checks planned"],
+        gaps: blocked ? ["GitHub parity remains blocked by required checks."] : [],
+        localValidationStatus: "passed"
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(runDir, "stages", "validation", "artifacts", "ci-validation.json"),
+    `${JSON.stringify(
+      {
+        workflowFiles: [".github/workflows/release.yml"],
+        jobs: [{ name: "validation", runner: "ubuntu-latest", purpose: "Run tests.", commands: ["npm test"], artifacts: ["test-reports"] }],
+        notes: []
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
   await fs.writeFile(path.join(runDir, "stages", "review", "artifacts", "findings.md"), "# Review Findings\n", "utf8");
   await fs.writeFile(
     path.join(runDir, "stages", "review", "artifacts", "verdict.json"),
@@ -756,12 +883,18 @@ describe("inspect", () => {
 
     expect(inspection.sessionRecord?.mode).toBe("exec");
     expect(inspection.verificationRecord?.status).toBe("passed");
+    expect(inspection.validationPlan?.status).toBe("partial");
     expect(inspection.deliverReviewVerdict?.status).toBe("changes-requested");
     expect(inspection.deliverShipRecord?.readiness).toBe("blocked");
     expect(inspection.githubMutationRecord?.pullRequest.url).toBe("https://example.com/pr/42");
     expect(inspection.githubDeliveryRecord?.overall.status).toBe("blocked");
     expect(inspection.run.status).toBe("failed");
     await expect(handleInspectorCommand(repoDir, inspection, "show verification")).resolves.toContain("\"status\": \"passed\"");
+    await expect(handleInspectorCommand(repoDir, inspection, "show validation")).resolves.toContain("\"status\": \"partial\"");
+    await expect(handleInspectorCommand(repoDir, inspection, "show pyramid")).resolves.toContain("# Test Pyramid");
+    await expect(handleInspectorCommand(repoDir, inspection, "show coverage")).resolves.toContain("\"localValidationStatus\": \"passed\"");
+    await expect(handleInspectorCommand(repoDir, inspection, "show ci-validation")).resolves.toContain("\"runner\": \"ubuntu-latest\"");
+    await expect(handleInspectorCommand(repoDir, inspection, "show tool-research")).resolves.toContain("\"tool\": \"actionlint\"");
     await expect(handleInspectorCommand(repoDir, inspection, "show review")).resolves.toContain("\"status\": \"changes-requested\"");
     await expect(handleInspectorCommand(repoDir, inspection, "show ship")).resolves.toContain("\"readiness\": \"blocked\"");
     await expect(handleInspectorCommand(repoDir, inspection, "show mutation")).resolves.toContain("\"current\": \"cstack/billing-cleanup\"");
@@ -774,6 +907,7 @@ describe("inspect", () => {
     await expect(handleInspectorCommand(repoDir, inspection, "show artifact stages/ship/artifacts/checks.json")).resolves.toContain("\"conclusion\": \"fail\"");
     await expect(handleInspectorCommand(repoDir, inspection, "show artifact stages/ship/artifacts/security.json")).resolves.toContain("\"severity\": \"high\"");
     await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("ship readiness: blocked");
+    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("validation: partial");
     await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("github mutation: Branch pushed and pull request prepared.");
     await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("github delivery: blocked (checks, security)");
   });

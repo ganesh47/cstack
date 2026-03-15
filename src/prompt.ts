@@ -2,12 +2,15 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import type {
   CstackConfig,
+  DeliverValidationPlan,
   DeliverReviewVerdict,
   DiscoverDelegateResult,
   DiscoverResearchPlan,
   DiscoverTrackName,
   RoutingPlan,
   SpecialistName,
+  ValidationRepoProfile,
+  ValidationToolResearch,
   WorkflowMode
 } from "./types.js";
 
@@ -184,8 +187,9 @@ export async function buildDeliverPrompt(options: {
       prompt,
       "",
       "## Deliver workflow contract",
-      "- run a bounded delivery workflow with explicit internal stages: build, review, ship",
+      "- run a bounded delivery workflow with explicit internal stages: build, validation, review, ship",
       "- preserve stage artifacts so later inspection can explain every handoff",
+      "- validation should profile the repo, choose a test pyramid, and align local and GitHub Actions validation where justified",
       "- treat specialist reviewers as advisory inputs to the review lead",
       "- when GitHub mutation policy is enabled, the wrapper may create a branch, push it, and open or update a pull request during ship",
       "- do not claim release readiness if verification or review artifacts do not support it",
@@ -363,6 +367,16 @@ function specialistTitle(name: SpecialistName): string {
       return "audit review";
     case "release-pipeline-review":
       return "release pipeline review";
+    case "mobile-validation-specialist":
+      return "mobile validation review";
+    case "container-validation-specialist":
+      return "container validation review";
+    case "browser-e2e-specialist":
+      return "browser end-to-end validation review";
+    case "api-contract-specialist":
+      return "API contract validation review";
+    case "workflow-security-specialist":
+      return "workflow security validation review";
   }
 }
 
@@ -427,9 +441,11 @@ export async function buildDeliverReviewLeadPrompt(options: {
   input: string;
   buildSummary: string;
   verificationRecord: object;
+  validationPlan?: object;
+  validationLocalRecord?: object;
   specialistResults: Array<{ name: SpecialistName; reason: string; finalBody: string }>;
 }): Promise<{ prompt: string; context: string }> {
-  const { cwd, input, buildSummary, verificationRecord, specialistResults } = options;
+  const { cwd, input, buildSummary, verificationRecord, validationPlan, validationLocalRecord, specialistResults } = options;
   const specDoc = path.join(cwd, "docs", "specs", "cstack-spec-v0.1.md");
 
   return {
@@ -462,6 +478,12 @@ export async function buildDeliverReviewLeadPrompt(options: {
       "",
       "## Verification evidence",
       JSON.stringify(verificationRecord, null, 2),
+      "",
+      "## Validation evidence",
+      validationPlan ? JSON.stringify(validationPlan, null, 2) : "(missing)",
+      "",
+      "## Local validation results",
+      validationLocalRecord ? JSON.stringify(validationLocalRecord, null, 2) : "(missing)",
       "",
       "## Specialist outputs",
       JSON.stringify(specialistResults, null, 2),
@@ -530,12 +552,14 @@ export async function buildDeliverShipPrompt(options: {
   cwd: string;
   input: string;
   buildSummary: string;
+  validationPlan?: object;
+  validationLocalRecord?: object;
   reviewVerdict: DeliverReviewVerdict;
   verificationRecord: object;
   githubMutationRecord: object;
   githubDeliveryRecord: object;
 }): Promise<{ prompt: string; context: string }> {
-  const { cwd, input, buildSummary, reviewVerdict, verificationRecord, githubMutationRecord, githubDeliveryRecord } = options;
+  const { cwd, input, buildSummary, validationPlan, validationLocalRecord, reviewVerdict, verificationRecord, githubMutationRecord, githubDeliveryRecord } = options;
   const specDoc = path.join(cwd, "docs", "specs", "cstack-spec-v0.1.md");
 
   return {
@@ -572,6 +596,12 @@ export async function buildDeliverShipPrompt(options: {
       "## Verification evidence",
       JSON.stringify(verificationRecord, null, 2),
       "",
+      "## Validation evidence",
+      validationPlan ? JSON.stringify(validationPlan, null, 2) : "(missing)",
+      "",
+      "## Local validation results",
+      validationLocalRecord ? JSON.stringify(validationLocalRecord, null, 2) : "(missing)",
+      "",
       "## GitHub mutation state",
       JSON.stringify(githubMutationRecord, null, 2),
       "",
@@ -585,6 +615,141 @@ export async function buildDeliverShipPrompt(options: {
       "Workflow: deliver",
       "Role: Ship Lead",
       `Review status: ${reviewVerdict.status}`,
+      `Spec source: ${specDoc}`
+    ].join("\n")
+  };
+}
+
+export async function buildDeliverValidationSpecialistPrompt(options: {
+  cwd: string;
+  input: string;
+  name: SpecialistName;
+  reason: string;
+  repoProfile: ValidationRepoProfile;
+  toolResearch: ValidationToolResearch;
+  buildSummary: string;
+  buildVerificationRecord: object;
+}): Promise<{ prompt: string; context: string }> {
+  const { cwd, input, name, reason, repoProfile, toolResearch, buildSummary, buildVerificationRecord } = options;
+  const specDoc = path.join(cwd, "docs", "specs", "cstack-spec-v0.1.md");
+  const title = specialistTitle(name);
+
+  return {
+    prompt: [
+      `You are running the \`${name}\` specialist for the \`validation\` stage inside \`cstack deliver\`.`,
+      "",
+      `Perform a focused ${title} against the current repo profile, tool research, and build outputs.`,
+      "",
+      "Requirements:",
+      "- stay inside the named specialist scope",
+      "- prefer OSS tools that work both locally and in GitHub Actions",
+      "- call out concrete gaps, runner constraints, and suggested test layers",
+      "- be concise and operational",
+      "- structure the output so the validation lead can accept, partially accept, or discard it cleanly",
+      "",
+      "## Deliver request",
+      input,
+      "",
+      "## Specialist activation reason",
+      reason,
+      "",
+      "## Repo profile",
+      JSON.stringify(repoProfile, null, 2),
+      "",
+      "## Tool research",
+      JSON.stringify(toolResearch, null, 2),
+      "",
+      "## Build summary",
+      excerpt(buildSummary, 60) || "(missing)",
+      "",
+      "## Build verification",
+      JSON.stringify(buildVerificationRecord, null, 2),
+      "",
+      "## Referenced files",
+      `- ${specDoc}`
+    ].join("\n"),
+    context: [
+      "Workflow: deliver",
+      "Role: Validation specialist",
+      `Specialist: ${name}`,
+      `Reason: ${reason}`,
+      `Spec source: ${specDoc}`
+    ].join("\n")
+  };
+}
+
+export async function buildDeliverValidationLeadPrompt(options: {
+  cwd: string;
+  input: string;
+  repoProfile: ValidationRepoProfile;
+  toolResearch: ValidationToolResearch;
+  initialPlan: DeliverValidationPlan;
+  buildSummary: string;
+  buildVerificationRecord: object;
+  specialistResults: Array<{ name: SpecialistName; reason: string; finalBody: string }>;
+}): Promise<{ prompt: string; context: string }> {
+  const { cwd, input, repoProfile, toolResearch, initialPlan, buildSummary, buildVerificationRecord, specialistResults } = options;
+  const specDoc = path.join(cwd, "docs", "specs", "cstack-spec-v0.1.md");
+
+  return {
+    prompt: [
+      "You are the `Validation Lead` for a bounded `cstack deliver` workflow.",
+      "",
+      "Turn the build output into a repo-aware validation stage.",
+      "",
+      "Requirements:",
+      "- refine or extend tests and GitHub Actions validation only when justified by the repo profile",
+      "- think in a test pyramid: static, unit/component, integration/contract, e2e/system, packaging/smoke",
+      "- prefer OSS tools that support both local execution and GitHub Actions",
+      "- avoid recommending tools with weak repo fit just because they are popular",
+      "- preserve platform constraints such as macOS, emulators, or Docker requirements",
+      "- return valid JSON only, with no markdown fences or extra commentary",
+      "",
+      "Required JSON shape:",
+      "{",
+      '  "status": "ready" | "partial" | "blocked",',
+      '  "summary": "short summary",',
+      '  "profileSummary": "short summary",',
+      '  "layers": [{"name": "static" | "unit-component" | "integration-contract" | "e2e-system" | "packaging-smoke", "selected": true, "status": "planned" | "ready" | "partial" | "blocked" | "skipped", "rationale": "why", "selectedTools": ["tool"], "localCommands": ["command"], "ciCommands": ["command"], "coverageIntent": ["intent"], "notes": ["optional"]}],',
+      '  "selectedSpecialists": [{"name": "browser-e2e-specialist", "disposition": "accepted" | "partial" | "discarded", "reason": "why"}],',
+      '  "localValidation": {"commands": ["command"], "prerequisites": ["item"], "notes": ["note"]},',
+      '  "ciValidation": {"workflowFiles": ["path"], "jobs": [{"name": "job", "runner": "ubuntu-latest", "purpose": "why", "commands": ["cmd"], "artifacts": ["artifact"]}], "notes": ["note"]},',
+      '  "coverage": {"confidence": "low" | "medium" | "high", "summary": "summary", "signals": ["signal"], "gaps": ["gap"]},',
+      '  "recommendedChanges": ["change"],',
+      '  "unsupported": ["limit"],',
+      '  "pyramidMarkdown": "# Test Pyramid\\n...",',
+      '  "reportMarkdown": "# Validation Summary\\n...",',
+      '  "githubActionsPlanMarkdown": "# GitHub Actions Validation Plan\\n..."',
+      "}",
+      "",
+      "## Deliver request",
+      input,
+      "",
+      "## Repo profile",
+      JSON.stringify(repoProfile, null, 2),
+      "",
+      "## Tool research",
+      JSON.stringify(toolResearch, null, 2),
+      "",
+      "## Initial validation plan",
+      JSON.stringify(initialPlan, null, 2),
+      "",
+      "## Build summary",
+      excerpt(buildSummary, 80) || "(missing)",
+      "",
+      "## Build verification",
+      JSON.stringify(buildVerificationRecord, null, 2),
+      "",
+      "## Validation specialist outputs",
+      JSON.stringify(specialistResults, null, 2),
+      "",
+      "## Referenced files",
+      `- ${specDoc}`
+    ].join("\n"),
+    context: [
+      "Workflow: deliver",
+      "Role: Validation Lead",
+      `Selected validation specialists: ${specialistResults.map((result) => result.name).join(", ") || "none"}`,
       `Spec source: ${specDoc}`
     ].join("\n")
   };

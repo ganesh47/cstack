@@ -195,11 +195,12 @@ Key artifacts:
 
 Purpose:
 
-- carry a linked or direct task through internal `build -> review -> ship` inside one durable run
+- carry a linked or direct task through internal `build -> validation -> review -> ship` inside one durable run
 
 Execution model:
 
 - build stage: interactive `codex` by default, `exec` fallback or `--exec`
+- validation stage: repo-aware validation planning plus bounded validation specialists and local command execution
 - review stage: `codex exec` plus bounded specialist reviewers
 - ship stage: `codex exec` plus GitHub mutation and delivery evidence collection
 
@@ -219,6 +220,7 @@ Key artifacts:
 
 - `stage-lineage.json`
 - `stages/build/...`
+- `stages/validation/...`
 - `stages/review/...`
 - `stages/ship/...`
 - `artifacts/delivery-report.md`
@@ -285,6 +287,7 @@ A successful GitHub-complete engineering delivery run means:
 
 - implementation artifacts exist
 - verification status supports the run
+- validation status supports the run
 - review status supports the run
 - required GitHub gates are ready
 - unresolved blocking items are empty
@@ -353,6 +356,11 @@ Current inspector views include:
 - research
 - session
 - verification
+- validation
+- pyramid
+- coverage
+- CI validation
+- tool research
 - review
 - ship
 - GitHub mutation and delivery views
@@ -383,6 +391,7 @@ Additional workflow-owned files include:
 - `routing-plan.json` for intent runs
 - `stage-lineage.json` for multi-stage or stage-oriented runs
 - `session.json` for build sessions and nested deliver build sessions
+- `repo-profile.json`, `validation-plan.json`, and `tool-research.json` for deliver validation stages
 - `delegates/` for specialist or discover-track outputs
 
 Runs are immutable. `rerun` creates a new run id rather than mutating prior run state.
@@ -406,6 +415,7 @@ Current workflow config areas:
 - `[workflows.review]`
 - `[workflows.ship]`
 - `[workflows.deliver]`
+- `[workflows.deliver.validation]`
 - `[verification]`
 
 Important repo-policy knobs include:
@@ -415,6 +425,7 @@ Important repo-policy knobs include:
 - discover web-research policy
 - dirty-worktree allowance
 - verification commands
+- validation-stage parity and workflow-mutation policy
 - GitHub delivery policy for ship and deliver
 
 ## Delegation Policy
@@ -426,7 +437,8 @@ Current durable patterns:
 - discover: Research Lead plus up to three bounded research tracks
 - intent: specialist reviews after planning when heuristics justify them
 - review: Review Lead plus up to three bounded specialist reviewers
-- deliver: delivery-owned review specialists inside the review stage
+- deliver validation: Validation Lead plus bounded validation specialists for browser, container, contract, workflow-security, or mobile concerns when the repo profile justifies them
+- deliver review: Review Lead plus up to three bounded specialist reviewers
 
 Delegation should be suppressed when:
 

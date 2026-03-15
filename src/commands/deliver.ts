@@ -175,6 +175,7 @@ export async function runDeliver(cwd: string, args: string[] = []): Promise<stri
     const buildSession = execution.buildExecution.sessionRecord;
     runRecord.status =
       execution.buildExecution.result.code === 0 &&
+      execution.validationExecution.validationPlan.status !== "blocked" &&
       execution.reviewVerdict.status === "ready" &&
       execution.shipRecord.readiness === "ready" &&
       execution.githubDeliveryRecord.overall.status === "ready"
@@ -187,7 +188,7 @@ export async function runDeliver(cwd: string, args: string[] = []): Promise<stri
     if (buildSession.sessionId) {
       runRecord.sessionId = buildSession.sessionId;
     }
-    runRecord.lastActivity = `Ship readiness: ${execution.shipRecord.readiness}; GitHub delivery: ${execution.githubDeliveryRecord.overall.status}`;
+    runRecord.lastActivity = `Validation: ${execution.validationExecution.validationPlan.status}; Ship readiness: ${execution.shipRecord.readiness}; GitHub delivery: ${execution.githubDeliveryRecord.overall.status}`;
     runRecord.inputs.observedMode = execution.buildExecution.observedMode;
     runRecord.inputs.selectedSpecialists = execution.selectedSpecialists.map((specialist) => specialist.name);
     runRecord.inputs.deliveryMode = deliveryMode;
@@ -197,6 +198,9 @@ export async function runDeliver(cwd: string, args: string[] = []): Promise<stri
     if (runRecord.status !== "completed") {
       runRecord.error = [
         execution.buildExecution.result.code !== 0 ? `build exited with code ${execution.buildExecution.result.code}` : null,
+        execution.validationExecution.validationPlan.status === "blocked"
+          ? `validation status: ${execution.validationExecution.validationPlan.status}`
+          : null,
         execution.reviewVerdict.status !== "ready" ? `review status: ${execution.reviewVerdict.status}` : null,
         execution.shipRecord.readiness === "blocked" ? "ship stage blocked release readiness" : null,
         execution.githubDeliveryRecord.overall.status === "blocked"
@@ -215,6 +219,7 @@ export async function runDeliver(cwd: string, args: string[] = []): Promise<stri
         `Mode: requested=${requestedMode} observed=${execution.buildExecution.observedMode}`,
         `Status: ${runRecord.status}`,
         buildSession.sessionId ? `Build session: ${buildSession.sessionId}` : "Build session: not observed",
+        `Validation: ${execution.validationExecution.validationPlan.status}`,
         `Review verdict: ${execution.reviewVerdict.status}`,
         `Ship readiness: ${execution.shipRecord.readiness}`,
         `GitHub mutation: ${execution.githubMutationRecord.summary}`,
@@ -226,6 +231,8 @@ export async function runDeliver(cwd: string, args: string[] = []): Promise<stri
         `  ${path.relative(cwd, path.join(runDir, "artifacts", "github-delivery.json"))}`,
         `  ${path.relative(cwd, stageLineagePath)}`,
         `  ${path.relative(cwd, path.join(runDir, "stages", "build", "artifacts", "change-summary.md"))}`,
+        `  ${path.relative(cwd, path.join(runDir, "stages", "validation", "validation-plan.json"))}`,
+        `  ${path.relative(cwd, path.join(runDir, "stages", "validation", "artifacts", "test-pyramid.md"))}`,
         `  ${path.relative(cwd, path.join(runDir, "stages", "review", "artifacts", "verdict.json"))}`,
         `  ${path.relative(cwd, path.join(runDir, "stages", "ship", "artifacts", "ship-summary.md"))}`,
         `  ${path.relative(cwd, path.join(runDir, "run.json"))}`
