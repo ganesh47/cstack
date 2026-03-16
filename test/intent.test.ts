@@ -2,13 +2,31 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
+import { execFile } from "node:child_process";
 import { chmodSync } from "node:fs";
+import { promisify } from "node:util";
 import { inferRoutingPlan, runIntent } from "../src/intent.js";
 import { listRuns, readRun } from "../src/run.js";
 import type { RoutingPlan, StageLineage } from "../src/types.js";
 
+const execFileAsync = promisify(execFile);
+
+async function initGitRepo(repoDir: string): Promise<string> {
+  const remoteDir = await fs.mkdtemp(path.join(os.tmpdir(), "cstack-intent-remote-"));
+  await execFileAsync("git", ["init", "--bare", remoteDir]);
+  await execFileAsync("git", ["init", "-b", "main"], { cwd: repoDir });
+  await execFileAsync("git", ["config", "user.name", "cstack test"], { cwd: repoDir });
+  await execFileAsync("git", ["config", "user.email", "cstack-test@example.com"], { cwd: repoDir });
+  await execFileAsync("git", ["remote", "add", "origin", remoteDir], { cwd: repoDir });
+  await execFileAsync("git", ["add", "."], { cwd: repoDir });
+  await execFileAsync("git", ["commit", "-m", "fixture"], { cwd: repoDir });
+  await execFileAsync("git", ["push", "-u", "origin", "main"], { cwd: repoDir });
+  return remoteDir;
+}
+
 describe("intent router", () => {
   let repoDir: string;
+  let remoteDir: string;
 
   beforeEach(async () => {
     repoDir = await fs.mkdtemp(path.join(os.tmpdir(), "cstack-intent-"));
@@ -50,10 +68,12 @@ describe("intent router", () => {
       "# repo research\n",
       "utf8"
     );
+    remoteDir = await initGitRepo(repoDir);
   });
 
   afterEach(async () => {
     await fs.rm(repoDir, { recursive: true, force: true });
+    await fs.rm(remoteDir, { recursive: true, force: true });
   });
 
   it("infers staged execution and specialists from intent", () => {
@@ -208,6 +228,7 @@ describe("intent router", () => {
   });
 
   it("auto-executes downstream delivery for gap-analysis prompts that also ask for remediation", async () => {
+    await fs.writeFile(path.join(repoDir, "dirty-local.txt"), "do not copy\n", "utf8");
     await runIntent(repoDir, "What are the gaps in this project? Can you work on closing the gaps?", {
       entrypoint: "bare",
       dryRun: false
@@ -225,12 +246,20 @@ describe("intent router", () => {
       runs.find((entry) => entry.workflow === "deliver")!.id
     );
     const intentRunDir = path.dirname(intentRun.finalPath);
+    const deliverRunDir = path.dirname(deliverRun.finalPath);
     const lineage = JSON.parse(await fs.readFile(path.join(intentRunDir, "stage-lineage.json"), "utf8")) as StageLineage;
+    const executionContext = JSON.parse(await fs.readFile(path.join(deliverRunDir, "execution-context.json"), "utf8")) as {
+      source: { dirtyFiles: string[]; localChangesIgnored: boolean };
+      execution: { kind: string; cwd: string };
+    };
 
     expect(intentRun.status).toBe("completed");
     expect(deliverRun.status).toBe("completed");
     expect(lineage.stages.map((stage) => stage.name)).toEqual(["discover", "spec", "build", "review", "ship"]);
     expect(lineage.stages.find((stage) => stage.name === "build")?.childRunId).toBe(deliverRun.id);
+    expect(executionContext.execution.kind).toBe("git-worktree");
+    expect(executionContext.source.dirtyFiles).toContain("dirty-local.txt");
+    expect(executionContext.source.localChangesIgnored).toBe(true);
   });
 
   it("supports dry-run routing without executing stages", async () => {

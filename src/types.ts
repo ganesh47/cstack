@@ -2,6 +2,7 @@ export type WorkflowName = "spec" | "discover" | "build" | "review" | "ship" | "
 export type RunStatus = "running" | "completed" | "failed";
 export type WorkflowMode = "exec" | "interactive";
 export type DeliverTargetMode = "merge-ready" | "release";
+export type ExecutionCheckoutKind = "source" | "git-worktree" | "temp-clone";
 
 export type StageName = "discover" | "spec" | "build" | "validation" | "review" | "ship";
 
@@ -153,6 +154,7 @@ export interface RunInspection {
   deliverShipRecord: DeliverShipRecord | null;
   githubDeliveryRecord: GitHubDeliveryRecord | null;
   githubMutationRecord: GitHubMutationRecord | null;
+  executionContext: ExecutionContextRecord | null;
   recentEvents: RunEvent[];
   finalBody: string;
   artifacts: ArtifactEntry[];
@@ -299,6 +301,30 @@ export interface BuildSessionRecord {
     fallbackReason?: string;
   };
   notes?: string[];
+}
+
+export interface ExecutionContextRecord {
+  workflow: "build" | "deliver";
+  preparedAt: string;
+  source: {
+    cwd: string;
+    branch: string;
+    commit: string;
+    dirtyFiles: string[];
+    localChangesIgnored: boolean;
+  };
+  execution: {
+    kind: ExecutionCheckoutKind;
+    cwd: string;
+    branch: string;
+    commit: string;
+    isolated: boolean;
+    notes: string[];
+  };
+  cleanup: {
+    policy: "retain";
+    status: "retained" | "not-needed";
+  };
 }
 
 export interface BuildVerificationCommandRecord {

@@ -116,10 +116,16 @@ Inputs:
 
 Safety:
 
-- `build` requires a clean worktree unless `--allow-dirty` is set or repo policy enables dirty operation
+- `build` executes against an isolated execution checkout by default
+- the execution source snapshot is the current committed `HEAD`
+- uncommitted local changes in the caller's workspace are ignored by default and are not silently copied into the execution checkout
+- `git worktree add` is the preferred isolation path
+- when `git worktree add` is unavailable or fails, `build` may fall back to a temporary clone from the configured remote
+- if no safe isolated checkout can be prepared, `build` must fail closed with an explicit error
 
 Key artifacts:
 
+- `execution-context.json`
 - `session.json`
 - `artifacts/change-summary.md`
 - `artifacts/verification.json`
@@ -227,12 +233,18 @@ Inputs:
 
 Safety:
 
-- `deliver` requires a clean worktree unless `--allow-dirty` is set or repo policy enables dirty operation
+- `deliver` executes mutation-capable stages against an isolated execution checkout by default
+- the execution source snapshot is the current committed `HEAD`
+- uncommitted local changes in the caller's workspace are ignored by default and are not silently copied into the execution checkout
+- `git worktree add` is the preferred isolation path
+- when `git worktree add` is unavailable or fails, `deliver` may fall back to a temporary clone from the configured remote
+- if no safe isolated checkout can be prepared, `deliver` must fail closed with an explicit error
 - GitHub completion is fail-closed
 
 Key artifacts:
 
 - `stage-lineage.json`
+- `execution-context.json`
 - `stages/build/...`
 - `stages/validation/...`
 - `stages/review/...`
@@ -586,14 +598,28 @@ Every delegated output must be attributable in artifacts.
 
 Default rule:
 
-- they require a clean worktree
+- `build` and `deliver` execute from an isolated checkout instead of mutating the caller's dirty live workspace
+- the default execution snapshot is the source repo's committed `HEAD`
+- uncommitted local source changes are ignored by default
+- `ship` still requires a clean worktree when run directly against the source repo
+
+Isolation policy:
+
+- prefer `git worktree add` from the source repo
+- fall back to a temporary clone from the configured remote when worktree creation is not possible
+- fail closed when no safe isolated checkout can be prepared
 
 Override rule:
 
-- the operator may pass `--allow-dirty`, or
-- repo policy may set `allowDirty = true`
+- repo policy may still opt into source-repo dirty execution with `allowDirty = true`
+- including uncommitted local changes in the isolated execution checkout is out of scope for the active contract
 
-This rule exists to prevent the wrapper from silently sweeping unrelated edits into GitHub mutation flows.
+Artifact contract:
+
+- mutation-capable runs must record the source repo path, source branch, source commit, execution checkout kind, execution checkout path, and cleanup status
+- the operator-facing summary should state when isolated execution is in use and when local dirt was intentionally ignored
+
+This rule exists to prevent the wrapper from silently sweeping unrelated edits into GitHub mutation flows while still allowing delivery work to proceed from a clean audited snapshot.
 
 ## Non-Goals
 

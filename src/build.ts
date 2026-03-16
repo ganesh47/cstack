@@ -46,6 +46,7 @@ export interface BuildPaths {
 
 export interface BuildExecutionOptions {
   cwd: string;
+  executionCwd?: string;
   runId: string;
   input: string;
   config: CstackConfig;
@@ -273,7 +274,8 @@ async function writeJson(filePath: string, value: unknown): Promise<void> {
 }
 
 export async function runBuildExecution(options: BuildExecutionOptions): Promise<BuildExecutionResult> {
-  const dirtyWorktree = await detectDirtyWorktree(options.cwd);
+  const executionCwd = options.executionCwd ?? options.cwd;
+  const dirtyWorktree = await detectDirtyWorktree(executionCwd);
   const notes: string[] = [];
   const requestedMode = options.requestedMode;
   let observedMode: WorkflowMode = requestedMode;
@@ -287,7 +289,7 @@ export async function runBuildExecution(options: BuildExecutionOptions): Promise
 
   const buildPrompt = async (mode: WorkflowMode) =>
     buildBuildPrompt({
-      cwd: options.cwd,
+      cwd: executionCwd,
       input: options.input,
       config: options.config,
       mode,
@@ -310,7 +312,7 @@ export async function runBuildExecution(options: BuildExecutionOptions): Promise
   if (observedMode === "interactive") {
     try {
       result = await runCodexInteractive({
-        cwd: options.cwd,
+        cwd: executionCwd,
         workflow: "build",
         runId: options.runId,
         prompt,
@@ -331,7 +333,7 @@ export async function runBuildExecution(options: BuildExecutionOptions): Promise
       await fs.writeFile(options.paths.promptPath, prompt, "utf8");
       await fs.writeFile(options.paths.contextPath, `${context}\n`, "utf8");
       result = await runCodexExec({
-        cwd: options.cwd,
+        cwd: executionCwd,
         workflow: "build",
         runId: options.runId,
         prompt,
@@ -344,7 +346,7 @@ export async function runBuildExecution(options: BuildExecutionOptions): Promise
     }
   } else {
     result = await runCodexExec({
-      cwd: options.cwd,
+      cwd: executionCwd,
       workflow: "build",
       runId: options.runId,
       prompt,
@@ -358,7 +360,7 @@ export async function runBuildExecution(options: BuildExecutionOptions): Promise
 
   const verificationRecord: BuildVerificationRecord =
     result.code === 0
-      ? await runVerificationCommands(options.cwd, options.paths.runDir, options.verificationCommands)
+      ? await runVerificationCommands(executionCwd, options.paths.runDir, options.verificationCommands)
       : {
           status: "not-run",
           requestedCommands: options.verificationCommands,
@@ -376,7 +378,7 @@ export async function runBuildExecution(options: BuildExecutionOptions): Promise
       result,
       verificationRecord,
       transcriptPath: path.relative(options.cwd, options.paths.transcriptPath),
-      notes,
+      notes: executionCwd !== options.cwd ? [...notes, `Execution checkout: ${executionCwd}`] : notes,
       ...(options.linkedContext ? { linkedContext: options.linkedContext } : {})
     });
     await fs.writeFile(options.paths.finalPath, finalBody, "utf8");

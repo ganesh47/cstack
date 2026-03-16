@@ -1,13 +1,30 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { chmodSync } from "node:fs";
+import { promisify } from "node:util";
 import { runFork } from "../src/commands/fork.js";
 import { runResume } from "../src/commands/resume.js";
 import { runRerun } from "../src/commands/rerun.js";
 import { listRuns, readRun } from "../src/run.js";
 import type { RunRecord } from "../src/types.js";
+
+const execFileAsync = promisify(execFile);
+
+async function initGitRepo(repoDir: string): Promise<string> {
+  const remoteDir = await fs.mkdtemp(path.join(os.tmpdir(), "cstack-session-remote-"));
+  await execFileAsync("git", ["init", "--bare", remoteDir]);
+  await execFileAsync("git", ["init", "-b", "main"], { cwd: repoDir });
+  await execFileAsync("git", ["config", "user.name", "cstack test"], { cwd: repoDir });
+  await execFileAsync("git", ["config", "user.email", "cstack-test@example.com"], { cwd: repoDir });
+  await execFileAsync("git", ["remote", "add", "origin", remoteDir], { cwd: repoDir });
+  await execFileAsync("git", ["add", "."], { cwd: repoDir });
+  await execFileAsync("git", ["commit", "-m", "fixture"], { cwd: repoDir });
+  await execFileAsync("git", ["push", "-u", "origin", "main"], { cwd: repoDir });
+  return remoteDir;
+}
 
 async function seedBuildRun(repoDir: string): Promise<string> {
   const runId = "2026-03-14T11-00-00-build-billing-cleanup";
@@ -77,6 +94,7 @@ async function seedBuildRun(repoDir: string): Promise<string> {
 
 describe("session support commands", () => {
   let repoDir: string;
+  let remoteDir: string;
 
   beforeEach(async () => {
     repoDir = await fs.mkdtemp(path.join(os.tmpdir(), "cstack-session-"));
@@ -101,10 +119,12 @@ describe("session support commands", () => {
     await fs.writeFile(path.join(repoDir, ".cstack", "prompts", "build.md"), "# test build prompt asset\n", "utf8");
     await fs.writeFile(path.join(repoDir, "docs", "specs", "cstack-spec-v0.1.md"), "# repo spec\n", "utf8");
     await fs.writeFile(path.join(repoDir, "docs", "research", "gstack-codex-interaction-model.md"), "# repo research\n", "utf8");
+    remoteDir = await initGitRepo(repoDir);
   });
 
   afterEach(async () => {
     await fs.rm(repoDir, { recursive: true, force: true });
+    await fs.rm(remoteDir, { recursive: true, force: true });
   });
 
   it("resolves a run id to codex resume", async () => {

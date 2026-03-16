@@ -12,6 +12,7 @@ import type {
   DeliverShipRecord,
   DiscoverDelegateResult,
   DiscoverResearchPlan,
+  ExecutionContextRecord,
   GitHubGateEvaluation,
   GitHubDeliveryRecord,
   GitHubMutationRecord,
@@ -572,6 +573,7 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
   const deliverShipRecordPath = path.join(runDir, "stages", "ship", "artifacts", "ship-record.json");
   const reviewVerdictPath = path.join(runDir, "artifacts", "verdict.json");
   const shipRecordPath = path.join(runDir, "artifacts", "ship-record.json");
+  const executionContextPath = path.join(runDir, "execution-context.json");
   const githubDeliveryPath = path.join(runDir, "artifacts", "github-delivery.json");
   const githubMutationPath = path.join(runDir, "artifacts", "github-mutation.json");
   const [
@@ -590,6 +592,7 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     deliverShipRecord,
     githubDeliveryRecord,
     githubMutationRecord,
+    executionContext,
     artifacts
   ] = await Promise.all([
     readRecentEvents(run.eventsPath),
@@ -607,6 +610,7 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     readJsonFile<DeliverShipRecord>(run.workflow === "deliver" ? deliverShipRecordPath : run.workflow === "ship" ? shipRecordPath : ""),
     readJsonFile<GitHubDeliveryRecord>(githubDeliveryPath),
     readJsonFile<GitHubMutationRecord>(githubMutationPath),
+    readJsonFile<ExecutionContextRecord>(executionContextPath),
     walkArtifacts(runDir)
   ]);
   const childRuns = await loadChildRuns(cwd, stageLineage);
@@ -633,6 +637,7 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     deliverShipRecord,
     githubDeliveryRecord,
     githubMutationRecord,
+    executionContext,
     recentEvents,
     finalBody,
     artifacts,
@@ -730,6 +735,15 @@ export function renderInspectionSummary(cwd: string, inspection: RunInspection):
       run.eventsPath ? `- events: ${path.relative(cwd, run.eventsPath)}` : undefined,
       run.sessionId ? `- session: ${run.sessionId}` : undefined,
       run.lastActivity ? `- last activity: ${run.lastActivity}` : undefined,
+      inspection.executionContext
+        ? `- execution: ${inspection.executionContext.execution.kind} @ ${inspection.executionContext.execution.cwd}`
+        : undefined,
+      inspection.executionContext
+        ? `- source snapshot: ${inspection.executionContext.source.branch} ${inspection.executionContext.source.commit}`
+        : undefined,
+      inspection.executionContext?.source.localChangesIgnored
+        ? "- local dirty changes: ignored by default; execution used committed HEAD"
+        : undefined,
       inspection.sessionRecord ? `- mode: requested ${inspection.sessionRecord.requestedMode}, observed ${inspection.sessionRecord.mode}` : undefined,
       inspection.sessionRecord?.linkedRunId ? `- linked run: ${inspection.sessionRecord.linkedRunId}` : undefined,
       inspection.verificationRecord ? `- verification: ${renderVerificationSummary(inspection.verificationRecord)}` : undefined,
