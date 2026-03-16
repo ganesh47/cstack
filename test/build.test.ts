@@ -15,6 +15,19 @@ async function runGit(repoDir: string, args: string[]): Promise<void> {
   await execFileAsync("git", args, { cwd: repoDir });
 }
 
+async function initGitRepo(repoDir: string): Promise<string> {
+  const remoteDir = await fs.mkdtemp(path.join(os.tmpdir(), "cstack-build-remote-"));
+  await execFileAsync("git", ["init", "--bare", remoteDir]);
+  await runGit(repoDir, ["init", "-b", "main"]);
+  await runGit(repoDir, ["config", "user.name", "cstack test"]);
+  await runGit(repoDir, ["config", "user.email", "cstack-test@example.com"]);
+  await runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+  await runGit(repoDir, ["add", "."]);
+  await runGit(repoDir, ["commit", "-m", "fixture"]);
+  await runGit(repoDir, ["push", "-u", "origin", "main"]);
+  return remoteDir;
+}
+
 async function seedSpecRun(repoDir: string): Promise<string> {
   const runId = "2026-03-14T10-00-00-spec-billing-retry";
   const runDir = path.join(repoDir, ".cstack", "runs", runId);
@@ -51,6 +64,7 @@ async function seedSpecRun(repoDir: string): Promise<string> {
 
 describe("runBuild", () => {
   let repoDir: string;
+  let remoteDir: string;
 
   beforeEach(async () => {
     repoDir = await fs.mkdtemp(path.join(os.tmpdir(), "cstack-build-"));
@@ -84,10 +98,12 @@ describe("runBuild", () => {
       "# repo research\n",
       "utf8"
     );
+    remoteDir = await initGitRepo(repoDir);
   });
 
   afterEach(async () => {
     await fs.rm(repoDir, { recursive: true, force: true });
+    await fs.rm(remoteDir, { recursive: true, force: true });
   });
 
   it("creates a build run with session and verification artifacts", async () => {
@@ -100,6 +116,10 @@ describe("runBuild", () => {
 
       const run = await readRun(repoDir, runs[0]!.id);
       const runDir = path.dirname(run.finalPath);
+      const executionContext = JSON.parse(await fs.readFile(path.join(runDir, "execution-context.json"), "utf8")) as {
+        source: { cwd: string; commit: string };
+        execution: { kind: string; cwd: string };
+      };
       const session = JSON.parse(await fs.readFile(path.join(runDir, "session.json"), "utf8")) as {
         requestedMode: string;
         mode: string;
@@ -117,6 +137,9 @@ describe("runBuild", () => {
       expect(run.status).toBe("completed");
       expect(run.inputs.requestedMode).toBe("interactive");
       expect(run.inputs.observedMode).toBe("exec");
+      expect(executionContext.execution.kind).toBe("git-worktree");
+      expect(executionContext.source.cwd).toBe(repoDir);
+      expect(executionContext.execution.cwd).not.toBe(repoDir);
       expect(session.requestedMode).toBe("interactive");
       expect(session.mode).toBe("exec");
       expect(session.observability.fallbackReason).toContain("no TTY");
@@ -162,18 +185,52 @@ describe("runBuild", () => {
     const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
     try {
-      await runGit(repoDir, ["init", "-b", "main"]);
-      await runGit(repoDir, ["config", "user.name", "cstack test"]);
-      await runGit(repoDir, ["config", "user.email", "cstack-test@example.com"]);
-      await runGit(repoDir, ["add", "."]);
-      await runGit(repoDir, ["commit", "-m", "fixture"]);
-
       await fs.mkdir(path.join(repoDir, ".cstack", "runs", "transient"), { recursive: true });
       await fs.writeFile(path.join(repoDir, ".cstack", "runs", "transient", "run.json"), "{}\n", "utf8");
 
       await expect(runBuild(repoDir, ["--exec", "Implement the queued billing retry cleanup"])).resolves.toBeTruthy();
     } finally {
       stdoutSpy.mockRestore();
+    }
+  });
+
+  it("uses an isolated checkout when the source repo is dirty", async () => {
+    await fs.writeFile(path.join(repoDir, "local-only.txt"), "uncommitted\n", "utf8");
+
+    await runBuild(repoDir, ["--exec", "Implement the queued billing retry cleanup"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const executionContext = JSON.parse(await fs.readFile(path.join(runDir, "execution-context.json"), "utf8")) as {
+      source: { dirtyFiles: string[]; localChangesIgnored: boolean };
+      execution: { kind: string; cwd: string };
+    };
+
+    expect(executionContext.source.dirtyFiles).toContain("local-only.txt");
+    expect(executionContext.source.localChangesIgnored).toBe(true);
+    expect(executionContext.execution.kind).toBe("git-worktree");
+    await expect(fs.access(path.join(repoDir, "codex-generated-change.txt"))).rejects.toThrow();
+    expect(await fs.readFile(path.join(executionContext.execution.cwd, "codex-generated-change.txt"), "utf8")).toContain("generated");
+  });
+
+  it("falls back to a temporary clone when worktree creation fails", async () => {
+    process.env.CSTACK_FORCE_CLONE_FALLBACK = "1";
+    try {
+      await runBuild(repoDir, ["--exec", "Implement the queued billing retry cleanup"]);
+
+      const runs = await listRuns(repoDir);
+      const run = await readRun(repoDir, runs[0]!.id);
+      const runDir = path.dirname(run.finalPath);
+      const executionContext = JSON.parse(await fs.readFile(path.join(runDir, "execution-context.json"), "utf8")) as {
+        execution: { kind: string; notes: string[]; cwd: string };
+      };
+
+      expect(executionContext.execution.kind).toBe("temp-clone");
+      expect(executionContext.execution.notes.join(" ")).toContain("falling back to temporary clone");
+      expect(await fs.readFile(path.join(executionContext.execution.cwd, "codex-generated-change.txt"), "utf8")).toContain("generated");
+    } finally {
+      delete process.env.CSTACK_FORCE_CLONE_FALLBACK;
     }
   });
 });

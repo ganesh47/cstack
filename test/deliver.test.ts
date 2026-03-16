@@ -89,7 +89,7 @@ describe("runDeliver", () => {
         "",
         "[workflows.deliver]",
         'mode = "interactive"',
-        "allowDirty = true",
+        "allowDirty = false",
         'verificationCommands = ["node -e \\"process.stdout.write(\'deliver verify ok\')\\""]',
         "",
         "[workflows.deliver.github]",
@@ -179,6 +179,10 @@ describe("runDeliver", () => {
 
       const run = await readRun(repoDir, runs[0]!.id);
       const runDir = path.dirname(run.finalPath);
+      const executionContext = JSON.parse(await fs.readFile(path.join(runDir, "execution-context.json"), "utf8")) as {
+        source: { dirtyFiles: string[]; localChangesIgnored: boolean; cwd: string };
+        execution: { kind: string; cwd: string };
+      };
       const lineage = JSON.parse(await fs.readFile(path.join(runDir, "stage-lineage.json"), "utf8")) as StageLineage;
       const reviewVerdict = JSON.parse(await fs.readFile(path.join(runDir, "stages", "review", "artifacts", "verdict.json"), "utf8")) as {
         status: string;
@@ -226,6 +230,11 @@ describe("runDeliver", () => {
       expect(run.status).toBe("completed");
       expect(run.inputs.requestedMode).toBe("interactive");
       expect(run.inputs.observedMode).toBe("exec");
+      expect(executionContext.execution.kind).toBe("git-worktree");
+      expect(executionContext.source.cwd).toBe(repoDir);
+      expect(executionContext.execution.cwd).not.toBe(repoDir);
+      expect(executionContext.source.dirtyFiles).toContain("src-change.txt");
+      expect(executionContext.source.localChangesIgnored).toBe(true);
       expect(run.inputs.selectedSpecialists?.length).toBeGreaterThan(0);
       expect(lineage.stages.map((stage) => stage.name)).toEqual(["build", "validation", "review", "ship"]);
       expect(lineage.stages.every((stage) => stage.executed)).toBe(true);
@@ -241,7 +250,8 @@ describe("runDeliver", () => {
       expect(githubMutation.branch.current).toContain("cstack/");
       expect(githubMutation.commit.created).toBe(true);
       expect(githubMutation.commit.sha).toBeTruthy();
-      expect(githubMutation.commit.changedFiles).toContain("src-change.txt");
+      expect(githubMutation.commit.changedFiles).toContain("codex-generated-change.txt");
+      expect(githubMutation.commit.changedFiles).not.toContain("src-change.txt");
       expect(githubMutation.pullRequest.created).toBe(true);
       expect(githubMutation.pullRequest.url).toContain("/pull/");
       expect(githubMutation.checks.watched).toBe(true);
@@ -260,6 +270,7 @@ describe("runDeliver", () => {
       expect(finalBody).toContain("# Deliver Run Summary");
       expect(deliveryReport).toContain("# Deliver Run Summary");
       expect(consoleOutput).toContain("Workflow: deliver");
+      expect(consoleOutput).toContain("Execution checkout: git-worktree @");
       expect(consoleOutput).toContain("Validation: ready");
       expect(consoleOutput).toContain("GitHub mutation:");
       expect(consoleOutput).toContain("Review verdict: ready");
@@ -315,7 +326,6 @@ describe("runDeliver", () => {
         codeScanning: []
       }
     });
-    await fs.writeFile(path.join(repoDir, "release-change.txt"), "release change\n", "utf8");
     const configPath = path.join(repoDir, ".cstack", "config.toml");
     const configBody = await fs.readFile(configPath, "utf8");
     await fs.writeFile(
@@ -404,8 +414,6 @@ describe("runDeliver", () => {
         codeScanning: []
       }
     });
-    await fs.writeFile(path.join(repoDir, "blocked-change.txt"), "blocked change\n", "utf8");
-
     await runDeliver(repoDir, ["Deliver a blocked change for #789"]);
 
     const runs = await listRuns(repoDir);
@@ -463,8 +471,6 @@ describe("runDeliver", () => {
         codeScanning: []
       }
     });
-    await fs.writeFile(path.join(repoDir, "mutation-failure.txt"), "mutation failure\n", "utf8");
-
     await runDeliver(repoDir, ["Deliver a fix that will fail PR creation for #901"]);
 
     const runs = await listRuns(repoDir);

@@ -1,8 +1,8 @@
 import path from "node:path";
 import { loadConfig } from "../config.js";
+import { prepareExecutionCheckout, writeExecutionContext } from "../execution-checkout.js";
 import { maybeOfferInteractiveInspect } from "../inspector.js";
 import { resolveLinkedBuildContext, runDeliverExecution } from "../deliver.js";
-import { ensureCleanWorktreeForWorkflow } from "../build.js";
 import { detectCodexVersion, detectGitBranch, ensureRunDir, makeRunId, writeRunRecord } from "../run.js";
 import type { DeliverTargetMode, RunRecord, WorkflowMode } from "../types.js";
 
@@ -93,7 +93,6 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
 
   const { config, sources } = await loadConfig(cwd);
   const allowDirty = parsed.options.allowDirty ?? config.workflows.deliver.allowDirty ?? false;
-  await ensureCleanWorktreeForWorkflow(cwd, "deliver", allowDirty);
   const linkedContext = parsed.options.fromRunId ? await resolveLinkedBuildContext(cwd, parsed.options.fromRunId) : undefined;
   const runId = makeRunId("deliver", resolvedPrompt);
   const runDir = await ensureRunDir(cwd, runId);
@@ -105,6 +104,7 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
   const stdoutPath = path.join(runDir, "stdout.log");
   const stderrPath = path.join(runDir, "stderr.log");
   const stageLineagePath = path.join(runDir, "stage-lineage.json");
+  const executionContextPath = path.join(runDir, "execution-context.json");
   const [gitBranch, codexVersion] = await Promise.all([
     detectGitBranch(cwd),
     detectCodexVersion(cwd, config.codex.command)
@@ -154,8 +154,15 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
   await hooks.onRunCreated?.(runRecord);
 
   try {
+    const executionCheckout = await prepareExecutionCheckout({
+      sourceCwd: cwd,
+      runId,
+      workflow: "deliver",
+      allowDirtySourceExecution: allowDirty
+    });
+    await writeExecutionContext(executionContextPath, executionCheckout.record);
     const execution = await runDeliverExecution({
-      cwd,
+      cwd: executionCheckout.executionCwd,
       gitBranch,
       runId,
       input: resolvedPrompt,
@@ -225,12 +232,18 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
         `Mode: requested=${requestedMode} observed=${execution.buildExecution.observedMode}`,
         `Status: ${runRecord.status}`,
         buildSession.sessionId ? `Build session: ${buildSession.sessionId}` : "Build session: not observed",
+        `Execution checkout: ${executionCheckout.record.execution.kind} @ ${executionCheckout.record.execution.cwd}`,
+        `Source snapshot: ${executionCheckout.record.source.branch} ${executionCheckout.record.source.commit}`,
+        executionCheckout.record.source.dirtyFiles.length > 0 && !allowDirty
+          ? "Local dirty changes were ignored; execution used committed HEAD."
+          : undefined,
         `Validation: ${execution.validationExecution.validationPlan.status}`,
         `Review verdict: ${execution.reviewVerdict.status}`,
         `Ship readiness: ${execution.shipRecord.readiness}`,
         `GitHub mutation: ${execution.githubMutationRecord.summary}`,
         `GitHub delivery: ${execution.githubDeliveryRecord.overall.status}`,
         "Artifacts:",
+        `  ${path.relative(cwd, executionContextPath)}`,
         `  ${path.relative(cwd, finalPath)}`,
         `  ${path.relative(cwd, deliveryReportPath)}`,
         `  ${path.relative(cwd, path.join(runDir, "artifacts", "github-mutation.json"))}`,

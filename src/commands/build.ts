@@ -1,8 +1,8 @@
 import path from "node:path";
 import { loadConfig } from "../config.js";
+import { prepareExecutionCheckout, writeExecutionContext } from "../execution-checkout.js";
 import { maybeOfferInteractiveInspect } from "../inspector.js";
 import {
-  ensureCleanWorktreeForWorkflow,
   resolveLinkedBuildContext,
   runBuildExecution
 } from "../build.js";
@@ -78,7 +78,6 @@ export async function runBuild(cwd: string, args: string[] = []): Promise<string
 
   const { config, sources } = await loadConfig(cwd);
   const allowDirty = parsed.options.allowDirty ?? config.workflows.build.allowDirty ?? false;
-  await ensureCleanWorktreeForWorkflow(cwd, "build", allowDirty);
   const linkedContext = parsed.options.fromRunId ? await resolveLinkedBuildContext(cwd, parsed.options.fromRunId) : undefined;
   const runId = makeRunId("build", resolvedPrompt);
   const runDir = await ensureRunDir(cwd, runId);
@@ -89,6 +88,7 @@ export async function runBuild(cwd: string, args: string[] = []): Promise<string
   const stdoutPath = path.join(runDir, "stdout.log");
   const stderrPath = path.join(runDir, "stderr.log");
   const sessionPath = path.join(runDir, "session.json");
+  const executionContextPath = path.join(runDir, "execution-context.json");
   const transcriptPath = path.join(runDir, "artifacts", "build-transcript.log");
   const changeSummaryPath = path.join(runDir, "artifacts", "change-summary.md");
   const verificationPath = path.join(runDir, "artifacts", "verification.json");
@@ -136,8 +136,16 @@ export async function runBuild(cwd: string, args: string[] = []): Promise<string
   await writeRunRecord(runDir, runRecord);
 
   try {
+    const executionCheckout = await prepareExecutionCheckout({
+      sourceCwd: cwd,
+      runId,
+      workflow: "build",
+      allowDirtySourceExecution: allowDirty
+    });
+    await writeExecutionContext(executionContextPath, executionCheckout.record);
     const execution = await runBuildExecution({
       cwd,
+      executionCwd: executionCheckout.executionCwd,
       runId,
       input: resolvedPrompt,
       config,
@@ -186,7 +194,13 @@ export async function runBuild(cwd: string, args: string[] = []): Promise<string
         `Mode: requested=${requestedMode} observed=${execution.observedMode}`,
         `Status: ${runRecord.status}`,
         execution.result.sessionId ? `Session: ${execution.result.sessionId}` : "Session: not observed",
+        `Execution checkout: ${executionCheckout.record.execution.kind} @ ${executionCheckout.record.execution.cwd}`,
+        `Source snapshot: ${executionCheckout.record.source.branch} ${executionCheckout.record.source.commit}`,
+        executionCheckout.record.source.dirtyFiles.length > 0 && !allowDirty
+          ? "Local dirty changes were ignored; execution used committed HEAD."
+          : undefined,
         "Artifacts:",
+        `  ${path.relative(cwd, executionContextPath)}`,
         `  ${path.relative(cwd, finalPath)}`,
         `  ${path.relative(cwd, changeSummaryPath)}`,
         `  ${path.relative(cwd, verificationPath)}`,

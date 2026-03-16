@@ -181,6 +181,29 @@ How to inspect it:
 - `cstack inspect <run-id> --interactive` opens an artifact-grounded console for follow-up questions
 - the run directory includes `routing-plan.json`, `stage-lineage.json`, and specialist artifacts under `delegates/`
 
+## Isolated Execution Checkouts
+
+`build` and `deliver` now use an isolated execution checkout by default.
+
+Current contract:
+
+- the executed source snapshot is the current committed `HEAD`
+- uncommitted local source changes are ignored by default
+- `git worktree add` is the preferred isolation path
+- `cstack` falls back to a temporary clone from `origin` when worktree creation is not possible
+- if no safe isolated checkout can be prepared, the mutation workflow fails closed
+
+What gets recorded:
+
+- `execution-context.json` with source repo path, source branch, source commit, execution checkout kind, execution checkout path, and cleanup status
+- build and deliver console summaries that state when local dirt was intentionally ignored
+- `inspect` home view lines for the execution checkout and source snapshot
+
+Current limitation:
+
+- uncommitted local source changes are not copied into the isolated checkout
+- `--allow-dirty` remains the explicit opt-in for source-repo dirty execution
+
 ## Runs and Inspection
 
 `cstack runs` is now the run ledger, not just a raw directory listing.
@@ -489,6 +512,7 @@ Current artifact set:
 - `stderr.log`
 - `routing-plan.json` for intent runs
 - `stage-lineage.json` for intent runs
+- `execution-context.json` for `build` and `deliver` source-vs-execution lineage
 - `session.json` for build runs and any workflow with recorded interactive session lineage
 - `artifacts-index.json` or equivalent artifact inventory derived by the inspector
 - `artifacts/spec.md` for `spec`
@@ -528,7 +552,7 @@ Build notes:
 - `build` is interactive by default and records the observed Codex session id in `session.json`
 - if `build` is requested in a non-TTY shell, `cstack` falls back to `exec` and records both requested and observed mode in `session.json`
 - `build --from-run <run-id>` links a prior `spec` or `intent` run into the build context without mutating the source run
-- `build` requires a clean worktree unless `--allow-dirty` or repo policy allows otherwise
+- `build` executes from an isolated checkout by default and ignores uncommitted local dirt unless `--allow-dirty` or repo policy opts into source-repo dirty execution
 - verification commands are recorded even when they fail so inspection can explain what still remains
 - best-effort interactive transcripts are stored at `artifacts/build-transcript.log` when the interactive path is used
 
@@ -552,12 +576,13 @@ Deliver notes:
 - `deliver` is the operator-facing umbrella workflow over internal `build`, `validation`, `review`, and `ship` stages
 - the validation stage profiles the repo, chooses a layered validation strategy, records OSS tool research, and runs the selected local validation commands
 - stage-local artifacts live under `stages/build`, `stages/validation`, `stages/review`, and `stages/ship`
+- `deliver` executes those mutation-capable stages from an isolated checkout by default and records the source-vs-execution lineage in `execution-context.json`
 - when repo policy enables it, `deliver` can create or reuse a working branch, auto-commit the deliver change set, push it to `origin`, and create or update the GitHub pull request
 - `deliver` now evaluates GitHub-scoped engineering completion, including PR, checks, Actions, issue linkage, release evidence, and security gates when policy requires them
 - `deliver` fails closed when required GitHub evidence is missing or blocked
 - `deliver --release` switches the run into release-bearing mode and expects tag and release evidence
 - `deliver --issue <n>` links a specific GitHub issue into deliver evaluation
-- `deliver` requires a clean worktree unless `--allow-dirty` or repo policy allows otherwise
+- uncommitted local source edits are ignored by default for `deliver`; `--allow-dirty` remains the explicit opt-in for source-repo dirty execution
 - `cstack inspect <run-id>` supports `show validation`, `show pyramid`, `show coverage`, `show ci-validation`, `show tool-research`, `show review`, `show ship`, `show mutation`, and `show github` for deliver runs
 
 ## Development
