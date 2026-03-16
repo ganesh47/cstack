@@ -70,6 +70,11 @@ describe("intent router", () => {
     expect(plan.stages.map((stage) => stage.name)).toEqual(["review"]);
   });
 
+  it("routes gap-analysis prompts with explicit remediation intent into delivery stages", () => {
+    const plan = inferRoutingPlan("What are the gaps in this project? Can you work on closing the gaps?", "bare");
+    expect(plan.stages.map((stage) => stage.name)).toEqual(["discover", "spec", "build", "review", "ship"]);
+  });
+
   it("creates an intent run and auto-executes downstream delivery when the inferred plan warrants it", async () => {
     const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     try {
@@ -200,6 +205,32 @@ describe("intent router", () => {
     expect(lineage.stages.map((stage) => stage.name)).toEqual(["review"]);
     expect(lineage.stages.find((stage) => stage.name === "review")?.status).toBe("completed");
     expect(await fs.readFile(intentRun.finalPath, "utf8")).toContain("Gap analysis completed. High-priority product and delivery gaps remain.");
+  });
+
+  it("auto-executes downstream delivery for gap-analysis prompts that also ask for remediation", async () => {
+    await runIntent(repoDir, "What are the gaps in this project? Can you work on closing the gaps?", {
+      entrypoint: "bare",
+      dryRun: false
+    });
+
+    const runs = await listRuns(repoDir);
+    expect(runs.map((run) => run.workflow).sort()).toEqual(["deliver", "intent"]);
+
+    const intentRun = await readRun(
+      repoDir,
+      runs.find((entry) => entry.workflow === "intent")!.id
+    );
+    const deliverRun = await readRun(
+      repoDir,
+      runs.find((entry) => entry.workflow === "deliver")!.id
+    );
+    const intentRunDir = path.dirname(intentRun.finalPath);
+    const lineage = JSON.parse(await fs.readFile(path.join(intentRunDir, "stage-lineage.json"), "utf8")) as StageLineage;
+
+    expect(intentRun.status).toBe("completed");
+    expect(deliverRun.status).toBe("completed");
+    expect(lineage.stages.map((stage) => stage.name)).toEqual(["discover", "spec", "build", "review", "ship"]);
+    expect(lineage.stages.find((stage) => stage.name === "build")?.childRunId).toBe(deliverRun.id);
   });
 
   it("supports dry-run routing without executing stages", async () => {
