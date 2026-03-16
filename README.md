@@ -364,6 +364,7 @@ maxAgents = 0
 mode = "interactive"
 verificationCommands = ["npm test"]
 allowDirty = false
+timeoutSeconds = 900
 
 [workflows.review]
 mode = "exec"
@@ -378,6 +379,11 @@ mode = "smart"
 requireCiParity = true
 allowWorkflowMutation = true
 allowTestScaffolding = true
+
+[workflows.deliver.stageTimeoutSeconds]
+build = 900
+review = 600
+ship = 600
 
 [workflows.discover.delegation]
 enabled = true
@@ -500,6 +506,8 @@ Notes:
 - `sandbox`, `profile`, `model`, and `extraArgs` are passed through to Codex launches.
 - `workflows.build.mode` selects `interactive` or `exec`; interactive is the default for build runs.
 - `workflows.build.verificationCommands` provides default verification commands recorded into build artifacts.
+- `workflows.build.timeoutSeconds` time-boxes the Codex-backed build stage.
+- `workflows.deliver.stageTimeoutSeconds` can time-box internal `deliver` stages such as `build`, `review`, and `ship`.
 - discover delegation settings are now used to bound discover-time research fan-out.
 - discover web research stays opt-in through `[workflows.discover.research].allowWeb`.
 
@@ -559,6 +567,7 @@ Build notes:
 - if `build` is requested in a non-TTY shell, `cstack` falls back to `exec` and records both requested and observed mode in `session.json`
 - `build --from-run <run-id>` links a prior `spec` or `intent` run into the build context without mutating the source run
 - `build` executes from an isolated checkout by default and ignores uncommitted local dirt unless `--allow-dirty` or repo policy opts into source-repo dirty execution
+- when `workflows.build.timeoutSeconds` is set or left at the shipped default, a stalled Codex-backed build fails with an explicit timeout instead of lingering indefinitely
 - verification commands are recorded even when they fail so inspection can explain what still remains
 - best-effort interactive transcripts are stored at `artifacts/build-transcript.log` when the interactive path is used
 
@@ -583,6 +592,8 @@ Deliver notes:
 - the validation stage profiles the repo, chooses a layered validation strategy, records OSS tool research, and runs the selected local validation commands
 - stage-local artifacts live under `stages/build`, `stages/validation`, `stages/review`, and `stages/ship`
 - `deliver` executes those mutation-capable stages from an isolated checkout by default and records the source-vs-execution lineage in `execution-context.json`
+- if the internal `build` stage fails, `deliver` now stops immediately and marks `validation`, `review`, and `ship` as blocked/deferred instead of continuing to run them
+- failed or timed-out build stages now become the root cause shown in both deliver summaries and parent intent inspection
 - when repo policy enables it, `deliver` can create or reuse a working branch, auto-commit the deliver change set, push it to `origin`, and create or update the GitHub pull request
 - `deliver` now evaluates GitHub-scoped engineering completion, including PR, checks, Actions, issue linkage, release evidence, and security gates when policy requires them
 - `deliver` fails closed when required GitHub evidence is missing or blocked
@@ -590,6 +601,7 @@ Deliver notes:
 - `deliver --issue <n>` links a specific GitHub issue into deliver evaluation
 - uncommitted local source edits are ignored by default for `deliver`; `--allow-dirty` remains the explicit opt-in for source-repo dirty execution
 - `cstack inspect <run-id>` supports `show validation`, `show pyramid`, `show coverage`, `show ci-validation`, `show tool-research`, `show review`, `show ship`, `show mutation`, and `show github` for deliver runs
+- when a deliver build fails, `cstack inspect` now separates the root-cause build failure from later blocked stages and surfaces timeout/session/transcript evidence when available
 
 ## Development
 

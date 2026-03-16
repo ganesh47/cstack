@@ -31,6 +31,7 @@ const DEFAULT_CONFIG: CstackConfig = {
       mode: "interactive",
       verificationCommands: [],
       allowDirty: false,
+      timeoutSeconds: 900,
       delegation: {
         enabled: false,
         maxAgents: 0
@@ -40,6 +41,7 @@ const DEFAULT_CONFIG: CstackConfig = {
       mode: "exec",
       verificationCommands: [],
       allowDirty: true,
+      timeoutSeconds: 600,
       delegation: {
         enabled: true,
         maxAgents: 3
@@ -49,6 +51,7 @@ const DEFAULT_CONFIG: CstackConfig = {
       mode: "exec",
       verificationCommands: [],
       allowDirty: false,
+      timeoutSeconds: 600,
       delegation: {
         enabled: false,
         maxAgents: 0
@@ -58,6 +61,13 @@ const DEFAULT_CONFIG: CstackConfig = {
       mode: "interactive",
       verificationCommands: [],
       allowDirty: false,
+      timeoutSeconds: 900,
+      stageTimeoutSeconds: {
+        build: 900,
+        validation: 300,
+        review: 600,
+        ship: 600
+      },
       delegation: {
         enabled: true,
         maxAgents: 4

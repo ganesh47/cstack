@@ -72,6 +72,8 @@ describe("intent router", () => {
   });
 
   afterEach(async () => {
+    delete process.env.FAKE_CODEX_FAIL_BUILD;
+    delete process.env.FAKE_CODEX_DELAY_MS;
     await fs.rm(repoDir, { recursive: true, force: true });
     await fs.rm(remoteDir, { recursive: true, force: true });
   });
@@ -260,6 +262,31 @@ describe("intent router", () => {
     expect(executionContext.execution.kind).toBe("git-worktree");
     expect(executionContext.source.dirtyFiles).toContain("dirty-local.txt");
     expect(executionContext.source.localChangesIgnored).toBe(true);
+  });
+
+  it("surfaces downstream build failure promptly and marks later stages deferred", async () => {
+    process.env.FAKE_CODEX_FAIL_BUILD = "1";
+
+    await runIntent(repoDir, "What are the gaps in this project? Can you work on closing the gaps?", {
+      entrypoint: "bare",
+      dryRun: false
+    });
+
+    const runs = await listRuns(repoDir);
+    const intentRun = await readRun(
+      repoDir,
+      runs.find((entry) => entry.workflow === "intent")!.id
+    );
+    const intentRunDir = path.dirname(intentRun.finalPath);
+    const lineage = JSON.parse(await fs.readFile(path.join(intentRunDir, "stage-lineage.json"), "utf8")) as StageLineage;
+    const finalBody = await fs.readFile(intentRun.finalPath, "utf8");
+
+    expect(intentRun.status).toBe("failed");
+    expect(intentRun.error).toContain("build failed");
+    expect(lineage.stages.find((stage) => stage.name === "build")?.status).toBe("failed");
+    expect(lineage.stages.find((stage) => stage.name === "review")?.status).toBe("deferred");
+    expect(lineage.stages.find((stage) => stage.name === "ship")?.status).toBe("deferred");
+    expect(finalBody).toContain("Blocked because build failed");
   });
 
   it("supports dry-run routing without executing stages", async () => {

@@ -54,6 +54,7 @@ export interface BuildExecutionOptions {
   requestedMode: WorkflowMode;
   linkedContext?: LinkedBuildContext | undefined;
   verificationCommands: string[];
+  timeoutSeconds?: number;
 }
 
 export interface BuildExecutionResult {
@@ -320,7 +321,8 @@ export async function runBuildExecution(options: BuildExecutionOptions): Promise
         eventsPath: options.paths.eventsPath,
         stdoutPath: options.paths.stdoutPath,
         stderrPath: options.paths.stderrPath,
-        config: options.config
+        config: options.config,
+        ...(typeof options.timeoutSeconds === "number" ? { timeoutSeconds: options.timeoutSeconds } : {})
       });
     } catch (error) {
       if (!shouldFallbackLaunchError(error)) {
@@ -341,7 +343,8 @@ export async function runBuildExecution(options: BuildExecutionOptions): Promise
         eventsPath: options.paths.eventsPath,
         stdoutPath: options.paths.stdoutPath,
         stderrPath: options.paths.stderrPath,
-        config: options.config
+        config: options.config,
+        ...(typeof options.timeoutSeconds === "number" ? { timeoutSeconds: options.timeoutSeconds } : {})
       });
     }
   } else {
@@ -354,7 +357,8 @@ export async function runBuildExecution(options: BuildExecutionOptions): Promise
       eventsPath: options.paths.eventsPath,
       stdoutPath: options.paths.stdoutPath,
       stderrPath: options.paths.stderrPath,
-      config: options.config
+      config: options.config,
+      ...(typeof options.timeoutSeconds === "number" ? { timeoutSeconds: options.timeoutSeconds } : {})
     });
   }
 
@@ -405,6 +409,8 @@ export async function runBuildExecution(options: BuildExecutionOptions): Promise
       sessionIdObserved: Boolean(result.sessionId),
       transcriptObserved: Boolean(transcriptBody.trim()),
       finalArtifactObserved: Boolean(finalBody.trim()),
+      ...(result.timedOut ? { timedOut: true } : {}),
+      ...(result.timeoutSeconds ? { timeoutSeconds: result.timeoutSeconds } : {}),
       ...(fallbackReason ? { fallbackReason } : {})
     },
     ...(notes.length > 0 ? { notes } : {})

@@ -102,6 +102,8 @@ describe("runBuild", () => {
   });
 
   afterEach(async () => {
+    delete process.env.FAKE_CODEX_DELAY_MS;
+    delete process.env.CSTACK_FORCE_CLONE_FALLBACK;
     await fs.rm(repoDir, { recursive: true, force: true });
     await fs.rm(remoteDir, { recursive: true, force: true });
   });
@@ -216,21 +218,38 @@ describe("runBuild", () => {
 
   it("falls back to a temporary clone when worktree creation fails", async () => {
     process.env.CSTACK_FORCE_CLONE_FALLBACK = "1";
-    try {
-      await runBuild(repoDir, ["--exec", "Implement the queued billing retry cleanup"]);
+    await runBuild(repoDir, ["--exec", "Implement the queued billing retry cleanup"]);
 
-      const runs = await listRuns(repoDir);
-      const run = await readRun(repoDir, runs[0]!.id);
-      const runDir = path.dirname(run.finalPath);
-      const executionContext = JSON.parse(await fs.readFile(path.join(runDir, "execution-context.json"), "utf8")) as {
-        execution: { kind: string; notes: string[]; cwd: string };
-      };
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const executionContext = JSON.parse(await fs.readFile(path.join(runDir, "execution-context.json"), "utf8")) as {
+      execution: { kind: string; notes: string[]; cwd: string };
+    };
 
-      expect(executionContext.execution.kind).toBe("temp-clone");
-      expect(executionContext.execution.notes.join(" ")).toContain("falling back to temporary clone");
-      expect(await fs.readFile(path.join(executionContext.execution.cwd, "codex-generated-change.txt"), "utf8")).toContain("generated");
-    } finally {
-      delete process.env.CSTACK_FORCE_CLONE_FALLBACK;
-    }
+    expect(executionContext.execution.kind).toBe("temp-clone");
+    expect(executionContext.execution.notes.join(" ")).toContain("falling back to temporary clone");
+    expect(await fs.readFile(path.join(executionContext.execution.cwd, "codex-generated-change.txt"), "utf8")).toContain("generated");
+  });
+
+  it("times out the build stage when it exceeds the configured limit", async () => {
+    process.env.FAKE_CODEX_DELAY_MS = "1500";
+    const configPath = path.join(repoDir, ".cstack", "config.toml");
+    const configBody = await fs.readFile(configPath, "utf8");
+    await fs.writeFile(configPath, `${configBody}\ntimeoutSeconds = 1\n`, "utf8");
+
+    await expect(runBuild(repoDir, ["--exec", "Implement the queued billing retry cleanup"])).rejects.toThrow("timed out after 1s");
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const session = JSON.parse(await fs.readFile(path.join(runDir, "session.json"), "utf8")) as {
+      observability: { timedOut?: boolean; timeoutSeconds?: number };
+    };
+
+    expect(run.status).toBe("failed");
+    expect(run.error).toContain("build timed out after 1s");
+    expect(session.observability.timedOut).toBe(true);
+    expect(session.observability.timeoutSeconds).toBe(1);
   });
 });

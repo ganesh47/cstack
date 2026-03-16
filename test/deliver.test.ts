@@ -130,6 +130,9 @@ describe("runDeliver", () => {
   });
 
   afterEach(async () => {
+    delete process.env.FAKE_CODEX_FAIL_BUILD;
+    delete process.env.FAKE_CODEX_DELAY_MS;
+    delete process.env.CSTACK_FORCE_CLONE_FALLBACK;
     await fs.rm(repoDir, { recursive: true, force: true });
     await fs.rm(remoteDir, { recursive: true, force: true });
   });
@@ -446,6 +449,74 @@ describe("runDeliver", () => {
     expect(githubDelivery.overall.blockers.join("\n")).toContain("Required check deliver/test");
     expect(shipRecord.unresolved.join("\n")).toContain("Dependabot alert");
     expect(securityArtifact).toContain("\"severity\": \"high\"");
+  });
+
+  it("stops after a failed build and marks downstream stages as deferred", async () => {
+    process.env.FAKE_CODEX_FAIL_BUILD = "1";
+
+    await runDeliver(repoDir, ["Deliver a build failure fixture"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const lineage = JSON.parse(await fs.readFile(path.join(runDir, "stage-lineage.json"), "utf8")) as StageLineage;
+    const validationPlan = JSON.parse(await fs.readFile(path.join(runDir, "stages", "validation", "validation-plan.json"), "utf8")) as {
+      status: string;
+      summary: string;
+    };
+    const reviewVerdict = JSON.parse(await fs.readFile(path.join(runDir, "stages", "review", "artifacts", "verdict.json"), "utf8")) as {
+      status: string;
+      summary: string;
+    };
+    const shipRecord = JSON.parse(await fs.readFile(path.join(runDir, "stages", "ship", "artifacts", "ship-record.json"), "utf8")) as {
+      readiness: string;
+      summary: string;
+    };
+
+    expect(run.status).toBe("failed");
+    expect(run.error).toContain("build exited with code 1");
+    expect(run.lastActivity).toContain("Build failed with exit code 1");
+    expect(lineage.stages.find((stage) => stage.name === "build")).toMatchObject({ status: "failed", executed: true });
+    expect(lineage.stages.find((stage) => stage.name === "validation")).toMatchObject({ status: "deferred", executed: false });
+    expect(lineage.stages.find((stage) => stage.name === "review")).toMatchObject({ status: "deferred", executed: false });
+    expect(lineage.stages.find((stage) => stage.name === "ship")).toMatchObject({ status: "deferred", executed: false });
+    expect(validationPlan.status).toBe("blocked");
+    expect(validationPlan.summary).toContain("build stage did not complete successfully");
+    expect(reviewVerdict.status).toBe("blocked");
+    expect(reviewVerdict.summary).toContain("build failed first");
+    expect(shipRecord.readiness).toBe("blocked");
+    expect(shipRecord.summary).toContain("build failed first");
+  });
+
+  it("times out the build stage and blocks downstream stages", async () => {
+    process.env.FAKE_CODEX_DELAY_MS = "1500";
+    const configPath = path.join(repoDir, ".cstack", "config.toml");
+    const configBody = await fs.readFile(configPath, "utf8");
+    await fs.writeFile(
+      configPath,
+      configBody.replace(
+        '[workflows.build]\nmode = "interactive"',
+        '[workflows.build]\nmode = "interactive"\ntimeoutSeconds = 1'
+      ) + '\n[workflows.deliver.stageTimeoutSeconds]\nbuild = 1\n',
+      "utf8"
+    );
+
+    await runDeliver(repoDir, ["Deliver a timed out build fixture"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const session = JSON.parse(await fs.readFile(path.join(runDir, "stages", "build", "session.json"), "utf8")) as {
+      observability: { timedOut?: boolean; timeoutSeconds?: number };
+    };
+    const lineage = JSON.parse(await fs.readFile(path.join(runDir, "stage-lineage.json"), "utf8")) as StageLineage;
+
+    expect(run.status).toBe("failed");
+    expect(run.error).toContain("build timed out after 1s");
+    expect(session.observability.timedOut).toBe(true);
+    expect(session.observability.timeoutSeconds).toBe(1);
+    expect(lineage.stages.find((stage) => stage.name === "build")?.status).toBe("failed");
+    expect(lineage.stages.find((stage) => stage.name === "validation")?.status).toBe("deferred");
   });
 
   it("fails deliver when pull request creation fails", async () => {

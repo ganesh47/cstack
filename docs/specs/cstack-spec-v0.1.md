@@ -122,6 +122,7 @@ Safety:
 - `git worktree add` is the preferred isolation path
 - when `git worktree add` is unavailable or fails, `build` may fall back to a temporary clone from the configured remote
 - if no safe isolated checkout can be prepared, `build` must fail closed with an explicit error
+- `build` may be time-boxed through repo policy; when the Codex-backed stage exceeds its configured budget, the run must fail with an explicit timeout root cause instead of lingering indefinitely
 
 Key artifacts:
 
@@ -240,6 +241,8 @@ Safety:
 - when `git worktree add` is unavailable or fails, `deliver` may fall back to a temporary clone from the configured remote
 - if no safe isolated checkout can be prepared, `deliver` must fail closed with an explicit error
 - GitHub completion is fail-closed
+- if `build` fails, `deliver` must stop at the root-cause failure and mark downstream `validation`, `review`, and `ship` as blocked/deferred consequences instead of continuing to run them
+- Codex-backed deliver stages may be time-boxed through repo policy; when a configured stage budget is exceeded, the stage must fail with an explicit timeout cause
 
 Key artifacts:
 
@@ -487,6 +490,7 @@ Interactive inspector ergonomics:
 - failed downstream `build` runs must surface root-cause evidence ahead of aggregate workflow blockage
 - when a downstream `deliver` fails in `build`, `inspect` should prioritize the child build summary, exit code, session/transcript visibility, and verification status over later blocked-stage aggregation
 - later `validation`, `review`, and `ship` stages must be presented as blocked consequences when `build` is the first failed stage, not as independent root causes
+- when a failed build was time-boxed, `inspect` should surface the timeout budget and say plainly that the stage timed out rather than exited normally
 
 For failed `ship` and `deliver` runs, and for `review` verdicts that are `blocked` or `changes-requested`, the interactive inspector may also surface explicit mitigation commands. Those commands must derive their prompts from recorded artifacts, link the new run back to the inspected run, and switch the inspector to the newly started workflow once it exists.
 
@@ -547,6 +551,8 @@ Important repo-policy knobs include:
 - delegation enablement and caps
 - discover web-research policy
 - dirty-worktree allowance
+- workflow timeout budgets
+- deliver per-stage timeout budgets
 - verification commands
 - validation-stage parity and workflow-mutation policy
 - GitHub delivery policy for ship and deliver

@@ -55,6 +55,7 @@ allowWeb = true
 mode = "exec"
 verificationCommands = ["npm test"]
 allowDirty = true
+timeoutSeconds = 42
 
 [workflows.review]
 mode = "exec"
@@ -66,6 +67,11 @@ allowDirty = true
 [workflows.deliver]
 mode = "exec"
 verificationCommands = ["npm run release:check"]
+timeoutSeconds = 300
+
+[workflows.deliver.stageTimeoutSeconds]
+build = 120
+review = 240
 
 [workflows.deliver.github]
 enabled = true
@@ -112,11 +118,15 @@ blockSeverities = ["medium", "high", "critical"]
     expect(config.workflows.build.mode).toBe("exec");
     expect(config.workflows.build.verificationCommands).toEqual(["npm test"]);
     expect(config.workflows.build.allowDirty).toBe(true);
+    expect(config.workflows.build.timeoutSeconds).toBe(42);
     expect(config.workflows.review.mode).toBe("exec");
     expect(config.workflows.ship.mode).toBe("exec");
     expect(config.workflows.ship.allowDirty).toBe(true);
     expect(config.workflows.deliver.mode).toBe("exec");
     expect(config.workflows.deliver.verificationCommands).toEqual(["npm run release:check"]);
+    expect(config.workflows.deliver.timeoutSeconds).toBe(300);
+    expect(config.workflows.deliver.stageTimeoutSeconds?.build).toBe(120);
+    expect(config.workflows.deliver.stageTimeoutSeconds?.review).toBe(240);
     expect(config.workflows.deliver.delegation?.enabled).toBe(true);
     expect(config.workflows.deliver.delegation?.maxAgents).toBe(4);
     expect(config.workflows.deliver.github?.enabled).toBe(true);
@@ -147,10 +157,16 @@ blockSeverities = ["medium", "high", "critical"]
 
     expect(sources).toHaveLength(0);
     expect(config.workflows.build.allowDirty).toBe(false);
+    expect(config.workflows.build.timeoutSeconds).toBe(900);
     expect(config.workflows.review.mode).toBe("exec");
     expect(config.workflows.review.allowDirty).toBe(true);
+    expect(config.workflows.review.timeoutSeconds).toBe(600);
     expect(config.workflows.ship.mode).toBe("exec");
     expect(config.workflows.ship.allowDirty).toBe(false);
+    expect(config.workflows.ship.timeoutSeconds).toBe(600);
+    expect(config.workflows.deliver.timeoutSeconds).toBe(900);
+    expect(config.workflows.deliver.stageTimeoutSeconds?.build).toBe(900);
+    expect(config.workflows.deliver.stageTimeoutSeconds?.validation).toBe(300);
     expect(config.workflows.deliver.github?.enabled).toBe(false);
     expect(config.workflows.deliver.github?.mode).toBe("merge-ready");
     expect(config.workflows.deliver.github?.pushBranch).toBe(false);
