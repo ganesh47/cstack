@@ -61,8 +61,42 @@ function ensureUniqueStages(stages: RoutingStagePlan[]): RoutingStagePlan[] {
   });
 }
 
+function hasImplementationIntent(lower: string): boolean {
+  return /\b(add|build|implement|fix|refactor|migrate|introduce|create|change|update|close|resolve)\b/i.test(lower);
+}
+
+function hasReviewIntent(lower: string): boolean {
+  return /\b(review|audit|security|compliance|traceability|verify|check|gap|gaps|missing|assess|assessment|evaluate|evaluation)\b/i.test(lower);
+}
+
+function hasReleaseIntent(lower: string): boolean {
+  return /\b(release|ship|deploy|rollout|pipeline|version)\b/i.test(lower);
+}
+
+function isBroadAnalysisPrompt(lower: string): boolean {
+  return (
+    /\b(what are the gaps|gaps in (this|the current) project|what is missing|what's missing|assess (the )?current state|evaluate (the )?current state|key risks)\b/i.test(
+      lower
+    ) &&
+    !hasImplementationIntent(lower) &&
+    !hasReleaseIntent(lower)
+  );
+}
+
 function inferStagePlans(intent: string): RoutingStagePlan[] {
   const lower = intent.toLowerCase();
+
+  if (isBroadAnalysisPrompt(lower)) {
+    return [
+      {
+        name: "review",
+        rationale: "The intent is broad gap analysis, so route directly to analytical review instead of paying planning overhead first.",
+        status: "planned",
+        executed: false
+      }
+    ];
+  }
+
   const stages: RoutingStagePlan[] = [
     {
       name: "discover",
@@ -78,7 +112,7 @@ function inferStagePlans(intent: string): RoutingStagePlan[] {
     }
   ];
 
-  if (/\b(add|build|implement|fix|refactor|migrate|introduce|create|change|update|close|resolve)\b/i.test(lower)) {
+  if (hasImplementationIntent(lower)) {
     stages.push({
       name: "build",
       rationale: "The intent implies implementation work after planning.",
@@ -99,7 +133,7 @@ function inferStagePlans(intent: string): RoutingStagePlan[] {
     });
   }
 
-  if (/\b(review|audit|security|compliance|traceability|verify|check|gap|gaps|missing|assess|assessment|evaluate|evaluation)\b/i.test(lower)) {
+  if (hasReviewIntent(lower)) {
     stages.push({
       name: "review",
       rationale: "The intent carries explicit review or risk-checking language.",
@@ -108,7 +142,7 @@ function inferStagePlans(intent: string): RoutingStagePlan[] {
     });
   }
 
-  if (/\b(release|ship|deploy|rollout|pipeline|version)\b/i.test(lower)) {
+  if (hasReleaseIntent(lower)) {
     stages.push({
       name: "ship",
       rationale: "The intent mentions release or rollout concerns.",
