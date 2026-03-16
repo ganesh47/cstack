@@ -72,9 +72,9 @@ describe("ProgressReporter", () => {
     expect(output).toContain("\u001B[?25l");
     expect(output).toContain("Stages");
     expect(output).toContain("✅ discover:done");
-    expect(output).toContain("Observed");
+    expect(output).toContain("Progress");
     expect(output).toContain("Next");
-    expect(output).toContain("Recent activity");
+    expect(output).toContain("Recent milestones");
     expect(output).toContain("Footer");
     expect(output).toContain("session-abc");
     expect(output).toContain("scanning repository context");
@@ -98,7 +98,7 @@ describe("ProgressReporter", () => {
     vi.advanceTimersByTime(1250);
     const updatedOutput = stream.writes.join("");
     expect(updatedOutput).toContain("Pulse");
-    expect(updatedOutput).toContain("alive");
+    expect(updatedOutput).toContain("last signal");
     expect(updatedOutput).toContain("0:01");
 
     reporter.emit(buildEvent("completed", 2000, "Exit code 0"));
@@ -148,5 +148,25 @@ describe("ProgressReporter", () => {
     expect(resumedOutput).toContain("\u001B[?25l");
     expect(resumedOutput).toContain("Installing verified release tarball");
     expect(resumedOutput).toContain("Installed v0.17.2");
+  });
+
+  it("keeps a fixed-height milestone pane while activity changes", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-15T06:30:00Z"));
+    process.env.TERM = "xterm-256color";
+    const stream = makeStream(true);
+    const reporter = new ProgressReporter("intent", "run-steady", stream);
+
+    reporter.setStages(["discover", "spec", "review"]);
+    reporter.emit(buildEvent("starting", 0, "Routing intent across discover -> spec -> review"));
+    reporter.emit(buildEvent("activity", 100, "Running discover stage", "stdout"));
+    vi.advanceTimersByTime(500);
+    const output = stream.writes.join("");
+
+    expect(output).toContain("Progress");
+    expect(output).toContain("Recent milestones");
+    expect(output).toContain("[+0:00] Routing intent across discover -> spec -> review");
+    expect(output).toContain("[+0:00] Running discover stage");
+    expect(output).toContain("…");
   });
 });

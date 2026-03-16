@@ -24,6 +24,7 @@ const ANSI = {
 } as const;
 
 const SPINNER_FRAMES = ["🌱", "🚧", "⚙️", "🛰️", "✨", "🔄"] as const;
+const RECENT_ACTIVITY_ROWS = 3;
 
 interface ProgressStream {
   isTTY?: boolean;
@@ -40,6 +41,15 @@ function formatElapsed(elapsedMs: number): string {
 
 function summarize(message: string): string {
   return message.replace(/\s+/g, " ").trim().slice(0, 160);
+}
+
+function collapseRepeatedPrefix(input: string, prefix: string): string {
+  let current = input.trim();
+  const normalizedPrefix = prefix.trim();
+  while (current.toLowerCase().startsWith(`${normalizedPrefix.toLowerCase()}:`)) {
+    current = current.slice(normalizedPrefix.length + 1).trim();
+  }
+  return current;
 }
 
 function stripAnsi(input: string): string {
@@ -87,6 +97,23 @@ function streamTag(event: RunEvent): string {
     return event.type;
   }
   return event.stream === "stderr" ? "stderr" : "stdout";
+}
+
+function summarizeProgressEvent(event: RunEvent): string {
+  switch (event.type) {
+    case "starting":
+      return collapseRepeatedPrefix(event.message, "Running");
+    case "session":
+      return `Session ready: ${event.message}`;
+    case "heartbeat":
+      return collapseRepeatedPrefix(event.message, "Last activity");
+    case "completed":
+    case "failed":
+      return event.message;
+    case "activity":
+    default:
+      return event.message;
+  }
 }
 
 function compactName(input: string): string {
@@ -172,6 +199,22 @@ function workflowIcon(workflow: WorkflowName): string {
     default:
       return "⚙️";
   }
+}
+
+function isMilestoneEvent(event: RunEvent): boolean {
+  if (event.type === "heartbeat") {
+    return false;
+  }
+  if (event.type !== "activity") {
+    return true;
+  }
+  return (
+    /\bRunning\b/i.test(event.message) ||
+    /\bDownstream\b/i.test(event.message) ||
+    /\bstage\b/i.test(event.message) ||
+    /\bcompleted\b/i.test(event.message) ||
+    /\bfailed\b/i.test(event.message)
+  );
 }
 
 function findLastEvent(events: RunEvent[], predicate: (event: RunEvent) => boolean): RunEvent | undefined {
@@ -434,11 +477,9 @@ export class ProgressReporter {
     const status = this.lastEvent?.type === "failed" ? "failed" : this.lastEvent?.type === "completed" ? "completed" : "running";
     const elapsed = formatElapsed(this.currentElapsedMs());
     const session = findLastEvent(this.history, (event) => event.type === "session")?.message ?? "pending";
-    const lastActivity = this.lastEvent && this.lastEvent.type !== "activity" ? this.lastEvent.message : undefined;
-    const recentObservedActivity =
-      findLastEvent(this.history, (event) => event.type === "activity" || event.type === "heartbeat")?.message ??
-      "waiting for activity";
-    const currentLineMessage = lastActivity ?? recentObservedActivity;
+    const recentObservedEvent =
+      findLastEvent(this.history, (event) => event.type === "activity" || event.type === "heartbeat") ?? this.lastEvent;
+    const currentLineMessage = summarizeProgressEvent(recentObservedEvent ?? buildEvent("starting", 0, "Waiting for activity"));
     const spinner = this.closed ? statusIcon(status) : SPINNER_FRAMES[this.spinnerIndex];
     const currentStage = this.currentStageLabel();
     const lastObservedAge = this.lastObservedAgeLabel();
@@ -453,8 +494,8 @@ export class ProgressReporter {
       `⏱ elapsed ${colorize(elapsed, ANSI.bold, this.colorsEnabled)}`,
       `🧵 session ${colorize(session, ANSI.dim, this.colorsEnabled)}`
     ].join("  |  ");
-    const activityLine = `${colorize("Observed", ANSI.bold, this.colorsEnabled)} ${currentLineMessage}`;
-    const pulseLine = `${colorize("Pulse", ANSI.bold, this.colorsEnabled)} ${spinner} alive  |  last activity ${lastObservedAge}`;
+    const progressLine = `${colorize("Progress", ANSI.bold, this.colorsEnabled)} ${spinner} ${currentLineMessage}`;
+    const pulseLine = `${colorize("Pulse", ANSI.bold, this.colorsEnabled)} last signal ${lastObservedAge}`;
     const nextStage = this.stages.find((stage) => stage.status === "pending");
     const nextSpecialist = this.specialists.find((specialist) => specialist.status === "pending");
     const nextLine = `${colorize("Next", ANSI.bold, this.colorsEnabled)} ${
@@ -472,11 +513,17 @@ export class ProgressReporter {
       this.specialists.length > 0
         ? `${colorize("Specialists", ANSI.bold, this.colorsEnabled)} ${this.renderItems(this.specialists)}`
         : undefined;
-    const activityHeader = colorize("Recent activity", ANSI.bold, this.colorsEnabled);
-    const activityLines = this.history.slice(-4).map((event) => {
-      const label = colorize(`[${streamTag(event)} +${formatElapsed(event.elapsedMs)}]`, eventColor(event.type), this.colorsEnabled);
-      return `${label} ${event.message}`;
-    });
+    const activityHeader = colorize("Recent milestones", ANSI.bold, this.colorsEnabled);
+    const activityLines = this.history
+      .filter(isMilestoneEvent)
+      .slice(-RECENT_ACTIVITY_ROWS)
+      .map((event) => {
+        const label = colorize(`[+${formatElapsed(event.elapsedMs)}]`, eventColor(event.type), this.colorsEnabled);
+        return `${label} ${summarizeProgressEvent(event)}`;
+      });
+    while (activityLines.length < RECENT_ACTIVITY_ROWS) {
+      activityLines.unshift(colorize("…", ANSI.gray, this.colorsEnabled));
+    }
     const footerDivider = colorize("─".repeat(24), ANSI.gray, this.colorsEnabled);
     const footerHints = [
       `${colorize("Footer", ANSI.bold, this.colorsEnabled)} 📂 inspect later with ${colorize(`cstack inspect ${this.runId}`, ANSI.dim, this.colorsEnabled)}`,
@@ -491,7 +538,7 @@ export class ProgressReporter {
       colorize("─".repeat(24), ANSI.gray, this.colorsEnabled),
       stageLine,
       specialistLine,
-      activityLine,
+      progressLine,
       pulseLine,
       activityHeader,
       ...activityLines,

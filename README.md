@@ -384,9 +384,9 @@ The live dashboard shows:
 - a header with workflow, run id, status, current stage, live elapsed time, and session
 - a stage strip
 - a specialist strip when relevant
-- an observed activity line
+- a single live progress line that summarizes current stdout/stderr/heartbeat signals
 - a visible pulse/liveness indicator so you know the run is still moving
-- bounded recent activity
+- a fixed-height recent milestones pane so the frame stays steady while the run is active
 - a footer with artifact and inspection hints
 
 The elapsed timer keeps ticking while the run is active. Color and a few emoji improve scanability in TTYs, but the dashboard still includes text labels so state remains understandable without color.
