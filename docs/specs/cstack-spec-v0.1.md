@@ -257,6 +257,7 @@ Current intent behavior:
 The active intent contract is:
 
 - broad analysis prompts may route directly into downstream `review` when planning overhead is unlikely to add value
+- mixed prompts that combine gap analysis with explicit remediation or closure intent should stay on the implementation path and continue through `discover`, `spec`, and downstream delivery stages
 - implementation and planning prompts still execute deterministic `discover` and `spec` stages first
 - auto-carry analysis prompts into `review`
 - auto-carry implementation prompts into `deliver`

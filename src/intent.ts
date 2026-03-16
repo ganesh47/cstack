@@ -62,7 +62,11 @@ function ensureUniqueStages(stages: RoutingStagePlan[]): RoutingStagePlan[] {
 }
 
 function hasImplementationIntent(lower: string): boolean {
-  return /\b(add|build|implement|fix|refactor|migrate|introduce|create|change|update|close|resolve)\b/i.test(lower);
+  return (
+    /\b(add|build|implement|fix|refactor|migrate|introduce|create|change|update|close|closing|resolve|address|remediate)\b/i.test(
+      lower
+    ) || /\bwork on\b/i.test(lower)
+  );
 }
 
 function hasReviewIntent(lower: string): boolean {
