@@ -120,6 +120,24 @@ function compactName(input: string): string {
   return input.replace(/-/g, " ");
 }
 
+function breadcrumbStatusLabel(status: DashboardStatus): string {
+  switch (status) {
+    case "completed":
+      return "done";
+    case "failed":
+      return "fail";
+    case "running":
+      return "live";
+    case "deferred":
+      return "defer";
+    case "skipped":
+      return "skip";
+    case "pending":
+    default:
+      return "plan";
+  }
+}
+
 function shortRunId(input: string): string {
   return input.length > 28 ? `${input.slice(0, 12)}…${input.slice(-12)}` : input;
 }
@@ -508,10 +526,10 @@ export class ProgressReporter {
             : "waiting for the current step to finish"
     }`;
     const stageLine =
-      this.stages.length > 0 ? `${colorize("Stages", ANSI.bold, this.colorsEnabled)} ${this.renderItems(this.stages)}` : undefined;
+      this.stages.length > 0 ? `${colorize("Path", ANSI.bold, this.colorsEnabled)} ${this.renderBreadcrumbs(this.stages)}` : undefined;
     const specialistLine =
       this.specialists.length > 0
-        ? `${colorize("Specialists", ANSI.bold, this.colorsEnabled)} ${this.renderItems(this.specialists)}`
+        ? `${colorize("Specialists", ANSI.bold, this.colorsEnabled)} ${this.renderSpecialists(this.specialists)}`
         : undefined;
     const activityHeader = colorize("Recent milestones", ANSI.bold, this.colorsEnabled);
     const activityLines = this.history
@@ -548,7 +566,19 @@ export class ProgressReporter {
     ].filter(Boolean) as string[];
   }
 
-  private renderItems(items: DashboardItem[]): string {
+  private renderBreadcrumbs(items: DashboardItem[]): string {
+    return items
+      .map((item) => {
+        const icon = statusIcon(item.status);
+        const label = compactName(item.name);
+        const suffix = breadcrumbStatusLabel(item.status);
+        return colorize(`${icon} ${label}`, statusColor(item.status), this.colorsEnabled) +
+          colorize(` (${suffix})`, ANSI.dim, this.colorsEnabled);
+      })
+      .join(colorize("  ›  ", ANSI.gray, this.colorsEnabled));
+  }
+
+  private renderSpecialists(items: DashboardItem[]): string {
     return items
       .map((item) => {
         const label = `${statusIcon(item.status)} ${compactName(item.name)}:${statusLabel(item.status)}`;

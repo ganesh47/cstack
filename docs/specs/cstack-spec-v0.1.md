@@ -371,6 +371,7 @@ The elapsed counter must not remain static during active execution. A repaint-on
 The body must show at minimum:
 
 - a stage progress strip
+- a stable stage breadcrumb path in fixed order
 - a specialist strip when relevant
 - a single live progress line that summarizes current stdout/stderr/heartbeat signals
 - a fixed-height recent milestones pane

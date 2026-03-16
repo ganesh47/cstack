@@ -382,7 +382,7 @@ While a run is active in a normal terminal, `cstack` renders a bounded ANSI dash
 The live dashboard shows:
 
 - a header with workflow, run id, status, current stage, live elapsed time, and session
-- a stage strip
+- a stage breadcrumb path
 - a specialist strip when relevant
 - a single live progress line that summarizes current stdout/stderr/heartbeat signals
 - a visible pulse/liveness indicator so you know the run is still moving
