@@ -20,6 +20,10 @@ function makeStream(isTTY: boolean): FakeStream {
   };
 }
 
+function stripAnsi(input: string): string {
+  return input.replace(/\u001B\[[0-9;?]*[A-Za-z]/g, "");
+}
+
 const originalTerm = process.env.TERM;
 
 afterEach(() => {
@@ -161,7 +165,7 @@ describe("ProgressReporter", () => {
     reporter.emit(buildEvent("starting", 0, "Routing intent across discover -> spec -> review"));
     reporter.emit(buildEvent("activity", 100, "Running discover stage", "stdout"));
     vi.advanceTimersByTime(500);
-    const output = stream.writes.join("");
+    const output = stripAnsi(stream.writes.join(""));
 
     expect(output).toContain("Progress");
     expect(output).toContain("Recent milestones");
