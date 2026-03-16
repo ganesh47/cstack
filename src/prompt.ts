@@ -7,6 +7,7 @@ import type {
   DiscoverDelegateResult,
   DiscoverResearchPlan,
   DiscoverTrackName,
+  ReviewMode,
   RoutingPlan,
   SpecialistName,
   ValidationRepoProfile,
@@ -439,33 +440,61 @@ export async function buildSpecialistPrompt(options: {
 export async function buildDeliverReviewLeadPrompt(options: {
   cwd: string;
   input: string;
+  mode: ReviewMode;
   buildSummary: string;
   verificationRecord: object;
   validationPlan?: object;
   validationLocalRecord?: object;
   specialistResults: Array<{ name: SpecialistName; reason: string; finalBody: string }>;
 }): Promise<{ prompt: string; context: string }> {
-  const { cwd, input, buildSummary, verificationRecord, validationPlan, validationLocalRecord, specialistResults } = options;
+  const { cwd, input, mode, buildSummary, verificationRecord, validationPlan, validationLocalRecord, specialistResults } = options;
   const specDoc = path.join(cwd, "docs", "specs", "cstack-spec-v0.1.md");
 
   return {
     prompt: [
-      "You are the `Review Lead` for a bounded `cstack deliver` workflow.",
+      mode === "analysis"
+        ? "You are the `Review Lead` for a bounded `cstack review` workflow running in analysis mode."
+        : "You are the `Review Lead` for a bounded `cstack deliver` workflow.",
       "",
-      "Synthesize the build stage output, verification evidence, and specialist reviews into one review verdict.",
+      mode === "analysis"
+        ? "Synthesize the linked context, evidence, and specialist reviews into one analytical gap assessment."
+        : "Synthesize the build stage output, verification evidence, and specialist reviews into one review verdict.",
       "",
       "Requirements:",
-      "- be explicit about whether delivery is ready, needs changes, or is blocked",
-      "- preserve serious risks even when the build itself completed",
+      ...(mode === "analysis"
+        ? [
+            "- treat this as analytical critique, not as a release gate",
+            "- identify the main gap clusters, likely root causes, and next implementation slices",
+            "- use `status: \"completed\"` when the analysis succeeded, even if the findings are severe",
+            "- do not phrase the summary as `delivery is blocked` unless the user explicitly asked for readiness"
+          ]
+        : [
+            "- be explicit about whether delivery is ready, needs changes, or is blocked",
+            "- preserve serious risks even when the build itself completed"
+          ]),
       "- cite specialist input only when it materially changed the verdict",
       "- return valid JSON only, with no markdown fences or extra commentary",
       "",
       "Required JSON shape:",
       "{",
-      '  "status": "ready" | "changes-requested" | "blocked",',
+      mode === "analysis"
+        ? '  "mode": "analysis",'
+        : '  "mode": "readiness",',
+      mode === "analysis"
+        ? '  "status": "completed",'
+        : '  "status": "ready" | "changes-requested" | "blocked",',
       '  "summary": "short summary",',
       '  "findings": [{"severity": "info" | "warning" | "high", "title": "finding title", "detail": "details", "owner": "optional"}],',
       '  "recommendedActions": ["action"],',
+      ...(mode === "analysis"
+        ? [
+            '  "gapClusters": [{"title": "gap cluster", "severity": "info" | "warning" | "high", "summary": "what is missing", "evidence": ["optional evidence"]}],',
+            '  "likelyRootCauses": ["cause"],',
+            '  "recommendedNextSlices": ["next slice"],',
+            '  "confidence": "low" | "medium" | "high",',
+            '  "evidenceNotes": ["evidence note"],'
+          ]
+        : []),
       '  "acceptedSpecialists": [{"name": "security-review", "disposition": "accepted" | "partial" | "discarded", "reason": "why"}],',
       '  "reportMarkdown": "# Review Findings\\n..."',
       "}",
@@ -492,8 +521,9 @@ export async function buildDeliverReviewLeadPrompt(options: {
       `- ${specDoc}`
     ].join("\n"),
     context: [
-      "Workflow: deliver",
+      `Workflow: ${mode === "analysis" ? "review" : "deliver"}`,
       "Role: Review Lead",
+      `Review mode: ${mode}`,
       `Selected specialists: ${specialistResults.map((result) => result.name).join(", ") || "none"}`,
       `Spec source: ${specDoc}`
     ].join("\n")

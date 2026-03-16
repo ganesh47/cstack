@@ -111,6 +111,7 @@ function notRunVerificationRecord(): BuildVerificationRecord {
 
 function blockedReviewVerdict(summary: string): DeliverReviewVerdict {
   return {
+    mode: "readiness",
     status: "blocked",
     summary,
     findings: [

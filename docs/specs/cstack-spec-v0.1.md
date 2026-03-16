@@ -132,6 +132,7 @@ Purpose:
 
 - critique a change or linked run
 - surface risks, findings, and next actions
+- support both analysis-style critique and readiness-style critique without conflating them
 
 Execution model:
 
@@ -142,6 +143,14 @@ Inputs:
 
 - direct prompt, or
 - `--from-run <run-id>` to link build or deliver context
+
+Semantics:
+
+- standalone and intent-routed analysis prompts may run `review` in `analysis` mode
+- analysis mode records gap clusters, likely root causes, confidence, and recommended next slices
+- deliver-stage review remains `readiness` mode and continues to emit release-oriented `ready | changes-requested | blocked` outcomes
+- analysis-mode review runs complete successfully when the analysis succeeds, even if the findings are severe
+- delivery-gate phrasing such as `delivery is blocked` is reserved for readiness review, `ship`, and `deliver`
 
 Key artifacts:
 
@@ -436,6 +445,7 @@ Current inspector views include:
 - stages
 - specialists
 - artifacts
+- gaps
 - routing
 - research
 - session
@@ -448,8 +458,16 @@ Current inspector views include:
 - review
 - ship
 - GitHub mutation and delivery views
+- child-run drilldowns
 - delegate and artifact drilldowns
 - `what remains`
+
+Interactive inspector ergonomics:
+
+- tab completion for command names and common `show ...` targets
+- dynamic completion for stage names, specialist names, artifact paths, delegate tracks, and linked child stages
+- typo recovery with nearest-command suggestions
+- mode-aware review summaries so analysis runs show gaps and next slices while readiness runs show blocker/readiness state
 
 For failed `ship` and `deliver` runs, and for `review` verdicts that are `blocked` or `changes-requested`, the interactive inspector may also surface explicit mitigation commands. Those commands must derive their prompts from recorded artifacts, link the new run back to the inspected run, and switch the inspector to the newly started workflow once it exists.
 

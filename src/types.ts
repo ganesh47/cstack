@@ -324,11 +324,26 @@ export interface DeliverReviewFinding {
   owner?: string;
 }
 
+export type ReviewMode = "analysis" | "readiness";
+
+export interface DeliverReviewGapCluster {
+  title: string;
+  severity: "info" | "warning" | "high";
+  summary: string;
+  evidence?: string[];
+}
+
 export interface DeliverReviewVerdict {
-  status: "ready" | "changes-requested" | "blocked";
+  mode: ReviewMode;
+  status: "completed" | "ready" | "changes-requested" | "blocked";
   summary: string;
   findings: DeliverReviewFinding[];
   recommendedActions: string[];
+  gapClusters?: DeliverReviewGapCluster[];
+  likelyRootCauses?: string[];
+  recommendedNextSlices?: string[];
+  confidence?: "low" | "medium" | "high";
+  evidenceNotes?: string[];
   acceptedSpecialists: Array<{
     name: SpecialistName;
     disposition: SpecialistDisposition;

@@ -106,6 +106,7 @@ describe("runReview", () => {
       const run = await readRun(repoDir, reviewRun!.id);
       const runDir = path.dirname(run.finalPath);
       const verdict = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "verdict.json"), "utf8")) as {
+        mode: string;
         status: string;
         summary: string;
       };
@@ -114,6 +115,7 @@ describe("runReview", () => {
 
       expect(run.inputs.linkedRunId).toBe(buildRunId);
       expect(run.status).toBe("completed");
+      expect(verdict.mode).toBe("readiness");
       expect(verdict.status).toBe("ready");
       expect(findings).toContain("Review Findings");
       expect(lineage.stages[0]?.name).toBe("review");
@@ -171,14 +173,18 @@ describe("runReview", () => {
       const run = await readRun(repoDir, reviewRun!.id);
       const runDir = path.dirname(run.finalPath);
       const verdict = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "verdict.json"), "utf8")) as {
+        mode: string;
         status: string;
         summary: string;
+        gapClusters?: Array<{ title: string }>;
       };
 
       expect(run.status).toBe("completed");
       expect(run.error).toBeUndefined();
-      expect(verdict.status).toBe("blocked");
-      expect(stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join("")).toContain("Verdict: blocked");
+      expect(verdict.mode).toBe("analysis");
+      expect(verdict.status).toBe("completed");
+      expect(verdict.gapClusters?.[0]?.title).toBe("Contract drift");
+      expect(stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join("")).toContain("Review mode: analysis");
     } finally {
       stdoutSpy.mockRestore();
     }

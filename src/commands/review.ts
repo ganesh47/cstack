@@ -152,6 +152,7 @@ export async function runReview(cwd: string, args: string[] = [], hooks: ReviewR
         `Run: ${runId}`,
         "Workflow: review",
         `Status: ${runRecord.status}`,
+        `Review mode: ${execution.reviewVerdict.mode}`,
         `Verdict: ${execution.reviewVerdict.status}`,
         "Artifacts:",
         `  ${path.relative(cwd, finalPath)}`,
