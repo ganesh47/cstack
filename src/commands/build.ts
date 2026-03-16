@@ -102,6 +102,7 @@ export async function runBuild(cwd: string, args: string[] = []): Promise<string
     ...((config.workflows.build.verificationCommands?.length ?? 0) > 0 ? [] : (config.verification?.defaultCommands ?? []))
   ];
   const requestedMode = parsed.options.requestedMode ?? config.workflows.build.mode ?? "interactive";
+  const timeoutSeconds = config.workflows.build.timeoutSeconds;
 
   const createdAt = new Date().toISOString();
   const runRecord: RunRecord = {
@@ -129,7 +130,8 @@ export async function runBuild(cwd: string, args: string[] = []): Promise<string
       ...(linkedContext ? { linkedRunId: linkedContext.run.id } : {}),
       requestedMode,
       verificationCommands,
-      allowDirty
+      allowDirty,
+      ...(timeoutSeconds ? { timeoutSeconds } : {})
     }
   };
 
@@ -164,6 +166,7 @@ export async function runBuild(cwd: string, args: string[] = []): Promise<string
       },
       requestedMode,
       verificationCommands,
+      ...(typeof timeoutSeconds === "number" ? { timeoutSeconds } : {}),
       ...(linkedContext ? { linkedContext } : {})
     });
 
@@ -179,7 +182,9 @@ export async function runBuild(cwd: string, args: string[] = []): Promise<string
     }
     runRecord.inputs.observedMode = execution.observedMode;
     if (execution.result.code !== 0) {
-      runRecord.error = `build exited with code ${execution.result.code}${execution.result.signal ? ` (${execution.result.signal})` : ""}`;
+      runRecord.error = execution.result.timedOut
+        ? `build timed out after ${execution.result.timeoutSeconds}s`
+        : `build exited with code ${execution.result.code}${execution.result.signal ? ` (${execution.result.signal})` : ""}`;
     }
     await writeRunRecord(runDir, runRecord);
 

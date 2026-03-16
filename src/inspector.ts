@@ -131,7 +131,9 @@ function summarizeBuildRootCause(child: ChildRunInspection): string | null {
 
   const details: string[] = [];
   const exitCode = extractBuildExitCode(child);
-  if (exitCode !== null) {
+  if (child.buildSessionRecord?.observability.timedOut && child.buildSessionRecord.observability.timeoutSeconds) {
+    details.push(`stage timed out after ${child.buildSessionRecord.observability.timeoutSeconds}s`);
+  } else if (exitCode !== null) {
     details.push(`interactive Codex exited with code ${exitCode}`);
   }
 
@@ -181,7 +183,9 @@ function renderBuildFailureEvidence(child: ChildRunInspection, cwd: string): str
       : child.buildFinalPath;
 
   lines.push("- root cause stage: build");
-  if (exitCode !== null) {
+  if (child.buildSessionRecord?.observability.timedOut && child.buildSessionRecord.observability.timeoutSeconds) {
+    lines.push(`- timeout: ${child.buildSessionRecord.observability.timeoutSeconds}s`);
+  } else if (exitCode !== null) {
     lines.push(`- exit code: ${exitCode}`);
   }
   if (child.buildSessionRecord) {
@@ -238,7 +242,9 @@ function summarizeInspectionBuildFailure(inspection: RunInspection): string | nu
 
   const details: string[] = [];
   const exitCode = extractInspectionBuildExitCode(inspection);
-  if (exitCode !== null) {
+  if (inspection.sessionRecord?.observability.timedOut && inspection.sessionRecord.observability.timeoutSeconds) {
+    details.push(`stage timed out after ${inspection.sessionRecord.observability.timeoutSeconds}s`);
+  } else if (exitCode !== null) {
     details.push(`interactive Codex exited with code ${exitCode}`);
   }
   if (inspection.sessionRecord) {
@@ -264,7 +270,9 @@ function renderInspectionBuildFailureEvidence(inspection: RunInspection, cwd: st
   const lines: string[] = [];
   const exitCode = extractInspectionBuildExitCode(inspection);
   lines.push("- root cause stage: build");
-  if (exitCode !== null) {
+  if (inspection.sessionRecord?.observability.timedOut && inspection.sessionRecord.observability.timeoutSeconds) {
+    lines.push(`- timeout: ${inspection.sessionRecord.observability.timeoutSeconds}s`);
+  } else if (exitCode !== null) {
     lines.push(`- exit code: ${exitCode}`);
   }
   if (inspection.sessionRecord) {

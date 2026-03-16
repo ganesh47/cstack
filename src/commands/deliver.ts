@@ -117,6 +117,9 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
   const requestedMode = parsed.options.requestedMode ?? config.workflows.deliver.mode ?? config.workflows.build.mode ?? "interactive";
   const deliveryMode = parsed.options.deliveryMode ?? config.workflows.deliver.github?.mode ?? "merge-ready";
   const issueNumbers = parsed.options.issueNumbers ?? [];
+  const buildTimeoutSeconds = config.workflows.deliver.stageTimeoutSeconds?.build ?? config.workflows.build.timeoutSeconds;
+  const reviewTimeoutSeconds = config.workflows.deliver.stageTimeoutSeconds?.review ?? config.workflows.review.timeoutSeconds;
+  const shipTimeoutSeconds = config.workflows.deliver.stageTimeoutSeconds?.ship ?? config.workflows.ship.timeoutSeconds;
 
   const createdAt = new Date().toISOString();
   const runRecord: RunRecord = {
@@ -146,6 +149,7 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
       verificationCommands,
       deliveryMode,
       allowDirty,
+      ...(buildTimeoutSeconds ? { timeoutSeconds: buildTimeoutSeconds } : {}),
       ...(issueNumbers.length > 0 ? { issueNumbers } : {})
     }
   };
@@ -182,6 +186,9 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
       verificationCommands,
       deliveryMode,
       issueNumbers,
+      ...(typeof buildTimeoutSeconds === "number" ? { buildTimeoutSeconds } : {}),
+      ...(typeof reviewTimeoutSeconds === "number" ? { reviewTimeoutSeconds } : {}),
+      ...(typeof shipTimeoutSeconds === "number" ? { shipTimeoutSeconds } : {}),
       ...(linkedContext ? { linkedContext } : {})
     });
 
@@ -201,7 +208,12 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
     if (buildSession.sessionId) {
       runRecord.sessionId = buildSession.sessionId;
     }
-    runRecord.lastActivity = `Validation: ${execution.validationExecution.validationPlan.status}; Ship readiness: ${execution.shipRecord.readiness}; GitHub delivery: ${execution.githubDeliveryRecord.overall.status}`;
+    runRecord.lastActivity =
+      execution.buildExecution.result.code !== 0
+        ? execution.buildExecution.result.timedOut
+          ? `Build timed out after ${execution.buildExecution.result.timeoutSeconds}s; downstream stages blocked`
+          : `Build failed with exit code ${execution.buildExecution.result.code}; downstream stages blocked`
+        : `Validation: ${execution.validationExecution.validationPlan.status}; Ship readiness: ${execution.shipRecord.readiness}; GitHub delivery: ${execution.githubDeliveryRecord.overall.status}`;
     runRecord.inputs.observedMode = execution.buildExecution.observedMode;
     runRecord.inputs.selectedSpecialists = execution.selectedSpecialists.map((specialist) => specialist.name);
     runRecord.inputs.deliveryMode = deliveryMode;
@@ -209,19 +221,26 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
       runRecord.inputs.issueNumbers = execution.githubDeliveryRecord.issueReferences;
     }
     if (runRecord.status !== "completed") {
-      runRecord.error = [
-        execution.buildExecution.result.code !== 0 ? `build exited with code ${execution.buildExecution.result.code}` : null,
-        execution.validationExecution.validationPlan.status === "blocked"
-          ? `validation status: ${execution.validationExecution.validationPlan.status}`
-          : null,
-        execution.reviewVerdict.status !== "ready" ? `review status: ${execution.reviewVerdict.status}` : null,
-        execution.shipRecord.readiness === "blocked" ? "ship stage blocked release readiness" : null,
-        execution.githubDeliveryRecord.overall.status === "blocked"
-          ? `github delivery blocked: ${execution.githubDeliveryRecord.overall.blockers.join("; ")}`
-          : null
-      ]
-        .filter(Boolean)
-        .join("; ");
+      runRecord.error =
+        execution.buildExecution.result.code !== 0
+          ? [
+              execution.buildExecution.result.timedOut
+                ? `build timed out after ${execution.buildExecution.result.timeoutSeconds}s`
+                : `build exited with code ${execution.buildExecution.result.code}`,
+              "downstream validation/review/ship blocked"
+            ].join("; ")
+          : [
+              execution.validationExecution.validationPlan.status === "blocked"
+                ? `validation status: ${execution.validationExecution.validationPlan.status}`
+                : null,
+              execution.reviewVerdict.status !== "ready" ? `review status: ${execution.reviewVerdict.status}` : null,
+              execution.shipRecord.readiness === "blocked" ? "ship stage blocked release readiness" : null,
+              execution.githubDeliveryRecord.overall.status === "blocked"
+                ? `github delivery blocked: ${execution.githubDeliveryRecord.overall.blockers.join("; ")}`
+                : null
+            ]
+              .filter(Boolean)
+              .join("; ");
     }
     await writeRunRecord(runDir, runRecord);
 

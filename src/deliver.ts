@@ -51,6 +51,9 @@ export interface DeliverExecutionOptions {
   verificationCommands: string[];
   deliveryMode: DeliverTargetMode;
   issueNumbers: number[];
+  buildTimeoutSeconds?: number;
+  reviewTimeoutSeconds?: number;
+  shipTimeoutSeconds?: number;
 }
 
 export interface DeliverExecutionResult {
@@ -231,6 +234,282 @@ function mergeUniqueLines(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
 }
 
+function summarizeBuildFailure(buildExecution: BuildExecutionResult): string {
+  if (buildExecution.result.timedOut && buildExecution.result.timeoutSeconds) {
+    return `Build timed out after ${buildExecution.result.timeoutSeconds}s.`;
+  }
+  return `Build exited with code ${buildExecution.result.code}${buildExecution.result.signal ? ` (${buildExecution.result.signal})` : ""}.`;
+}
+
+function createBlockedValidationExecution(buildExecution: BuildExecutionResult): DeliverValidationExecutionResult {
+  const summary = `Validation was blocked because the build stage did not complete successfully. ${summarizeBuildFailure(buildExecution)}`;
+  return {
+    repoProfile: {
+      detectedAt: new Date().toISOString(),
+      languages: [],
+      buildSystems: [],
+      surfaces: [],
+      packageManagers: [],
+      ciSystems: [],
+      runnerConstraints: [],
+      manifests: [],
+      workflowFiles: [],
+      existingTests: [],
+      packageScripts: [],
+      detectedTools: [],
+      limitations: ["Validation profiling was skipped because build failed first."]
+    },
+    toolResearch: {
+      generatedAt: new Date().toISOString(),
+      summary,
+      candidates: [],
+      selectedTools: [],
+      limitations: ["Tool research was skipped because build failed first."]
+    },
+    validationPlan: {
+      status: "blocked",
+      summary,
+      profileSummary: "Validation profiling was skipped because build failed first.",
+      layers: [],
+      selectedSpecialists: [],
+      localValidation: {
+        commands: [],
+        prerequisites: [],
+        notes: ["Local validation was skipped because build failed first."]
+      },
+      ciValidation: {
+        workflowFiles: [],
+        jobs: [],
+        notes: ["CI validation planning was skipped because build failed first."]
+      },
+      coverage: {
+        confidence: "low",
+        summary: "No validation evidence was collected because build failed first.",
+        signals: [],
+        gaps: ["Build failed before validation could run."]
+      },
+      recommendedChanges: ["Fix the build failure before rerunning deliver."],
+      unsupported: [],
+      pyramidMarkdown: "# Test Pyramid\n\nBlocked because build failed before validation could run.\n",
+      reportMarkdown: "# Validation Summary\n\nBlocked because build failed before validation could run.\n",
+      githubActionsPlanMarkdown: "# GitHub Actions Validation Plan\n\nBlocked because build failed before validation could run.\n"
+    },
+    localValidationRecord: {
+      status: "not-run",
+      requestedCommands: [],
+      results: [],
+      notes: "Local validation was skipped because build failed first."
+    },
+    coverageSummary: {
+      status: "blocked",
+      confidence: "low",
+      summary: "No validation evidence was collected because build failed first.",
+      signals: [],
+      gaps: ["Build failed before validation could run."],
+      localValidationStatus: "not-run"
+    },
+    selectedSpecialists: [],
+    specialistExecutions: [],
+    finalBody: "# Validation Summary\n\nBlocked because build failed before validation could run.\n"
+  };
+}
+
+function createBlockedReviewVerdict(buildExecution: BuildExecutionResult): DeliverReviewVerdict {
+  const summary = `Deliver review was blocked because build failed first. ${summarizeBuildFailure(buildExecution)}`;
+  return {
+    mode: "readiness",
+    status: "blocked",
+    summary,
+    findings: [
+      {
+        severity: "high",
+        title: "Build failed",
+        detail: summary
+      }
+    ],
+    recommendedActions: ["Fix the build failure before rerunning deliver review."],
+    acceptedSpecialists: [],
+    reportMarkdown: "# Review Findings\n\nBlocked because build failed before deliver review could run.\n"
+  };
+}
+
+function createBlockedShipRecord(buildExecution: BuildExecutionResult): DeliverShipRecord {
+  const summary = `Ship readiness is blocked because build failed first. ${summarizeBuildFailure(buildExecution)}`;
+  return {
+    readiness: "blocked",
+    summary,
+    checklist: [
+      {
+        item: "Build completed successfully",
+        status: "blocked",
+        notes: summarizeBuildFailure(buildExecution)
+      }
+    ],
+    unresolved: ["Fix the build failure before release-readiness evaluation can continue."],
+    nextActions: ["Fix the build failure and rerun `cstack deliver`."],
+    reportMarkdown: "# Ship Summary\n\nBlocked because build failed before ship readiness could run.\n"
+  };
+}
+
+function createBlockedGitHubMutationRecord(): GitHubMutationRecord {
+  return {
+    enabled: false,
+    branch: {
+      initial: "",
+      current: "",
+      created: false,
+      pushed: false,
+      remote: null
+    },
+    commit: {
+      created: false,
+      changedFiles: []
+    },
+    pullRequest: {
+      created: false,
+      updated: false
+    },
+    checks: {
+      watched: false,
+      polls: 0,
+      completed: false,
+      summary: "GitHub mutation was skipped because build failed first."
+    },
+    blockers: ["Build failed before GitHub mutation could run."],
+    summary: "GitHub mutation skipped because build failed first."
+  };
+}
+
+function createBlockedGitHubDeliveryRecord(options: {
+  gitBranch: string;
+  deliveryMode: DeliverTargetMode;
+  issueNumbers: number[];
+  config: CstackConfig;
+  githubMutationRecord: GitHubMutationRecord;
+}): GitHubDeliveryRecord {
+  const observedAt = new Date().toISOString();
+  const summary = "GitHub delivery was not evaluated because build failed first.";
+  const blocked = {
+    required: false,
+    status: "blocked" as const,
+    summary,
+    blockers: ["Build failed before GitHub delivery evaluation could run."],
+    observedAt,
+    source: "none" as const,
+    observed: null
+  };
+
+  return {
+    repository: options.config.workflows.deliver.github?.repository ?? null,
+    mode: options.deliveryMode,
+    branch: {
+      name: options.gitBranch,
+      headSha: "",
+      defaultBranch: null
+    },
+    requestedPolicy: options.config.workflows.deliver.github ?? {},
+    issueReferences: options.issueNumbers,
+    branchState: {
+      ...blocked,
+      observed: {
+        current: options.gitBranch,
+        headSha: "",
+        defaultBranch: null
+      }
+    },
+    pullRequest: blocked,
+    issues: {
+      ...blocked,
+      observed: []
+    },
+    checks: {
+      ...blocked,
+      observed: []
+    },
+    actions: {
+      ...blocked,
+      observed: []
+    },
+    release: blocked,
+    security: {
+      ...blocked,
+      observed: {
+        dependabot: [],
+        codeScanning: []
+      }
+    },
+    mutation: options.githubMutationRecord,
+    overall: {
+      status: "blocked",
+      summary,
+      blockers: ["Build failed before GitHub delivery evaluation could run."],
+      observedAt
+    },
+    limitations: ["GitHub delivery evaluation was skipped because build failed first."]
+  };
+}
+
+async function writeBlockedDeliverStageArtifacts(options: {
+  validationStageDir: string;
+  reviewStageDir: string;
+  shipStageDir: string;
+  validationExecution: DeliverValidationExecutionResult;
+  reviewVerdict: DeliverReviewVerdict;
+  shipRecord: DeliverShipRecord;
+  githubMutationRecord: GitHubMutationRecord;
+  githubDeliveryRecord: GitHubDeliveryRecord;
+}): Promise<void> {
+  await fs.mkdir(path.join(options.validationStageDir, "artifacts"), { recursive: true });
+  await fs.mkdir(path.join(options.reviewStageDir, "artifacts"), { recursive: true });
+  await fs.mkdir(path.join(options.shipStageDir, "artifacts"), { recursive: true });
+
+  await fs.writeFile(path.join(options.validationStageDir, "final.md"), options.validationExecution.finalBody, "utf8");
+  await writeJson(path.join(options.validationStageDir, "repo-profile.json"), options.validationExecution.repoProfile);
+  await writeJson(path.join(options.validationStageDir, "tool-research.json"), options.validationExecution.toolResearch);
+  await writeJson(path.join(options.validationStageDir, "validation-plan.json"), options.validationExecution.validationPlan);
+  await fs.writeFile(path.join(options.validationStageDir, "artifacts", "test-pyramid.md"), options.validationExecution.validationPlan.pyramidMarkdown, "utf8");
+  await writeJson(path.join(options.validationStageDir, "artifacts", "coverage-summary.json"), options.validationExecution.coverageSummary);
+  await fs.writeFile(
+    path.join(options.validationStageDir, "artifacts", "coverage-gaps.md"),
+    `# Coverage Gaps\n\n- ${options.validationExecution.coverageSummary.gaps.join("\n- ") || "Build failed before validation could run."}\n`,
+    "utf8"
+  );
+  await writeJson(path.join(options.validationStageDir, "artifacts", "local-validation.json"), options.validationExecution.localValidationRecord);
+  await writeJson(
+    path.join(options.validationStageDir, "artifacts", "ci-validation.json"),
+    options.validationExecution.validationPlan.ciValidation
+  );
+  await fs.writeFile(
+    path.join(options.validationStageDir, "artifacts", "github-actions-plan.md"),
+    options.validationExecution.validationPlan.githubActionsPlanMarkdown,
+    "utf8"
+  );
+  await writeJson(path.join(options.validationStageDir, "artifacts", "test-inventory.json"), { status: "blocked", tests: [] });
+
+  await fs.writeFile(path.join(options.reviewStageDir, "final.md"), `${JSON.stringify(options.reviewVerdict, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(options.reviewStageDir, "artifacts", "findings.md"), options.reviewVerdict.reportMarkdown, "utf8");
+  await writeJson(path.join(options.reviewStageDir, "artifacts", "findings.json"), {
+    findings: options.reviewVerdict.findings,
+    recommendedActions: options.reviewVerdict.recommendedActions,
+    acceptedSpecialists: options.reviewVerdict.acceptedSpecialists
+  });
+  await writeJson(path.join(options.reviewStageDir, "artifacts", "verdict.json"), options.reviewVerdict);
+
+  await fs.writeFile(path.join(options.shipStageDir, "final.md"), `${JSON.stringify(options.shipRecord, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(options.shipStageDir, "artifacts", "ship-summary.md"), options.shipRecord.reportMarkdown, "utf8");
+  await fs.writeFile(path.join(options.shipStageDir, "artifacts", "release-checklist.md"), renderChecklistMarkdown(options.shipRecord), "utf8");
+  await fs.writeFile(path.join(options.shipStageDir, "artifacts", "unresolved.md"), renderUnresolvedMarkdown(options.shipRecord), "utf8");
+  await writeJson(path.join(options.shipStageDir, "artifacts", "ship-record.json"), options.shipRecord);
+  await writeJson(path.join(options.shipStageDir, "artifacts", "github-state.json"), { status: "blocked", summary: options.githubDeliveryRecord.overall.summary });
+  await writeJson(path.join(options.shipStageDir, "artifacts", "pull-request.json"), options.githubDeliveryRecord.pullRequest);
+  await writeJson(path.join(options.shipStageDir, "artifacts", "issues.json"), options.githubDeliveryRecord.issues);
+  await writeJson(path.join(options.shipStageDir, "artifacts", "checks.json"), options.githubDeliveryRecord.checks);
+  await writeJson(path.join(options.shipStageDir, "artifacts", "actions.json"), options.githubDeliveryRecord.actions);
+  await writeJson(path.join(options.shipStageDir, "artifacts", "security.json"), options.githubDeliveryRecord.security);
+  await writeJson(path.join(options.shipStageDir, "artifacts", "release.json"), options.githubDeliveryRecord.release);
+  await writeJson(path.join(options.shipStageDir, "artifacts", "github-mutation.json"), options.githubMutationRecord);
+}
+
 function buildDeliverFinalSummary(options: {
   input: string;
   linkedContext?: LinkedBuildContext;
@@ -349,7 +628,8 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
       transcriptPath: path.join(buildStageDir, "artifacts", "build-transcript.log"),
       changeSummaryPath: path.join(buildStageDir, "artifacts", "change-summary.md"),
       verificationPath: path.join(buildStageDir, "artifacts", "verification.json")
-    }
+    },
+    ...(typeof options.buildTimeoutSeconds === "number" ? { timeoutSeconds: options.buildTimeoutSeconds } : {})
   });
 
   buildStage.status = buildExecution.result.code === 0 ? "completed" : "failed";
@@ -363,6 +643,88 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
   }
   await writeJson(options.paths.stageLineagePath, stageLineage);
   events.markStage("build", buildExecution.result.code === 0 ? "completed" : "failed");
+  if (buildExecution.result.code !== 0) {
+    const buildFailureSummary = summarizeBuildFailure(buildExecution);
+    const validationStageDir = deliverStageDir(options.paths.runDir, "validation");
+    const reviewStageDir = deliverStageDir(options.paths.runDir, "review");
+    const shipStageDir = deliverStageDir(options.paths.runDir, "ship");
+    const validationExecution = createBlockedValidationExecution(buildExecution);
+    const reviewVerdict = createBlockedReviewVerdict(buildExecution);
+    const shipRecord = createBlockedShipRecord(buildExecution);
+    const githubMutationRecord = createBlockedGitHubMutationRecord();
+    const githubDeliveryRecord = createBlockedGitHubDeliveryRecord({
+      gitBranch: options.gitBranch,
+      deliveryMode: options.deliveryMode,
+      issueNumbers: options.issueNumbers,
+      config: options.config,
+      githubMutationRecord
+    });
+
+    const validationStage = stageLineage.stages.find((stage) => stage.name === "validation")!;
+    validationStage.status = "deferred";
+    validationStage.executed = false;
+    validationStage.stageDir = validationStageDir;
+    validationStage.artifactPath = path.join(validationStageDir, "artifacts", "test-pyramid.md");
+    validationStage.notes = `Blocked because build failed. ${buildFailureSummary}`;
+    events.markStage("validation", "deferred");
+
+    const reviewStage = stageLineage.stages.find((stage) => stage.name === "review")!;
+    reviewStage.status = "deferred";
+    reviewStage.executed = false;
+    reviewStage.stageDir = reviewStageDir;
+    reviewStage.artifactPath = path.join(reviewStageDir, "artifacts", "findings.md");
+    reviewStage.notes = `Blocked because build failed. ${buildFailureSummary}`;
+    events.markStage("review", "deferred");
+
+    const shipStage = stageLineage.stages.find((stage) => stage.name === "ship")!;
+    shipStage.status = "deferred";
+    shipStage.executed = false;
+    shipStage.stageDir = shipStageDir;
+    shipStage.artifactPath = path.join(shipStageDir, "artifacts", "ship-summary.md");
+    shipStage.notes = `Blocked because build failed. ${buildFailureSummary}`;
+    events.markStage("ship", "deferred");
+
+    await writeBlockedDeliverStageArtifacts({
+      validationStageDir,
+      reviewStageDir,
+      shipStageDir,
+      validationExecution,
+      reviewVerdict,
+      shipRecord,
+      githubMutationRecord,
+      githubDeliveryRecord
+    });
+    await writeJson(path.join(options.paths.runDir, "artifacts", "github-mutation.json"), githubMutationRecord);
+    await writeJson(path.join(options.paths.runDir, "artifacts", "github-delivery.json"), githubDeliveryRecord);
+    await writeJson(options.paths.stageLineagePath, stageLineage);
+    await events.emit("failed", `Build failed; downstream stages blocked. ${buildFailureSummary}`);
+    events.close();
+
+    const finalBody = buildDeliverFinalSummary({
+      input: options.input,
+      stageLineage,
+      validationExecution,
+      reviewVerdict,
+      shipRecord,
+      githubMutationRecord,
+      githubDeliveryRecord,
+      ...(options.linkedContext ? { linkedContext: options.linkedContext } : {})
+    });
+    await fs.writeFile(options.paths.finalPath, finalBody, "utf8");
+    await fs.writeFile(options.paths.deliveryReportPath, finalBody, "utf8");
+
+    return {
+      buildExecution,
+      validationExecution,
+      reviewVerdict,
+      shipRecord,
+      githubDeliveryRecord,
+      githubMutationRecord,
+      stageLineage,
+      selectedSpecialists,
+      finalBody
+    };
+  }
   await events.emit("activity", "Build stage finished, starting validation synthesis");
 
   const validationStageDir = deliverStageDir(options.paths.runDir, "validation");
@@ -469,7 +831,8 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
     eventsPath: path.join(reviewStageDir, "events.jsonl"),
     stdoutPath: path.join(reviewStageDir, "stdout.log"),
     stderrPath: path.join(reviewStageDir, "stderr.log"),
-    config: options.config
+    config: options.config,
+    ...(typeof options.reviewTimeoutSeconds === "number" ? { timeoutSeconds: options.reviewTimeoutSeconds } : {})
   });
   const reviewRaw = await fs.readFile(path.join(reviewStageDir, "final.md"), "utf8");
   const reviewVerdict = parseJson<DeliverReviewVerdict>(reviewRaw, "Review lead");
@@ -559,7 +922,8 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
     eventsPath: path.join(shipStageDir, "events.jsonl"),
     stdoutPath: path.join(shipStageDir, "stdout.log"),
     stderrPath: path.join(shipStageDir, "stderr.log"),
-    config: options.config
+    config: options.config,
+    ...(typeof options.shipTimeoutSeconds === "number" ? { timeoutSeconds: options.shipTimeoutSeconds } : {})
   });
   const shipRaw = await fs.readFile(path.join(shipStageDir, "final.md"), "utf8");
   let shipRecord = parseJson<DeliverShipRecord>(shipRaw, "Ship lead");

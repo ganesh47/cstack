@@ -16,6 +16,7 @@ export interface CodexRunOptions {
   stderrPath: string;
   config: CstackConfig;
   silentProgress?: boolean;
+  timeoutSeconds?: number;
 }
 
 export interface CodexRunResult {
@@ -24,6 +25,8 @@ export interface CodexRunResult {
   command: string[];
   sessionId?: string;
   lastActivity?: string;
+  timedOut?: boolean;
+  timeoutSeconds?: number;
 }
 
 export interface CodexInteractiveRunOptions {
@@ -36,6 +39,7 @@ export interface CodexInteractiveRunOptions {
   stdoutPath: string;
   stderrPath: string;
   config: CstackConfig;
+  timeoutSeconds?: number;
 }
 
 export interface CodexSubcommandResult {
@@ -260,6 +264,15 @@ export function buildCodexInteractiveArgs(options: {
   return args;
 }
 
+function resolveWorkflowTimeoutSeconds(options: { workflow: WorkflowName; config: CstackConfig; timeoutSeconds?: number }): number | undefined {
+  if (typeof options.timeoutSeconds === "number") {
+    return options.timeoutSeconds;
+  }
+
+  const workflowConfig = options.config.workflows[options.workflow as keyof CstackConfig["workflows"]];
+  return typeof workflowConfig?.timeoutSeconds === "number" ? workflowConfig.timeoutSeconds : undefined;
+}
+
 export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunResult> {
   const args = buildCodexExecArgs(options);
   const stdout = createWriteStream(path.resolve(options.stdoutPath), { flags: "w" });
@@ -269,6 +282,7 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
   const invocation = resolveCommand(bin, args);
   const startedAt = Date.now();
   const reporter = options.silentProgress ? null : new ProgressReporter(options.workflow, options.runId);
+  const timeoutSeconds = resolveWorkflowTimeoutSeconds(options);
 
   return new Promise<CodexRunResult>((resolve, reject) => {
     const closeStreams = async (): Promise<void> =>
@@ -295,6 +309,9 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
     let stdoutBuffer = "";
     let stderrBuffer = "";
     let lastHeartbeatAt = startedAt;
+    let timedOut = false;
+    let forcedSignal: NodeJS.Signals | null = null;
+    let killTimer: NodeJS.Timeout | undefined;
 
     const emitEvent = (event: RunEvent) => {
       events.write(`${JSON.stringify(event)}\n`);
@@ -338,6 +355,13 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
       }
     }, 1_000);
 
+    const stopTimeouts = () => {
+      if (killTimer) {
+        clearTimeout(killTimer);
+        killTimer = undefined;
+      }
+    };
+
     emit("starting", `Running codex exec in ${options.cwd}`);
     const detachStdinError = writePromptToChildStdin(child.stdin, options.prompt, (error) => {
       clearInterval(heartbeat);
@@ -371,9 +395,28 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
       lastHeartbeatAt = Date.now();
     });
 
+    if (timeoutSeconds && timeoutSeconds > 0) {
+      killTimer = setTimeout(() => {
+        timedOut = true;
+        forcedSignal = "SIGTERM";
+        lastActivity = `Timed out after ${timeoutSeconds}s`;
+        emit("failed", `Timed out after ${timeoutSeconds}s`);
+        stderr.write(`cstack: stage timed out after ${timeoutSeconds}s\n`);
+        child.kill("SIGTERM");
+        setTimeout(() => {
+          if (child.exitCode === null && !child.killed) {
+            forcedSignal = "SIGKILL";
+            child.kill("SIGKILL");
+          }
+        }, 2_000).unref?.();
+      }, timeoutSeconds * 1000);
+      killTimer.unref?.();
+    }
+
     child.on("error", (error) => {
       detachStdinError();
       clearInterval(heartbeat);
+      stopTimeouts();
       reporter?.close();
       void closeStreams().finally(() => reject(error));
     });
@@ -381,19 +424,23 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
     child.on("close", async (code, signal) => {
       detachStdinError();
       clearInterval(heartbeat);
+       stopTimeouts();
       flushLines("stdout", true);
       flushLines("stderr", true);
-      const exitCode = code ?? 1;
+      const exitCode = timedOut ? 124 : (code ?? 1);
+      const resolvedSignal = forcedSignal ?? signal;
       if (exitCode === 0) {
         emit("completed", `Exit code ${exitCode}`);
-      } else {
+      } else if (!timedOut) {
         emit("failed", `Exit code ${exitCode}${signal ? ` (${signal})` : ""}`);
       }
       const result: CodexRunResult = {
         code: exitCode,
-        signal,
+        signal: resolvedSignal,
         command: [invocation.file, ...invocation.args],
-        lastActivity
+        lastActivity,
+        ...(timedOut ? { timedOut: true } : {}),
+        ...(timeoutSeconds ? { timeoutSeconds } : {})
       };
       if (sessionId) {
         result.sessionId = sessionId;
@@ -412,6 +459,7 @@ export async function runCodexInteractive(options: CodexInteractiveRunOptions): 
   const scriptArgs = ["-q", "-F", path.resolve(options.transcriptPath), invocation.file, ...invocation.args];
   const startedAt = Date.now();
   const reporter = new ProgressReporter(options.workflow, options.runId);
+  const timeoutSeconds = resolveWorkflowTimeoutSeconds(options);
 
   await fs.mkdir(path.dirname(path.resolve(options.transcriptPath)), { recursive: true });
   await fs.writeFile(path.resolve(options.eventsPath), "", "utf8");
@@ -431,15 +479,41 @@ export async function runCodexInteractive(options: CodexInteractiveRunOptions): 
     });
 
     void emit("starting", `Running interactive codex build in ${options.cwd}`);
+    let timedOut = false;
+    let forcedSignal: NodeJS.Signals | null = null;
+    let killTimer: NodeJS.Timeout | undefined;
+
+    if (timeoutSeconds && timeoutSeconds > 0) {
+      killTimer = setTimeout(() => {
+        timedOut = true;
+        forcedSignal = "SIGTERM";
+        void emit("failed", `Timed out after ${timeoutSeconds}s`);
+        child.kill("SIGTERM");
+        setTimeout(() => {
+          if (child.exitCode === null && !child.killed) {
+            forcedSignal = "SIGKILL";
+            child.kill("SIGKILL");
+          }
+        }, 2_000).unref?.();
+      }, timeoutSeconds * 1000);
+      killTimer.unref?.();
+    }
 
     child.on("error", async (error) => {
+      if (killTimer) {
+        clearTimeout(killTimer);
+      }
       reporter.close();
       await fs.writeFile(path.resolve(options.stderrPath), `${String(error)}\n`, "utf8");
       reject(error);
     });
 
     child.on("close", async (code, signal) => {
-      const exitCode = code ?? 1;
+      if (killTimer) {
+        clearTimeout(killTimer);
+      }
+      const exitCode = timedOut ? 124 : (code ?? 1);
+      const resolvedSignal = forcedSignal ?? signal;
       const transcriptRaw = await fs.readFile(path.resolve(options.transcriptPath), "utf8").catch(() => "");
       const transcript = stripCapturedControl(transcriptRaw).trim();
       const sessionId = transcript.match(/session id:\s*([^\s]+)/i)?.[1];
@@ -458,22 +532,30 @@ export async function runCodexInteractive(options: CodexInteractiveRunOptions): 
       );
       await fs.writeFile(
         path.resolve(options.stderrPath),
-        exitCode === 0 ? "" : `Interactive codex exited with code ${exitCode}${signal ? ` (${signal})` : ""}\n`,
+        exitCode === 0
+          ? ""
+          : timedOut
+            ? `Interactive codex timed out after ${timeoutSeconds}s\n`
+            : `Interactive codex exited with code ${exitCode}${resolvedSignal ? ` (${resolvedSignal})` : ""}\n`,
         "utf8"
       );
 
       if (sessionId) {
         await emit("session", sessionId);
       }
-      await emit(exitCode === 0 ? "completed" : "failed", `Exit code ${exitCode}${signal ? ` (${signal})` : ""}`);
+      if (!timedOut) {
+        await emit(exitCode === 0 ? "completed" : "failed", `Exit code ${exitCode}${resolvedSignal ? ` (${resolvedSignal})` : ""}`);
+      }
       reporter.close();
 
       resolve({
         code: exitCode,
-        signal,
+        signal: resolvedSignal,
         command: ["script", ...scriptArgs],
         ...(sessionId ? { sessionId } : {}),
-        lastActivity
+        lastActivity,
+        ...(timedOut ? { timedOut: true } : {}),
+        ...(timeoutSeconds ? { timeoutSeconds } : {})
       });
     });
   });

@@ -209,6 +209,8 @@ export interface WorkflowConfig {
   mode?: WorkflowMode;
   verificationCommands?: string[];
   allowDirty?: boolean;
+  timeoutSeconds?: number;
+  stageTimeoutSeconds?: Partial<Record<StageName, number>>;
   delegation?: {
     enabled?: boolean;
     maxAgents?: number;
@@ -309,6 +311,8 @@ export interface BuildSessionRecord {
     sessionIdObserved: boolean;
     transcriptObserved: boolean;
     finalArtifactObserved: boolean;
+    timedOut?: boolean;
+    timeoutSeconds?: number;
     fallbackReason?: string;
   };
   notes?: string[];
@@ -713,5 +717,6 @@ export interface RunRecord {
     issueNumbers?: number[];
     dryRun?: boolean;
     allowDirty?: boolean;
+    timeoutSeconds?: number;
   };
 }

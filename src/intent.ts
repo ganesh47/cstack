@@ -517,7 +517,7 @@ async function executeAutoWorkflow(options: {
         const childStage = childStageLineage?.stages.find((entry) => entry.name === stageName);
         updateLineageStage(options.stageLineage, stageName, {
           status: childStage?.status ?? (childRun.status === "completed" ? "completed" : "failed"),
-          executed: true,
+          executed: childStage?.executed ?? stageName === "build",
           childRunId,
           stageDir: path.join(childRunDir, "stages", stageName),
           artifactPath:
@@ -526,7 +526,7 @@ async function executeAutoWorkflow(options: {
               : stageName === "review"
                 ? path.join(childRunDir, "stages", "review", "artifacts", "verdict.json")
                 : path.join(childRunDir, "stages", "ship", "artifacts", "ship-summary.md"),
-          notes: `Executed through downstream deliver run ${childRunId}. ${summarizeChildRunOutcome(childRun)}`
+          notes: `Executed through downstream deliver run ${childRunId}. ${childStage?.notes ?? summarizeChildRunOutcome(childRun)}`
         });
       }
       return childRunId;
