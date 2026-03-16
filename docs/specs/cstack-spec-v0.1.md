@@ -372,7 +372,8 @@ The body must show at minimum:
 
 - a stage progress strip
 - a specialist strip when relevant
-- bounded recent activity
+- a single live progress line that summarizes current stdout/stderr/heartbeat signals
+- a fixed-height recent milestones pane
 - a clear liveness signal so the operator knows the run is still alive
 
 The liveness signal may use:
@@ -388,6 +389,8 @@ It must remain:
 - readable
 - obviously alive
 - not spammy
+
+Raw transport labels like `stdout`, `stderr`, `starting`, or `heartbeat` should not dominate the main dashboard body. They belong in durable event logs and inspect mode. The active TTY should collapse them into a stable progress sentence and keep the frame height steady while the run is active.
 
 ### Footer
 

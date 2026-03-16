@@ -319,7 +319,7 @@ describe("update command", () => {
       expect(prompts).toEqual(["Update cstack from v0.17.1 to v0.17.2?"]);
       expect(executed.some((call) => call.args[0] === "install")).toBe(true);
       const output = stdout.writes.join("");
-      expect(output).toContain("Inspecting installation context");
+      expect(output).toContain("Checking GitHub release v0.17.2");
       expect(output).toContain("Awaiting confirmation to update to v0.17.2");
       expect(output).toContain("Installing verified release tarball");
       expect(output).toContain("Updated cstack from v0.17.1 to v0.17.2.");
