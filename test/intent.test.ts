@@ -65,9 +65,9 @@ describe("intent router", () => {
     ]);
   });
 
-  it("routes gap-analysis prompts into review after planning", () => {
+  it("routes broad gap-analysis prompts directly into review", () => {
     const plan = inferRoutingPlan("What are the gaps in the current project?", "bare");
-    expect(plan.stages.map((stage) => stage.name)).toEqual(["discover", "spec", "review"]);
+    expect(plan.stages.map((stage) => stage.name)).toEqual(["review"]);
   });
 
   it("creates an intent run and auto-executes downstream delivery when the inferred plan warrants it", async () => {
@@ -156,11 +156,14 @@ describe("intent router", () => {
 
     expect(intentRun.status).toBe("completed");
     expect(intentRun.sessionId).toBe(reviewRun.sessionId);
+    expect(lineage.stages.map((stage) => stage.name)).toEqual(["review"]);
     expect(lineage.stages.find((stage) => stage.name === "review")?.status).toBe("completed");
     expect(lineage.stages.find((stage) => stage.name === "review")?.childRunId).toBe(reviewRun.id);
     expect(eventsBody).toContain("Running downstream review workflow from intent");
     expect(eventsBody).toContain(`Downstream review run ${reviewRun.id} started`);
     expect(eventsBody).toContain("Downstream review stage: review");
+    expect(eventsBody).not.toContain("Running discover stage");
+    expect(eventsBody).not.toContain("Running spec stage");
   });
 
   it("keeps intent completed when downstream review finds blocked gaps", async () => {
@@ -194,6 +197,7 @@ describe("intent router", () => {
     expect(reviewVerdict.mode).toBe("analysis");
     expect(reviewVerdict.status).toBe("completed");
     expect(reviewVerdict.gapClusters?.[0]?.title).toBe("Contract drift");
+    expect(lineage.stages.map((stage) => stage.name)).toEqual(["review"]);
     expect(lineage.stages.find((stage) => stage.name === "review")?.status).toBe("completed");
     expect(await fs.readFile(intentRun.finalPath, "utf8")).toContain("Gap analysis completed. High-priority product and delivery gaps remain.");
   });

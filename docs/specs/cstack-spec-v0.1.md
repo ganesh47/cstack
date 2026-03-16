@@ -251,14 +251,13 @@ Current intent behavior:
 - infer a stage plan
 - persist `routing-plan.json`
 - persist `stage-lineage.json`
-- execute `discover`
-- execute `spec`
 - auto-execute downstream `review`, `ship`, or `deliver` when the inferred plan warrants it
 - keep bounded specialist reviews inside the intent run only when the router stops after planning
 
 The active intent contract is:
 
-- plan and execute deterministic planning stages first
+- broad analysis prompts may route directly into downstream `review` when planning overhead is unlikely to add value
+- implementation and planning prompts still execute deterministic `discover` and `spec` stages first
 - auto-carry analysis prompts into `review`
 - auto-carry implementation prompts into `deliver`
 - preserve child workflow lineage in the parent intent run

@@ -152,13 +152,13 @@ What it does today:
 - accepts a natural-language task
 - infers an internal stage plan
 - persists `routing-plan.json` and `stage-lineage.json`
-- executes `discover` and `spec` inside one orchestrated run
 - auto-executes downstream `review`, `ship`, or `deliver` when the inferred plan warrants it
 - keeps bounded specialist reviews inside the intent run only when the router stops after planning
 
 Current intent behavior:
 
-- `discover` and `spec` are executed automatically inside the intent run
+- implementation and planning prompts still execute `discover` and `spec` automatically inside the intent run
+- broad analysis prompts like `What are the gaps in this project` can route directly to downstream `review` to avoid paying full planning overhead first
 - review-shaped analysis prompts auto-run standalone `review`
 - implementation-shaped prompts auto-run `deliver`, which carries the work through internal `build -> validation -> review -> ship`
 - explicit `build`, `review`, `ship`, and `deliver` commands still exist when you want a narrower workflow than the routed front door
