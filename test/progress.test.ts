@@ -74,8 +74,9 @@ describe("ProgressReporter", () => {
 
     const output = stream.writes.join("");
     expect(output).toContain("\u001B[?25l");
-    expect(output).toContain("Stages");
-    expect(output).toContain("✅ discover:done");
+    expect(output).toContain("Path");
+    expect(output).toContain("✅ discover");
+    expect(output).toContain("(done)");
     expect(output).toContain("Progress");
     expect(output).toContain("Next");
     expect(output).toContain("Recent milestones");
@@ -169,6 +170,8 @@ describe("ProgressReporter", () => {
 
     expect(output).toContain("Progress");
     expect(output).toContain("Recent milestones");
+    expect(output).toContain("Path");
+    expect(output).toContain("discover (live)  ›  ⏳ spec (plan)  ›  ⏳ review (plan)");
     expect(output).toContain("[+0:00] Routing intent across discover -> spec -> review");
     expect(output).toContain("[+0:00] Running discover stage");
     expect(output).toContain("…");
