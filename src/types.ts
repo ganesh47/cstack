@@ -157,6 +157,9 @@ export interface RunInspection {
   executionContext: ExecutionContextRecord | null;
   recentEvents: RunEvent[];
   finalBody: string;
+  buildFinalBody: string;
+  buildFinalPath?: string | undefined;
+  buildStderrTail?: string | undefined;
   artifacts: ArtifactEntry[];
   childRuns: ChildRunInspection[];
 }
@@ -168,6 +171,14 @@ export interface ChildRunInspection {
   finalBody: string;
   artifacts: ArtifactEntry[];
   recentEvents: RunEvent[];
+  stageLineage: StageLineage | null;
+  buildSessionRecord: BuildSessionRecord | null;
+  buildVerificationRecord: BuildVerificationRecord | null;
+  buildFinalBody: string;
+  buildFinalPath?: string | undefined;
+  buildTranscriptPath?: string | undefined;
+  buildTranscriptAvailable: boolean;
+  buildStderrTail?: string | undefined;
 }
 
 export type RunEventType =

@@ -273,6 +273,12 @@ Useful inspector commands:
 - `show artifact <relative-path>`
 - `gaps`
 - `why deferred <stage>`
+
+Failed build inspection is now root-cause-first:
+
+- parent `intent` inspection prefers the linked child build failure summary over the aggregate downstream deliver error
+- failed `deliver` inspection shows direct build evidence, including exit code, session visibility, transcript availability, verification status, and fallback-summary status when Codex did not leave a normal final markdown file
+- later `validation`, `review`, and `ship` blockage is shown as a consequence of the failed build instead of being repeated as if it were the original cause
 - `what remains`
 - `resume`
 - `fork`

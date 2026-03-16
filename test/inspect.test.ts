@@ -380,6 +380,134 @@ async function seedIntentFailedReviewRun(repoDir: string): Promise<string> {
   return runId;
 }
 
+async function seedIntentFailedDeliverBuildRun(repoDir: string): Promise<string> {
+  const deliverRunId = await seedDeliverRun(repoDir, { buildFailure: true });
+  const runId = "2026-03-16T12-49-00-888Z-intent-build-root-cause";
+  const runDir = path.join(repoDir, ".cstack", "runs", runId);
+  await fs.mkdir(path.join(runDir, "artifacts"), { recursive: true });
+
+  const run: RunRecord = {
+    id: runId,
+    workflow: "intent",
+    createdAt: "2026-03-16T12:49:00.000Z",
+    updatedAt: "2026-03-16T13:12:01.000Z",
+    status: "failed",
+    cwd: repoDir,
+    gitBranch: "main",
+    codexVersion: "fake",
+    codexCommand: ["codex", "exec"],
+    promptPath: path.join(runDir, "prompt.md"),
+    finalPath: path.join(runDir, "final.md"),
+    contextPath: path.join(runDir, "context.md"),
+    eventsPath: path.join(runDir, "events.jsonl"),
+    stdoutPath: path.join(runDir, "stdout.log"),
+    stderrPath: path.join(runDir, "stderr.log"),
+    configSources: [],
+    lastActivity: "Intent run finished with downstream workflow failures",
+    summary: "What are the gaps in this project? Can you work on closing the gaps?",
+    error: `build failed via ${deliverRunId}`,
+    inputs: {
+      userPrompt: "What are the gaps in this project? Can you work on closing the gaps?",
+      entrypoint: "intent",
+      plannedStages: ["discover", "spec", "build", "review", "ship"],
+      selectedSpecialists: []
+    }
+  };
+  const intentSummary = run.summary ?? run.inputs.userPrompt;
+
+  const routingPlan: RoutingPlan = {
+    intent: intentSummary,
+    inferredAt: "2026-03-16T12:49:00.000Z",
+    entrypoint: "bare",
+    summary: "Infer discover -> spec -> build -> review -> ship with no specialist reviews selected",
+    stages: [
+      { name: "discover", rationale: "Gather repo context.", status: "planned", executed: false },
+      { name: "spec", rationale: "Plan the implementation.", status: "planned", executed: false },
+      { name: "build", rationale: "Implement the approved change.", status: "planned", executed: false },
+      { name: "review", rationale: "Critique the implementation.", status: "planned", executed: false },
+      { name: "ship", rationale: "Prepare release readiness.", status: "planned", executed: false }
+    ],
+    specialists: []
+  };
+
+  const aggregateFailure =
+    "build exited with code 1; validation status: blocked; review status: blocked; ship stage blocked release readiness";
+  const lineage: StageLineage = {
+    intent: intentSummary,
+    stages: [
+      { name: "discover", rationale: "Gather repo context.", status: "completed", executed: true },
+      { name: "spec", rationale: "Plan the implementation.", status: "completed", executed: true },
+      {
+        name: "build",
+        rationale: "Implement the approved change.",
+        status: "failed",
+        executed: true,
+        childRunId: deliverRunId,
+        notes: `Executed through downstream deliver run ${deliverRunId}. ${aggregateFailure}`
+      },
+      {
+        name: "review",
+        rationale: "Critique the implementation.",
+        status: "completed",
+        executed: true,
+        childRunId: deliverRunId,
+        notes: `Executed through downstream deliver run ${deliverRunId}. ${aggregateFailure}`
+      },
+      {
+        name: "ship",
+        rationale: "Prepare release readiness.",
+        status: "completed",
+        executed: true,
+        childRunId: deliverRunId,
+        notes: `Executed through downstream deliver run ${deliverRunId}. ${aggregateFailure}`
+      }
+    ],
+    specialists: []
+  };
+
+  const events: RunEvent[] = [
+    {
+      timestamp: "2026-03-16T12:49:00.000Z",
+      elapsedMs: 0,
+      type: "starting",
+      message: "Routing intent across discover -> spec -> build -> review -> ship"
+    },
+    {
+      timestamp: "2026-03-16T12:58:54.000Z",
+      elapsedMs: 593_000,
+      type: "activity",
+      message: `Downstream deliver run ${deliverRunId} started`
+    },
+    {
+      timestamp: "2026-03-16T13:12:01.000Z",
+      elapsedMs: 1_380_000,
+      type: "failed",
+      message: "Intent run finished with downstream workflow failures"
+    }
+  ];
+
+  await fs.writeFile(path.join(runDir, "run.json"), `${JSON.stringify(run, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(runDir, "routing-plan.json"), `${JSON.stringify(routingPlan, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(runDir, "stage-lineage.json"), `${JSON.stringify(lineage, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(runDir, "events.jsonl"), `${events.map((event) => JSON.stringify(event)).join("\n")}\n`, "utf8");
+  await fs.writeFile(
+    path.join(runDir, "final.md"),
+    [
+      "# Intent Run Summary",
+      "",
+      "## Intent",
+      run.summary,
+      "",
+      "## Stage status",
+      `- build: failed (executed) via ${deliverRunId}`,
+      `  note: ${aggregateFailure}`
+    ].join("\n"),
+    "utf8"
+  );
+
+  return runId;
+}
+
 async function seedBuildRun(repoDir: string): Promise<string> {
   const runId = "2026-03-14T11-00-00-build-billing-cleanup";
   const runDir = path.join(repoDir, ".cstack", "runs", runId);
@@ -600,11 +728,13 @@ async function seedDeliverRun(
   options: {
     readiness?: "ready" | "blocked";
     mode?: "merge-ready" | "release";
+    buildFailure?: boolean;
   } = {}
 ): Promise<string> {
   const readiness = options.readiness ?? "blocked";
   const mode = options.mode ?? "merge-ready";
-  const blocked = readiness === "blocked";
+  const buildFailure = options.buildFailure ?? false;
+  const blocked = readiness === "blocked" || buildFailure;
   const runId =
     readiness === "blocked"
       ? "2026-03-14T12-15-00-deliver-billing-cleanup-blocked"
@@ -633,14 +763,17 @@ async function seedDeliverRun(
     stdoutPath: path.join(runDir, "stdout.log"),
     stderrPath: path.join(runDir, "stderr.log"),
     configSources: [],
-    sessionId: "fake-session-deliver",
-    lastActivity: "Deliver run completed",
+    ...(buildFailure ? {} : { sessionId: "fake-session-deliver" }),
+    lastActivity: buildFailure ? "Validation: blocked; Ship readiness: blocked; GitHub delivery: ready" : "Deliver run completed",
     summary: "Deliver billing cleanup",
+    ...(buildFailure
+      ? { error: "build exited with code 1; validation status: blocked; review status: blocked; ship stage blocked release readiness" }
+      : {}),
     inputs: {
       userPrompt: "Deliver billing cleanup",
       linkedRunId: "2026-03-14T12-00-00-spec-deliver-billing",
       requestedMode: "interactive",
-      observedMode: "exec",
+      observedMode: buildFailure ? "interactive" : "exec",
       verificationCommands: ["npm test"]
     }
   };
@@ -653,10 +786,32 @@ async function seedDeliverRun(
       {
         intent: "Deliver billing cleanup",
         stages: [
-          { name: "build", rationale: "Implement", status: "completed", executed: true },
-          { name: "validation", rationale: "Validate", status: blocked ? "deferred" : "completed", executed: true, notes: blocked ? "Validation completed but GitHub parity remains blocked." : "Validation completed." },
-          { name: "review", rationale: "Critique", status: "completed", executed: true },
-          { name: "ship", rationale: "Prepare release", status: "completed", executed: true }
+          { name: "build", rationale: "Implement", status: buildFailure ? "failed" : "completed", executed: true, notes: buildFailure ? "Build exited with code 1." : undefined },
+          {
+            name: "validation",
+            rationale: "Validate",
+            status: buildFailure ? "failed" : blocked ? "deferred" : "completed",
+            executed: true,
+            notes: buildFailure
+              ? "Validation planning landed, but validation remained blocked because build did not finish and verification did not run."
+              : blocked
+                ? "Validation completed but GitHub parity remains blocked."
+                : "Validation completed."
+          },
+          {
+            name: "review",
+            rationale: "Critique",
+            status: "completed",
+            executed: true,
+            notes: buildFailure ? "Delivery is blocked because build exited unsuccessfully and verification did not run." : undefined
+          },
+          {
+            name: "ship",
+            rationale: "Prepare release",
+            status: "completed",
+            executed: true,
+            notes: buildFailure ? "Release readiness is blocked by the failed build stage." : undefined
+          }
         ],
         specialists: [{ name: "audit-review", reason: "Audit logging scope.", status: "completed", disposition: "accepted" }]
       },
@@ -671,13 +826,14 @@ async function seedDeliverRun(
       {
         workflow: "build",
         requestedMode: "interactive",
-        mode: "exec",
+        mode: buildFailure ? "interactive" : "exec",
         startedAt: "2026-03-14T12:15:00.000Z",
         endedAt: "2026-03-14T12:15:10.000Z",
-        sessionId: "fake-session-deliver",
+        ...(buildFailure ? {} : { sessionId: "fake-session-deliver" }),
+        ...(buildFailure ? { transcriptPath: path.join(runDir, "stages", "build", "artifacts", "build-transcript.log") } : {}),
         codexCommand: ["codex", "exec"],
         observability: {
-          sessionIdObserved: true,
+          sessionIdObserved: !buildFailure,
           transcriptObserved: false,
           finalArtifactObserved: true
         }
@@ -689,10 +845,34 @@ async function seedDeliverRun(
   );
   await fs.writeFile(
     path.join(runDir, "stages", "build", "artifacts", "verification.json"),
-    `${JSON.stringify({ status: "passed", requestedCommands: ["npm test"], results: [] }, null, 2)}\n`,
+    `${JSON.stringify(
+      buildFailure ? { status: "not-run", requestedCommands: ["npm test"], results: [], notes: "Build failed before verification started." } : { status: "passed", requestedCommands: ["npm test"], results: [] },
+      null,
+      2
+    )}\n`,
     "utf8"
   );
   await fs.writeFile(path.join(runDir, "stages", "build", "artifacts", "change-summary.md"), "# Build Summary\n", "utf8");
+  await fs.writeFile(
+    path.join(runDir, "stages", "build", "final.md"),
+    buildFailure
+      ? [
+          "# Build Run Summary",
+          "",
+          "## Codex session",
+          "- session id: not observed",
+          "- exit code: 1",
+          `- transcript: ${path.join(runDir, "stages", "build", "artifacts", "build-transcript.log")}`,
+          "",
+          "## Verification",
+          "- status: not-run",
+          "",
+          "## Notes",
+          "- Codex did not leave a final markdown summary."
+        ].join("\n")
+      : "# Build Run Summary\n\nCompleted.\n",
+    "utf8"
+  );
   await fs.writeFile(
     path.join(runDir, "stages", "validation", "repo-profile.json"),
     `${JSON.stringify(
@@ -1058,6 +1238,7 @@ async function seedDeliverRun(
   await fs.writeFile(path.join(runDir, "stages", "ship", "artifacts", "actions.json"), `${JSON.stringify(githubDelivery.actions, null, 2)}\n`, "utf8");
   await fs.writeFile(path.join(runDir, "stages", "ship", "artifacts", "security.json"), `${JSON.stringify(githubDelivery.security, null, 2)}\n`, "utf8");
   await fs.writeFile(path.join(runDir, "stages", "ship", "artifacts", "release.json"), `${JSON.stringify(githubDelivery.release, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(runDir, "stderr.log"), buildFailure ? "Interactive codex exited with code 1\n" : "", "utf8");
 
   return runId;
 }
@@ -1274,5 +1455,29 @@ describe("inspect", () => {
     await expect(handleInspectorCommand(repoDir, inspection, "show stage review")).resolves.toContain("workflow: review");
     await expect(handleInspectorCommand(repoDir, inspection, "what remains")).resolves.toContain("child summary:");
     await expect(handleInspectorCommand(repoDir, inspection, "f")).resolves.toContain("note: Executed through downstream review run");
+  });
+
+  it("surfaces downstream build root cause from a parent intent run", async () => {
+    const failedIntentRunId = await seedIntentFailedDeliverBuildRun(repoDir);
+    const inspection = await loadRunInspection(repoDir, failedIntentRunId);
+
+    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("root cause: downstream build failed: interactive Codex exited with code 1");
+    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("no Codex session id was observed");
+    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("verification did not run");
+    await expect(handleInspectorCommand(repoDir, inspection, "show stage build")).resolves.toContain("root cause stage: build");
+    await expect(handleInspectorCommand(repoDir, inspection, "show stage build")).resolves.toContain("transcript: missing");
+    await expect(handleInspectorCommand(repoDir, inspection, "show child build")).resolves.toContain("build final:");
+    await expect(handleInspectorCommand(repoDir, inspection, "show child build")).resolves.toContain("Interactive codex exited with code 1");
+    await expect(handleInspectorCommand(repoDir, inspection, "what remains")).resolves.toContain("child summary: interactive Codex exited with code 1");
+  });
+
+  it("surfaces direct build root cause inside failed deliver inspections", async () => {
+    const deliverRunId = await seedDeliverRun(repoDir, { buildFailure: true });
+    const inspection = await loadRunInspection(repoDir, deliverRunId);
+
+    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("root cause: build failed: interactive Codex exited with code 1");
+    await expect(handleInspectorCommand(repoDir, inspection, "show stage build")).resolves.toContain("Direct build evidence:");
+    await expect(handleInspectorCommand(repoDir, inspection, "show stage build")).resolves.toContain("verification: not-run");
+    await expect(handleInspectorCommand(repoDir, inspection, "stages")).resolves.toContain("root cause: interactive Codex exited with code 1");
   });
 });
