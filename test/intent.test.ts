@@ -182,16 +182,20 @@ describe("intent router", () => {
     const reviewRunDir = path.dirname(reviewRun.finalPath);
     const lineage = JSON.parse(await fs.readFile(path.join(intentRunDir, "stage-lineage.json"), "utf8")) as StageLineage;
     const reviewVerdict = JSON.parse(await fs.readFile(path.join(reviewRunDir, "artifacts", "verdict.json"), "utf8")) as {
+      mode: string;
       status: string;
       summary: string;
+      gapClusters?: Array<{ title: string }>;
     };
 
     expect(intentRun.status).toBe("completed");
     expect(intentRun.error).toBeUndefined();
     expect(reviewRun.status).toBe("completed");
-    expect(reviewVerdict.status).toBe("blocked");
+    expect(reviewVerdict.mode).toBe("analysis");
+    expect(reviewVerdict.status).toBe("completed");
+    expect(reviewVerdict.gapClusters?.[0]?.title).toBe("Contract drift");
     expect(lineage.stages.find((stage) => stage.name === "review")?.status).toBe("completed");
-    expect(await fs.readFile(intentRun.finalPath, "utf8")).toContain("Major contract, behavior, and process gaps remain unresolved.");
+    expect(await fs.readFile(intentRun.finalPath, "utf8")).toContain("Gap analysis completed. High-priority product and delivery gaps remain.");
   });
 
   it("supports dry-run routing without executing stages", async () => {

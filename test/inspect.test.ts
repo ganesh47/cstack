@@ -6,7 +6,7 @@ import { promises as fs } from "node:fs";
 import { chmodSync } from "node:fs";
 import { promisify } from "node:util";
 import { runInspect } from "../src/commands/inspect.js";
-import { executeInspectorCommand, handleInspectorCommand, loadRunInspection, runInteractiveInspector } from "../src/inspector.js";
+import { completeInspectorInput, executeInspectorCommand, handleInspectorCommand, loadRunInspection, runInteractiveInspector } from "../src/inspector.js";
 import type { RoutingPlan, RunEvent, RunRecord, StageLineage } from "../src/types.js";
 
 const execFileAsync = promisify(execFile);
@@ -481,7 +481,7 @@ async function seedReviewRun(repoDir: string): Promise<string> {
     workflow: "review",
     createdAt: "2026-03-15T05:36:07.000Z",
     updatedAt: "2026-03-15T05:36:38.070Z",
-    status: "failed",
+    status: "completed",
     cwd: repoDir,
     gitBranch: "main",
     codexVersion: "fake",
@@ -493,9 +493,8 @@ async function seedReviewRun(repoDir: string): Promise<string> {
     stdoutPath: path.join(runDir, "stdout.log"),
     stderrPath: path.join(runDir, "stderr.log"),
     configSources: [],
-    lastActivity: "Delivery is not ready. The repo has unresolved contract, runtime, and configuration gaps, and there is no verification evidence for this review run.",
+    lastActivity: "Gap analysis completed. High-priority product and delivery gaps remain.",
     summary: "What are the gaps in the current project",
-    error: "Delivery is not ready. The repo has unresolved contract, runtime, and configuration gaps, and there is no verification evidence for this review run.",
     inputs: {
       userPrompt: "What are the gaps in the current project",
       linkedRunId: "2026-03-15T05-28-16-672Z-intent-what-are-the-gaps-in-the-current-project"
@@ -503,13 +502,13 @@ async function seedReviewRun(repoDir: string): Promise<string> {
   };
 
   await fs.writeFile(path.join(runDir, "run.json"), `${JSON.stringify(run, null, 2)}\n`, "utf8");
-  await fs.writeFile(path.join(runDir, "final.md"), "# Review Run Summary\n\nChanges requested.\n", "utf8");
+  await fs.writeFile(path.join(runDir, "final.md"), "# Review Run Summary\n\nGap analysis completed.\n", "utf8");
   await fs.writeFile(
     path.join(runDir, "stage-lineage.json"),
     `${JSON.stringify(
       {
         intent: "What are the gaps in the current project",
-        stages: [{ name: "review", rationale: "Critique current readiness.", status: "completed", executed: true }],
+        stages: [{ name: "review", rationale: "Analyze the main gaps and risks.", status: "completed", executed: true }],
         specialists: []
       },
       null,
@@ -521,16 +520,43 @@ async function seedReviewRun(repoDir: string): Promise<string> {
     path.join(runDir, "artifacts", "verdict.json"),
     `${JSON.stringify(
       {
-        status: "changes-requested",
-        summary:
-          "Delivery is not ready. The repo has unresolved contract, runtime, and configuration gaps, and there is no verification evidence for this review run.",
-        findings: [],
+        mode: "analysis",
+        status: "completed",
+        summary: "Gap analysis completed. High-priority product and delivery gaps remain.",
+        findings: [
+          {
+            severity: "high",
+            title: "Contract drift",
+            detail: "API behavior, docs, and connector expectations no longer line up."
+          }
+        ],
         recommendedActions: [
           "Choose one source of truth for API routes, status codes, and ingest/heartbeat semantics, then align API code, Java clients, integration tests, and docs to it.",
           "Run the intended API, CLI, and connector verification commands and attach the results to the next review."
         ],
+        gapClusters: [
+          {
+            title: "Contract drift",
+            severity: "high",
+            summary: "The API, docs, and connector behavior disagree on key runtime semantics."
+          },
+          {
+            title: "Validation gap",
+            severity: "high",
+            summary: "There is no runnable end-to-end evidence for the advertised metadata path."
+          }
+        ],
+        likelyRootCauses: [
+          "Contract changes are not flowing through one source of truth.",
+          "Validation requirements are not enforced before review."
+        ],
+        recommendedNextSlices: [
+          "Align the API contract across code, docs, and client surfaces.",
+          "Add runnable verification for ingest and metadata flows."
+        ],
+        confidence: "high",
         acceptedSpecialists: [],
-        reportMarkdown: "# Review Findings\n\nChanges requested.\n"
+        reportMarkdown: "# Review Findings\n\nGap analysis completed.\n"
       },
       null,
       2
@@ -538,7 +564,7 @@ async function seedReviewRun(repoDir: string): Promise<string> {
     "utf8"
   );
 
-  await fs.writeFile(path.join(runDir, "artifacts", "findings.md"), "# Review Findings\n\nChanges requested.\n", "utf8");
+  await fs.writeFile(path.join(runDir, "artifacts", "findings.md"), "# Review Findings\n\nGap analysis completed.\n", "utf8");
   await fs.writeFile(
     path.join(runDir, "artifacts", "findings.json"),
     `${JSON.stringify(
@@ -797,6 +823,7 @@ async function seedDeliverRun(
     path.join(runDir, "stages", "review", "artifacts", "verdict.json"),
     `${JSON.stringify(
       {
+        mode: "readiness",
         status: "changes-requested",
         summary: "Review completed with bounded follow-up.",
         findings: [],
@@ -1207,14 +1234,40 @@ describe("inspect", () => {
     }
   });
 
+  it("renders analysis-mode review summaries and gap commands for review runs", async () => {
+    const reviewRunId = await seedReviewRun(repoDir);
+    const inspection = await loadRunInspection(repoDir, reviewRunId);
+
+    expect(inspection.deliverReviewVerdict?.mode).toBe("analysis");
+    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("review mode: analysis");
+    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("gap: Contract drift");
+    await expect(handleInspectorCommand(repoDir, inspection, "show review")).resolves.toContain("Analysis review:");
+    await expect(handleInspectorCommand(repoDir, inspection, "gaps")).resolves.toContain("Gap clusters:");
+    await expect(handleInspectorCommand(repoDir, inspection, "gaps")).resolves.toContain("Recommended next slices:");
+  });
+
+  it("offers completion and suggestions in the interactive inspector model", async () => {
+    const reviewRunId = await seedReviewRun(repoDir);
+    const reviewInspection = await loadRunInspection(repoDir, reviewRunId);
+    const intentRunId = await seedIntentFailedReviewRun(repoDir);
+    const intentInspection = await loadRunInspection(repoDir, intentRunId);
+
+    expect(completeInspectorInput(reviewInspection, "sho")[0]).toContain("show final");
+    expect(completeInspectorInput(reviewInspection, "show st")[0]).toContain("show stage");
+    expect(completeInspectorInput(reviewInspection, "show stage re")[0]).toContain("show stage review");
+    expect(completeInspectorInput(reviewInspection, "show artifact arti")[0]).toContain("show artifact artifacts/verdict.json");
+    await expect(handleInspectorCommand(reviewInspection.run.cwd, reviewInspection, "artifatcs")).resolves.toContain("Did you mean:");
+    await expect(handleInspectorCommand(intentInspection.run.cwd, intentInspection, "show child review")).resolves.toContain("run:");
+  });
+
   it("surfaces downstream review failure context from a parent intent run", async () => {
     const failedIntentRunId = await seedIntentFailedReviewRun(repoDir);
     const inspection = await loadRunInspection(repoDir, failedIntentRunId);
 
     expect(inspection.childRuns).toHaveLength(1);
     expect(inspection.childRuns[0]?.run.workflow).toBe("review");
-    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("downstream review failed");
-    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("inspect child run: cstack inspect");
+    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("Intent run finished with downstream workflow failures");
+    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("inspect linked child runs with `show child review`");
     await expect(handleInspectorCommand(repoDir, inspection, "artifacts")).resolves.toContain("Linked child runs:");
     await expect(handleInspectorCommand(repoDir, inspection, "artifacts")).resolves.toContain("artifacts/verdict.json");
     await expect(handleInspectorCommand(repoDir, inspection, "show stage review")).resolves.toContain("Linked child run:");

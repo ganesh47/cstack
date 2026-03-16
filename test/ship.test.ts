@@ -94,6 +94,7 @@ async function seedReviewRun(repoDir: string, buildRunId: string): Promise<strin
   };
 
   const verdict: DeliverReviewVerdict = {
+    mode: "readiness",
     status: "ready",
     summary: "Review passed.",
     findings: [],

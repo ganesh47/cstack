@@ -216,49 +216,78 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
     "",
     "No blocking gaps detected in the fake fixture."
   ].join("\n");
+} else if (prompt.includes("You are the `Review Lead` for a bounded `cstack review` workflow running in analysis mode.")) {
+  body = JSON.stringify(
+    {
+      mode: "analysis",
+      status: "completed",
+      summary: "Gap analysis completed. High-priority product and delivery gaps remain.",
+      findings: [
+        {
+          severity: "high",
+          title: "Contract drift",
+          detail: "The shipped interfaces and the planned contract are no longer aligned."
+        },
+        {
+          severity: "warning",
+          title: "Validation evidence missing",
+          detail: "There is no runnable end-to-end evidence attached to this review path."
+        }
+      ],
+      recommendedActions: [
+        "Align the repo on one source of truth for API routes and ingest semantics.",
+        "Add verification evidence before treating the project as release-ready."
+      ],
+      gapClusters: [
+        {
+          title: "Contract drift",
+          severity: "high",
+          summary: "The API, connector, and documented behavior no longer describe the same system.",
+          evidence: ["spec drift", "connector mismatch"]
+        },
+        {
+          title: "Validation gap",
+          severity: "high",
+          summary: "The repo lacks runnable end-to-end or contract validation evidence for the advertised behavior.",
+          evidence: ["missing verification artifacts"]
+        }
+      ],
+      likelyRootCauses: [
+        "Contract updates and implementation changes are landing through different paths.",
+        "Validation expectations are not encoded as a required workflow gate."
+      ],
+      recommendedNextSlices: [
+        "Define and align one API contract across code, docs, and clients.",
+        "Add runnable verification for the main ingest and metadata flows."
+      ],
+      confidence: "high",
+      evidenceNotes: ["Fake fixture inferred gaps from the linked prompt contract."],
+      acceptedSpecialists: [],
+      reportMarkdown: "# Review Findings\n\nGap analysis completed.\n"
+    },
+    null,
+    2
+  );
 } else if (prompt.includes("You are the `Review Lead` for a bounded `cstack deliver` workflow.")) {
-  if (/what are the gaps/i.test(prompt)) {
-    body = JSON.stringify(
-      {
-        status: "blocked",
-        summary: "Major contract, behavior, and process gaps remain unresolved.",
-        findings: [
-          {
-            severity: "error",
-            title: "Contract drift",
-            detail: "The shipped interfaces and the planned contract are no longer aligned."
-          }
-        ],
-        recommendedActions: [
-          "Define a single source of truth for the API contract.",
-          "Add verification evidence before treating the project as delivery-ready."
-        ],
-        acceptedSpecialists: [],
-        reportMarkdown: "# Review Findings\n\nMajor gaps remain unresolved.\n"
-      },
-      null,
-      2
-    );
-  } else {
-    body = JSON.stringify(
-      {
-        status: "ready",
-        summary: "Review completed with bounded follow-up.",
-        findings: [
-          {
-            severity: "warning",
-            title: "Release readiness follow-up",
-            detail: "Review the release checklist before merge."
-          }
-        ],
-        recommendedActions: ["Review the release checklist before merge."],
-        acceptedSpecialists: [],
-        reportMarkdown: "# Review Findings\n\nBounded follow-up required.\n"
-      },
-      null,
-      2
-    );
-  }
+  body = JSON.stringify(
+    {
+      mode: "readiness",
+      status: "ready",
+      summary: "Review completed with bounded follow-up.",
+      findings: [
+        {
+          severity: "warning",
+          title: "Release readiness follow-up",
+          detail: "Review the release checklist before merge."
+        }
+      ],
+      recommendedActions: ["Review the release checklist before merge."],
+      acceptedSpecialists: [],
+      reportMarkdown: "# Review Findings\n\nBounded follow-up required.\n"
+    },
+    null,
+    2
+  );
 } else if (prompt.includes("You are the `Ship Lead` for a bounded `cstack deliver` workflow.")) {
   body = JSON.stringify(
     {

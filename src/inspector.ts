@@ -32,6 +32,16 @@ interface InspectorCommandResponse {
   exit?: boolean;
 }
 
+interface InspectorCompletionContext {
+  commands: string[];
+  showTargets: string[];
+  stageNames: string[];
+  specialistNames: string[];
+  delegateTracks: string[];
+  artifactPaths: string[];
+  childStages: string[];
+}
+
 async function readRecentEvents(eventsPath?: string): Promise<RunEvent[]> {
   if (!eventsPath) {
     return [];
@@ -124,6 +134,36 @@ function renderSpecialistStrip(inspection: RunInspection): string {
   return planned.length > 0 ? planned.map((specialist) => badge(specialist.name, "plan")).join(" ") : "[none]";
 }
 
+function reviewMode(verdict: DeliverReviewVerdict | null): "analysis" | "readiness" {
+  if (verdict?.mode === "analysis") {
+    return "analysis";
+  }
+  return "readiness";
+}
+
+function renderReviewHeadline(verdict: DeliverReviewVerdict | null): string | undefined {
+  if (!verdict) {
+    return undefined;
+  }
+  return reviewMode(verdict) === "analysis" ? `- review mode: analysis (${verdict.status})` : `- review verdict: ${verdict.status}`;
+}
+
+function renderAnalysisReviewLines(verdict: DeliverReviewVerdict): string[] {
+  return [
+    `- analysis summary: ${verdict.summary}`,
+    ...(verdict.confidence ? [`- confidence: ${verdict.confidence}`] : []),
+    ...((verdict.gapClusters ?? []).slice(0, 4).map((cluster) => `- gap: ${cluster.title} [${cluster.severity}] ${cluster.summary}`)),
+    ...((verdict.recommendedNextSlices ?? []).slice(0, 3).map((slice) => `- next slice: ${slice}`))
+  ];
+}
+
+function renderReadinessReviewLines(verdict: DeliverReviewVerdict): string[] {
+  return [
+    `- review summary: ${verdict.summary}`,
+    ...verdict.recommendedActions.slice(0, 3).map((action) => `- action: ${action}`)
+  ];
+}
+
 function renderSuggestedActions(inspection: RunInspection): string[] {
   const lines: string[] = [];
   const deferredStages = inspection.stageLineage?.stages.filter((stage) => stage.status === "deferred" || stage.status === "skipped") ?? [];
@@ -156,6 +196,9 @@ function renderSuggestedActions(inspection: RunInspection): string[] {
   }
   if (inspection.run.workflow === "review") {
     lines.push("- inspect the review verdict with `show review`");
+    if (reviewMode(inspection.deliverReviewVerdict) === "analysis") {
+      lines.push("- inspect the main gap clusters with `gaps`");
+    }
     if (hasMitigationActions(inspection)) {
       lines.push("- review mitigation options with `show mitigations`");
       lines.push("- start the default mitigation workflow with `mitigate`");
@@ -186,6 +229,9 @@ function renderSuggestedActions(inspection: RunInspection): string[] {
   }
   if (inspection.artifacts.some((artifact) => artifact.path === "routing-plan.json")) {
     lines.push("- review routing with `show routing`");
+  }
+  if (inspection.childRuns.length > 0) {
+    lines.push(`- inspect linked child runs with \`show child ${inspection.childRuns[0]!.stageName}\``);
   }
 
   return lines.length > 0 ? lines : ["- no obvious follow-up recorded"];
@@ -663,6 +709,12 @@ function renderLineageSection(inspection: RunInspection): string[] {
 export function renderInspectionSummary(cwd: string, inspection: RunInspection): string {
   const { run, recentEvents, finalBody } = inspection;
   const failedChildRuns = inspection.childRuns.filter((child) => child.run.status === "failed");
+  const reviewDetails =
+    inspection.deliverReviewVerdict && reviewMode(inspection.deliverReviewVerdict) === "analysis"
+      ? renderAnalysisReviewLines(inspection.deliverReviewVerdict)
+      : inspection.deliverReviewVerdict
+        ? renderReadinessReviewLines(inspection.deliverReviewVerdict)
+        : [];
 
   return (
     [
@@ -683,7 +735,8 @@ export function renderInspectionSummary(cwd: string, inspection: RunInspection):
       inspection.verificationRecord ? `- verification: ${renderVerificationSummary(inspection.verificationRecord)}` : undefined,
       inspection.validationPlan ? `- validation: ${inspection.validationPlan.status}` : undefined,
       inspection.validationLocalRecord ? `- local validation: ${inspection.validationLocalRecord.status}` : undefined,
-      inspection.deliverReviewVerdict ? `- review verdict: ${inspection.deliverReviewVerdict.status}` : undefined,
+      renderReviewHeadline(inspection.deliverReviewVerdict),
+      ...reviewDetails,
       inspection.deliverShipRecord ? `- ship readiness: ${inspection.deliverShipRecord.readiness}` : undefined,
       inspection.githubMutationRecord ? `- github mutation: ${inspection.githubMutationRecord.summary}` : undefined,
       inspection.githubDeliveryRecord ? `- github delivery: ${renderGitHubSummary(inspection.githubDeliveryRecord)}` : undefined,
@@ -706,7 +759,7 @@ export function renderInspectionSummary(cwd: string, inspection: RunInspection):
       ...recentEvents.map((event) => `  [${event.type}] +${Math.floor(event.elapsedMs / 1000)}s ${event.message}`),
       "",
       "Shortcuts",
-      "- 1 summary  2 stages  3 specialists  4 artifacts  f final  r routing  q exit",
+      "- 1 summary  2 stages  3 specialists  4 artifacts  f final  r routing  g gaps  q exit",
       "",
       "Final output",
       finalBody || "(missing)"
@@ -777,6 +830,37 @@ async function renderValidationToolResearch(inspection: RunInspection): Promise<
 function renderDeliverReview(inspection: RunInspection): string {
   if (!inspection.deliverReviewVerdict) {
     return "No deliver review verdict was recorded for this run.";
+  }
+
+  if (reviewMode(inspection.deliverReviewVerdict) === "analysis") {
+    return [
+      "Analysis review:",
+      `- status: ${inspection.deliverReviewVerdict.status}`,
+      `- summary: ${inspection.deliverReviewVerdict.summary}`,
+      ...(inspection.deliverReviewVerdict.confidence ? [`- confidence: ${inspection.deliverReviewVerdict.confidence}`] : []),
+      "",
+      "Gap clusters:",
+      ...((inspection.deliverReviewVerdict.gapClusters ?? []).length > 0
+        ? (inspection.deliverReviewVerdict.gapClusters ?? []).map(
+            (cluster) => `- ${cluster.title} [${cluster.severity}]: ${cluster.summary}`
+          )
+        : ["- none recorded"]),
+      "",
+      "Likely root causes:",
+      ...((inspection.deliverReviewVerdict.likelyRootCauses ?? []).length > 0
+        ? (inspection.deliverReviewVerdict.likelyRootCauses ?? []).map((cause) => `- ${cause}`)
+        : ["- none recorded"]),
+      "",
+      "Recommended next slices:",
+      ...((inspection.deliverReviewVerdict.recommendedNextSlices ?? []).length > 0
+        ? (inspection.deliverReviewVerdict.recommendedNextSlices ?? []).map((slice) => `- ${slice}`)
+        : ["- none recorded"]),
+      "",
+      "Recommended actions:",
+      ...(inspection.deliverReviewVerdict.recommendedActions.length > 0
+        ? inspection.deliverReviewVerdict.recommendedActions.map((action) => `- ${action}`)
+        : ["- none recorded"])
+    ].join("\n");
   }
 
   return `${JSON.stringify(inspection.deliverReviewVerdict, null, 2)}\n`;
@@ -993,6 +1077,29 @@ function renderWhatRemains(inspection: RunInspection): string {
   return lines.join("\n");
 }
 
+function renderGapClusters(inspection: RunInspection): string {
+  if (!inspection.deliverReviewVerdict) {
+    return "No review verdict was recorded for this run.";
+  }
+  if (reviewMode(inspection.deliverReviewVerdict) !== "analysis") {
+    return "Gap clusters are only recorded for analysis-mode review runs.";
+  }
+
+  return [
+    "Gap clusters:",
+    ...((inspection.deliverReviewVerdict.gapClusters ?? []).length > 0
+      ? (inspection.deliverReviewVerdict.gapClusters ?? []).map(
+          (cluster) => `- ${cluster.title} [${cluster.severity}]: ${cluster.summary}`
+        )
+      : ["- none recorded"]),
+    "",
+    "Recommended next slices:",
+    ...((inspection.deliverReviewVerdict.recommendedNextSlices ?? []).length > 0
+      ? (inspection.deliverReviewVerdict.recommendedNextSlices ?? []).map((slice) => `- ${slice}`)
+      : ["- none recorded"])
+  ].join("\n");
+}
+
 function renderWhyDeferred(inspection: RunInspection, stageName: string): string {
   const stage = inspection.stageLineage?.stages.find((entry) => entry.name === stageName);
   if (!stage) {
@@ -1018,6 +1125,178 @@ async function readRelativeArtifact(inspection: RunInspection, relativePath: str
   }
 }
 
+function buildInspectorCompletionContext(inspection: RunInspection): InspectorCompletionContext {
+  const commands = [
+    "summary",
+    "stages",
+    "specialists",
+    "artifacts",
+    "gaps",
+    "show final",
+    "show routing",
+    "show research",
+    "show session",
+    "show verification",
+    "show validation",
+    "show pyramid",
+    "show coverage",
+    "show ci-validation",
+    "show tool-research",
+    "show review",
+    "show mitigations",
+    "show ship",
+    "show mutation",
+    "show github",
+    "show branch",
+    "show pr",
+    "show issues",
+    "show checks",
+    "show actions",
+    "show security",
+    "show release",
+    "show child",
+    "show delegate",
+    "show sources",
+    "show stage",
+    "show specialist",
+    "show artifact",
+    "why deferred",
+    "what remains",
+    "mitigate",
+    "resume",
+    "fork",
+    "help",
+    "exit",
+    "quit"
+  ];
+  const showTargets = [
+    "final",
+    "routing",
+    "research",
+    "session",
+    "verification",
+    "validation",
+    "pyramid",
+    "coverage",
+    "ci-validation",
+    "tool-research",
+    "review",
+    "mitigations",
+    "ship",
+    "mutation",
+    "github",
+    "branch",
+    "pr",
+    "issues",
+    "checks",
+    "actions",
+    "security",
+    "release",
+    "child",
+    "delegate",
+    "sources",
+    "stage",
+    "specialist",
+    "artifact"
+  ];
+
+  return {
+    commands,
+    showTargets,
+    stageNames: inspection.stageLineage?.stages.map((stage) => stage.name) ?? [],
+    specialistNames: [
+      ...(inspection.stageLineage?.specialists.map((specialist) => specialist.name) ?? []),
+      ...(inspection.routingPlan?.specialists.map((specialist) => specialist.name) ?? [])
+    ],
+    delegateTracks: inspection.discoverDelegates.map((delegate) => delegate.track),
+    artifactPaths: inspection.artifacts.map((artifact) => artifact.path),
+    childStages: inspection.childRuns.map((child) => child.stageName)
+  };
+}
+
+function uniqueSorted(values: string[]): string[] {
+  return [...new Set(values)].sort();
+}
+
+function completionMatches(values: string[], fragment: string): string[] {
+  const lowered = fragment.toLowerCase();
+  return uniqueSorted(values.filter((value) => value.toLowerCase().startsWith(lowered)));
+}
+
+export function completeInspectorInput(inspection: RunInspection, line: string): [string[], string] {
+  const trimmedStart = line.trimStart();
+  const context = buildInspectorCompletionContext(inspection);
+
+  if (trimmedStart.startsWith("show artifact ")) {
+    const fragment = trimmedStart.slice("show artifact ".length);
+    return [completionMatches(context.artifactPaths, fragment).map((match) => `show artifact ${match}`), line];
+  }
+  if (trimmedStart.startsWith("show stage ")) {
+    const fragment = trimmedStart.slice("show stage ".length);
+    return [completionMatches(context.stageNames, fragment).map((match) => `show stage ${match}`), line];
+  }
+  if (trimmedStart.startsWith("show specialist ")) {
+    const fragment = trimmedStart.slice("show specialist ".length);
+    return [completionMatches(context.specialistNames, fragment).map((match) => `show specialist ${match}`), line];
+  }
+  if (trimmedStart.startsWith("show delegate ")) {
+    const fragment = trimmedStart.slice("show delegate ".length);
+    return [completionMatches(context.delegateTracks, fragment).map((match) => `show delegate ${match}`), line];
+  }
+  if (trimmedStart.startsWith("show sources ")) {
+    const fragment = trimmedStart.slice("show sources ".length);
+    return [completionMatches(context.delegateTracks, fragment).map((match) => `show sources ${match}`), line];
+  }
+  if (trimmedStart.startsWith("show child ")) {
+    const fragment = trimmedStart.slice("show child ".length);
+    return [completionMatches(context.childStages, fragment).map((match) => `show child ${match}`), line];
+  }
+  if (trimmedStart.startsWith("show ")) {
+    const fragment = trimmedStart.slice("show ".length);
+    return [completionMatches(context.showTargets, fragment).map((match) => `show ${match}`), line];
+  }
+  if (trimmedStart.startsWith("why deferred ")) {
+    const fragment = trimmedStart.slice("why deferred ".length);
+    return [completionMatches(context.stageNames, fragment).map((match) => `why deferred ${match}`), line];
+  }
+
+  return [completionMatches(context.commands, trimmedStart), line];
+}
+
+function levenshteinDistance(a: string, b: string): number {
+  const rows = a.length + 1;
+  const cols = b.length + 1;
+  const matrix = Array.from({ length: rows }, () => new Array<number>(cols).fill(0));
+  for (let row = 0; row < rows; row += 1) {
+    matrix[row]![0] = row;
+  }
+  for (let col = 0; col < cols; col += 1) {
+    matrix[0]![col] = col;
+  }
+  for (let row = 1; row < rows; row += 1) {
+    for (let col = 1; col < cols; col += 1) {
+      const cost = a[row - 1] === b[col - 1] ? 0 : 1;
+      matrix[row]![col] = Math.min(
+        matrix[row - 1]![col]! + 1,
+        matrix[row]![col - 1]! + 1,
+        matrix[row - 1]![col - 1]! + cost
+      );
+    }
+  }
+  return matrix[rows - 1]![cols - 1]!;
+}
+
+function nearestInspectorCommands(inspection: RunInspection, input: string): string[] {
+  const context = buildInspectorCompletionContext(inspection);
+  const normalized = input.toLowerCase();
+  return uniqueSorted(context.commands)
+    .map((command) => ({ command, score: levenshteinDistance(normalized, command.toLowerCase()) }))
+    .sort((left, right) => left.score - right.score || left.command.localeCompare(right.command))
+    .slice(0, 3)
+    .filter((entry) => entry.score <= Math.max(3, Math.floor(normalized.length / 2)))
+    .map((entry) => entry.command);
+}
+
 function helpText(): string {
   return [
     "Inspector commands:",
@@ -1027,11 +1306,13 @@ function helpText(): string {
     "- 4 (artifacts)",
     "- f (show final)",
     "- r (show routing)",
+    "- g (gaps)",
     "- q (exit)",
     "- summary",
     "- stages",
     "- specialists",
     "- artifacts",
+    "- gaps",
     "- show final",
     "- show routing",
     "- show research",
@@ -1054,6 +1335,7 @@ function helpText(): string {
     "- show actions",
     "- show security",
     "- show release",
+    "- show child <stage>",
     "- show delegate <track>",
     "- show sources <track>",
     "- show stage <name>",
@@ -1089,6 +1371,9 @@ export async function executeInspectorCommand(cwd: string, inspection: RunInspec
   }
   if (trimmed === "4" || trimmed === "artifacts") {
     return { output: renderArtifacts(inspection) };
+  }
+  if (trimmed === "g" || trimmed === "gaps") {
+    return { output: renderGapClusters(inspection) };
   }
   if (trimmed === "f" || trimmed === "show final") {
     return { output: inspection.finalBody || "(missing)" };
@@ -1219,6 +1504,26 @@ export async function executeInspectorCommand(cwd: string, inspection: RunInspec
           .join("\n") + "\n"
     };
   }
+  if (trimmed.startsWith("show child ")) {
+    const stageName = trimmed.slice("show child ".length).trim();
+    const child = inspection.childRuns.find((entry) => entry.stageName === stageName);
+    if (!child) {
+      return { output: `No linked child run was recorded for stage \`${stageName}\`.` };
+    }
+    return {
+      output: [
+        `Child run for stage \`${stageName}\`:`,
+        `- run: ${child.run.id}`,
+        `- workflow: ${child.run.workflow}`,
+        `- status: ${child.run.status}`,
+        child.run.lastActivity ? `- last activity: ${child.run.lastActivity}` : undefined,
+        `- final: ${path.relative(cwd, child.run.finalPath)}`,
+        `- inspect child with: cstack inspect ${child.run.id}`
+      ]
+        .filter(Boolean)
+        .join("\n")
+    };
+  }
   if (trimmed.startsWith("show specialist ")) {
     const specialistName = trimmed.slice("show specialist ".length).trim();
     const specialist = inspection.stageLineage?.specialists.find((entry) => entry.name === specialistName);
@@ -1246,7 +1551,18 @@ export async function executeInspectorCommand(cwd: string, inspection: RunInspec
     return { output: await readRelativeArtifact(inspection, relativePath) };
   }
 
-  return { output: `Unknown inspector command: ${trimmed}\n\n${helpText()}` };
+  const suggestions = nearestInspectorCommands(inspection, trimmed);
+  return {
+    output: [
+      `Unknown inspector command: ${trimmed}`,
+      suggestions.length > 0 ? "" : undefined,
+      suggestions.length > 0 ? `Did you mean: ${suggestions.join(", ")}` : undefined,
+      "",
+      helpText()
+    ]
+      .filter((line) => line !== undefined)
+      .join("\n")
+  };
 }
 
 export async function handleInspectorCommand(cwd: string, inspection: RunInspection, input: string): Promise<string | null> {
@@ -1266,14 +1582,15 @@ export async function runInteractiveInspector(
     throw new Error("Interactive inspection requires a TTY.");
   }
 
+  let currentInspection = inspection;
   const rl = readline.createInterface({
     input: io.input,
     output: io.output,
-    terminal: true
+    terminal: true,
+    completer: (line) => completeInspectorInput(currentInspection, line)
   });
 
   try {
-    let currentInspection = inspection;
     io.output.write("Entering cstack run inspector. Type `help` for commands.\n");
     io.output.write(renderInspectionSummary(cwd, currentInspection));
     while (true) {

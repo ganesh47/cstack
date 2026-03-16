@@ -450,6 +450,7 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
   const reviewLeadPrompt = await buildDeliverReviewLeadPrompt({
     cwd: options.cwd,
     input: options.input,
+    mode: "readiness",
     buildSummary: buildExecution.finalBody,
     verificationRecord: buildExecution.verificationRecord,
     validationPlan: validationExecution.validationPlan,

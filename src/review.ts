@@ -10,6 +10,7 @@ import type {
   DeliverValidationLocalRecord,
   DeliverValidationPlan,
   DeliverReviewVerdict,
+  ReviewMode,
   SpecialistExecution,
   SpecialistSelection,
   StageLineage,
@@ -80,6 +81,45 @@ function parseJson<T>(raw: string, context: string): T {
 
 function selectedSpecialistsForInput(input: string): SpecialistSelection[] {
   return inferRoutingPlan(input, "run").specialists.filter((specialist) => specialist.selected).slice(0, 3);
+}
+
+function inferReviewMode(input: string, linkedContext?: LinkedReviewContext): ReviewMode {
+  if (linkedContext?.workflow === "deliver") {
+    return "readiness";
+  }
+
+  const normalized = input.toLowerCase();
+  const analysisSignals = [
+    "what are the gaps",
+    "gaps in this project",
+    "gaps in the current project",
+    "what is missing",
+    "what's missing",
+    "assess the current state",
+    "assess current state",
+    "key risks",
+    "current risks",
+    "evaluate the current state"
+  ];
+  const readinessSignals = [
+    "ready for release",
+    "release ready",
+    "ship ready",
+    "delivery ready",
+    "ready to ship",
+    "ready to merge",
+    "release readiness",
+    "delivery readiness"
+  ];
+
+  if (readinessSignals.some((signal) => normalized.includes(signal))) {
+    return "readiness";
+  }
+  if (analysisSignals.some((signal) => normalized.includes(signal))) {
+    return "analysis";
+  }
+
+  return linkedContext ? "readiness" : "analysis";
 }
 
 async function runReviewSpecialist(options: {
@@ -166,10 +206,29 @@ async function runReviewSpecialist(options: {
 
 function buildFinalSummary(options: {
   input: string;
+  reviewMode: ReviewMode;
   linkedContext?: LinkedReviewContext;
   stageLineage: StageLineage;
   reviewVerdict: DeliverReviewVerdict;
 }): string {
+  const verdictLines =
+    options.reviewMode === "analysis"
+      ? [
+          `- mode: ${options.reviewVerdict.mode}`,
+          `- status: ${options.reviewVerdict.status}`,
+          `- summary: ${options.reviewVerdict.summary}`,
+          ...(options.reviewVerdict.gapClusters ?? []).map(
+            (cluster) => `- gap: ${cluster.title} [${cluster.severity}] ${cluster.summary}`
+          ),
+          ...((options.reviewVerdict.recommendedNextSlices ?? []).map((slice) => `- next slice: ${slice}`))
+        ]
+      : [
+          `- mode: ${options.reviewVerdict.mode}`,
+          `- status: ${options.reviewVerdict.status}`,
+          `- summary: ${options.reviewVerdict.summary}`,
+          ...options.reviewVerdict.recommendedActions.map((action) => `- action: ${action}`)
+        ];
+
   return [
     "# Review Run Summary",
     "",
@@ -190,9 +249,7 @@ function buildFinalSummary(options: {
       : ["- none"]),
     "",
     "## Verdict",
-    `- status: ${options.reviewVerdict.status}`,
-    `- summary: ${options.reviewVerdict.summary}`,
-    ...options.reviewVerdict.recommendedActions.map((action) => `- action: ${action}`)
+    ...verdictLines
   ].join("\n") + "\n";
 }
 
@@ -252,6 +309,7 @@ export async function resolveLinkedReviewContext(cwd: string, runId: string): Pr
 
 export async function runReviewExecution(options: ReviewExecutionOptions): Promise<ReviewExecutionResult> {
   const selectedSpecialists = selectedSpecialistsForInput(options.input);
+  const reviewMode = inferReviewMode(options.input, options.linkedContext);
   const linkedContext = options.linkedContext;
   const stageLineage: StageLineage = {
     intent: options.input,
@@ -293,6 +351,7 @@ export async function runReviewExecution(options: ReviewExecutionOptions): Promi
   const reviewPrompt = await buildDeliverReviewLeadPrompt({
     cwd: options.cwd,
     input: options.input,
+    mode: reviewMode,
     buildSummary,
     verificationRecord,
     ...(linkedContext?.validationPlan ? { validationPlan: linkedContext.validationPlan } : {}),
@@ -352,6 +411,7 @@ export async function runReviewExecution(options: ReviewExecutionOptions): Promi
 
   const finalBody = buildFinalSummary({
     input: options.input,
+    reviewMode,
     stageLineage,
     reviewVerdict,
     ...(linkedContext ? { linkedContext } : {})

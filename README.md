@@ -237,6 +237,7 @@ Useful inspector commands:
 - `show ship`
 - `show mutation`
 - `show github`
+- `show child <stage>`
 - `show delegate <track>`
 - `show sources <track>`
 - `mitigate`
@@ -246,6 +247,7 @@ Useful inspector commands:
 - `show stage <name>`
 - `show specialist <name>`
 - `show artifact <relative-path>`
+- `gaps`
 - `why deferred <stage>`
 - `what remains`
 - `resume`
@@ -258,11 +260,19 @@ Shortcuts:
 - `2` stages
 - `3` specialists
 - `4` artifacts
+- `g` gaps
 - `f` final output
 - `r` routing
 - `q` exit
 
 For TTY runs, `cstack` may offer `Inspect this run now? [Y/n]` after the summary. Non-interactive shells skip that prompt.
+
+Interactive inspector quality-of-life:
+
+- tab completion for commands and common `show ...` targets
+- dynamic completion for stage names, specialists, artifact paths, delegate tracks, and linked child stages
+- typo suggestions for unknown commands
+- analysis-mode reviews surface gap clusters and recommended next slices directly in the summary
 
 ## Update cstack
 
@@ -525,6 +535,8 @@ Review notes:
 
 - `review` is a standalone critique workflow with `findings.md`, `findings.json`, and `verdict.json`
 - `review --from-run <run-id>` links an upstream build or deliver artifact into the critique context
+- analysis prompts like `What are the gaps in this project` run `review` in analysis mode and produce gap clusters, likely root causes, confidence, and recommended next slices instead of release-gate phrasing
+- readiness phrasing like `ready`, `changes-requested`, and `blocked` is reserved for deliver-stage review and ship-oriented readiness checks
 - bounded specialist reviewers may run when the prompt implies security, audit, traceability, DevSecOps, or release-pipeline risk
 
 Ship notes:
