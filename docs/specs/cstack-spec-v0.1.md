@@ -484,6 +484,9 @@ Interactive inspector ergonomics:
 - dynamic completion for stage names, specialist names, artifact paths, delegate tracks, and linked child stages
 - typo recovery with nearest-command suggestions
 - mode-aware review summaries so analysis runs show gaps and next slices while readiness runs show blocker/readiness state
+- failed downstream `build` runs must surface root-cause evidence ahead of aggregate workflow blockage
+- when a downstream `deliver` fails in `build`, `inspect` should prioritize the child build summary, exit code, session/transcript visibility, and verification status over later blocked-stage aggregation
+- later `validation`, `review`, and `ship` stages must be presented as blocked consequences when `build` is the first failed stage, not as independent root causes
 
 For failed `ship` and `deliver` runs, and for `review` verdicts that are `blocked` or `changes-requested`, the interactive inspector may also surface explicit mitigation commands. Those commands must derive their prompts from recorded artifacts, link the new run back to the inspected run, and switch the inspector to the newly started workflow once it exists.
 

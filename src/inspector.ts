@@ -20,6 +20,7 @@ import type {
   RunEvent,
   RunInspection,
   RunLedgerEntry,
+  StageName,
   StageLineage,
   ValidationRepoProfile,
   ValidationToolResearch
@@ -70,8 +71,223 @@ async function readJsonFile<T>(filePath: string): Promise<T | null> {
   }
 }
 
+async function readTextFile(filePath?: string): Promise<string> {
+  if (!filePath) {
+    return "";
+  }
+  try {
+    return await fs.readFile(filePath, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+async function tailTextFile(filePath?: string, maxLines = 20): Promise<string> {
+  const body = await readTextFile(filePath);
+  if (!body.trim()) {
+    return "";
+  }
+  return body
+    .trim()
+    .split("\n")
+    .slice(-maxLines)
+    .join("\n");
+}
+
+function childBuildStageDir(child: ChildRunInspection): string | null {
+  if (child.run.workflow === "deliver") {
+    return path.join(child.runDir, "stages", "build");
+  }
+  if (child.run.workflow === "build") {
+    return child.runDir;
+  }
+  return null;
+}
+
+function extractBuildExitCode(child: ChildRunInspection): number | null {
+  const directMatch =
+    child.buildFinalBody.match(/exit code:\s*(\d+)/i) ??
+    child.run.error?.match(/exit(?:ed)? with code\s+(\d+)/i) ??
+    child.buildStderrTail?.match(/exit(?:ed)? with code\s+(\d+)/i);
+  if (!directMatch) {
+    return null;
+  }
+  const parsed = Number.parseInt(directMatch[1] ?? "", 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function childRootFailedStage(child: ChildRunInspection): { name: StageName; notes?: string } | null {
+  const failedStage = child.stageLineage?.stages.find((stage) => stage.status === "failed");
+  if (!failedStage) {
+    return null;
+  }
+  return failedStage.notes ? { name: failedStage.name, notes: failedStage.notes } : { name: failedStage.name };
+}
+
+function summarizeBuildRootCause(child: ChildRunInspection): string | null {
+  if (!child.buildSessionRecord && !child.buildFinalBody && !child.buildStderrTail) {
+    return null;
+  }
+
+  const details: string[] = [];
+  const exitCode = extractBuildExitCode(child);
+  if (exitCode !== null) {
+    details.push(`interactive Codex exited with code ${exitCode}`);
+  }
+
+  if (child.buildSessionRecord) {
+    if (!child.buildSessionRecord.observability.sessionIdObserved) {
+      details.push("no Codex session id was observed");
+    }
+    if (!child.buildSessionRecord.observability.transcriptObserved) {
+      details.push("no build transcript was captured");
+    }
+    if (!child.buildSessionRecord.observability.finalArtifactObserved) {
+      details.push("Codex did not leave a final build artifact");
+    }
+  }
+
+  if (!child.buildVerificationRecord || child.buildVerificationRecord.status === "not-run") {
+    details.push("verification did not run");
+  } else if (child.buildVerificationRecord.status === "failed") {
+    details.push("verification failed");
+  }
+
+  if (/Codex did not leave a final markdown summary\./i.test(child.buildFinalBody)) {
+    details.push("Codex did not leave a final markdown summary");
+  }
+
+  if (details.length === 0) {
+    return null;
+  }
+  return details.join("; ");
+}
+
 function summarizeChildFailure(child: ChildRunInspection): string {
-  return child.run.error ?? child.run.lastActivity ?? `${child.run.workflow} ${child.run.status}`;
+  const rootStage = childRootFailedStage(child);
+  if (rootStage?.name === "build") {
+    return summarizeBuildRootCause(child) ?? rootStage.notes ?? child.run.error ?? child.run.lastActivity ?? "build failed";
+  }
+  return rootStage?.notes ?? child.run.error ?? child.run.lastActivity ?? `${child.run.workflow} ${child.run.status}`;
+}
+
+function renderBuildFailureEvidence(child: ChildRunInspection, cwd: string): string[] {
+  const lines: string[] = [];
+  const exitCode = extractBuildExitCode(child);
+  const buildStageDir = childBuildStageDir(child);
+  const buildFinalPath =
+    child.buildFinalPath && path.isAbsolute(child.buildFinalPath)
+      ? path.relative(cwd, child.buildFinalPath)
+      : child.buildFinalPath;
+
+  lines.push("- root cause stage: build");
+  if (exitCode !== null) {
+    lines.push(`- exit code: ${exitCode}`);
+  }
+  if (child.buildSessionRecord) {
+    lines.push(`- requested mode: ${child.buildSessionRecord.requestedMode}`);
+    lines.push(`- observed mode: ${child.buildSessionRecord.mode}`);
+    lines.push(`- session observed: ${child.buildSessionRecord.observability.sessionIdObserved ? "yes" : "no"}`);
+    if (child.buildSessionRecord.sessionId) {
+      lines.push(`- session id: ${child.buildSessionRecord.sessionId}`);
+    }
+    lines.push(`- transcript: ${child.buildTranscriptAvailable ? "available" : "missing"}`);
+    if (child.buildTranscriptPath) {
+      lines.push(`- transcript path: ${child.buildTranscriptPath}`);
+    }
+    if (
+      child.buildSessionRecord.observability.finalArtifactObserved === false ||
+      /Codex did not leave a final markdown summary\./i.test(child.buildFinalBody)
+    ) {
+      lines.push("- final summary: fallback wrapper summary");
+    }
+  }
+  if (child.buildVerificationRecord) {
+    lines.push(`- verification: ${renderVerificationSummary(child.buildVerificationRecord)}`);
+  } else {
+    lines.push("- verification: not recorded");
+  }
+  if (buildFinalPath) {
+    lines.push(`- build final: ${buildFinalPath}`);
+  } else if (buildStageDir) {
+    lines.push(`- build final: ${path.relative(cwd, path.join(buildStageDir, "final.md"))}`);
+  }
+  if (child.buildStderrTail?.trim()) {
+    lines.push("- stderr tail:");
+    lines.push(...child.buildStderrTail.trim().split("\n").map((line) => `  ${line}`));
+  }
+  return lines;
+}
+
+function extractInspectionBuildExitCode(inspection: RunInspection): number | null {
+  const directMatch =
+    inspection.buildFinalBody.match(/exit code:\s*(\d+)/i) ??
+    inspection.run.error?.match(/exit(?:ed)? with code\s+(\d+)/i) ??
+    inspection.buildStderrTail?.match(/exit(?:ed)? with code\s+(\d+)/i);
+  if (!directMatch) {
+    return null;
+  }
+  const parsed = Number.parseInt(directMatch[1] ?? "", 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function summarizeInspectionBuildFailure(inspection: RunInspection): string | null {
+  if (!inspection.sessionRecord && !inspection.buildFinalBody && !inspection.buildStderrTail) {
+    return null;
+  }
+
+  const details: string[] = [];
+  const exitCode = extractInspectionBuildExitCode(inspection);
+  if (exitCode !== null) {
+    details.push(`interactive Codex exited with code ${exitCode}`);
+  }
+  if (inspection.sessionRecord) {
+    if (!inspection.sessionRecord.observability.sessionIdObserved) {
+      details.push("no Codex session id was observed");
+    }
+    if (!inspection.sessionRecord.observability.transcriptObserved) {
+      details.push("no build transcript was captured");
+    }
+  }
+  if (!inspection.verificationRecord || inspection.verificationRecord.status === "not-run") {
+    details.push("verification did not run");
+  } else if (inspection.verificationRecord.status === "failed") {
+    details.push("verification failed");
+  }
+  if (/Codex did not leave a final markdown summary\./i.test(inspection.buildFinalBody)) {
+    details.push("Codex did not leave a final markdown summary");
+  }
+  return details.length > 0 ? details.join("; ") : null;
+}
+
+function renderInspectionBuildFailureEvidence(inspection: RunInspection, cwd: string): string[] {
+  const lines: string[] = [];
+  const exitCode = extractInspectionBuildExitCode(inspection);
+  lines.push("- root cause stage: build");
+  if (exitCode !== null) {
+    lines.push(`- exit code: ${exitCode}`);
+  }
+  if (inspection.sessionRecord) {
+    lines.push(`- requested mode: ${inspection.sessionRecord.requestedMode}`);
+    lines.push(`- observed mode: ${inspection.sessionRecord.mode}`);
+    lines.push(`- session observed: ${inspection.sessionRecord.observability.sessionIdObserved ? "yes" : "no"}`);
+    if (inspection.sessionRecord.sessionId) {
+      lines.push(`- session id: ${inspection.sessionRecord.sessionId}`);
+    }
+    lines.push(`- transcript: ${inspection.sessionRecord.observability.transcriptObserved ? "available" : "missing"}`);
+    if (inspection.sessionRecord.transcriptPath) {
+      lines.push(`- transcript path: ${inspection.sessionRecord.transcriptPath}`);
+    }
+  }
+  lines.push(`- verification: ${renderVerificationSummary(inspection.verificationRecord)}`);
+  if (inspection.buildFinalPath) {
+    lines.push(`- build final: ${path.relative(cwd, inspection.buildFinalPath)}`);
+  }
+  if (inspection.buildStderrTail?.trim()) {
+    lines.push("- stderr tail:");
+    lines.push(...inspection.buildStderrTail.trim().split("\n").map((line) => `  ${line}`));
+  }
+  return lines;
 }
 
 async function loadChildRuns(cwd: string, stageLineage: StageLineage | null): Promise<ChildRunInspection[]> {
@@ -80,7 +296,7 @@ async function loadChildRuns(cwd: string, stageLineage: StageLineage | null): Pr
   }
 
   const childStages = stageLineage.stages.filter((stage) => stage.childRunId);
-  const loaded = await Promise.all(
+  const loaded: Array<ChildRunInspection | null> = await Promise.all(
     childStages.map(async (stage) => {
       const childRunId = stage.childRunId;
       if (!childRunId) {
@@ -89,12 +305,27 @@ async function loadChildRuns(cwd: string, stageLineage: StageLineage | null): Pr
       try {
         const run = await readRun(cwd, childRunId);
         const runDir = runDirForId(cwd, childRunId);
-        const [finalBody, recentEvents, artifacts] = await Promise.all([
+        const buildStageDir = run.workflow === "deliver" ? path.join(runDir, "stages", "build") : run.workflow === "build" ? runDir : null;
+        const buildSessionPath = buildStageDir ? path.join(buildStageDir, "session.json") : undefined;
+        const buildVerificationPath =
+          run.workflow === "deliver"
+            ? path.join(runDir, "stages", "build", "artifacts", "verification.json")
+            : run.workflow === "build"
+              ? path.join(runDir, "artifacts", "verification.json")
+              : undefined;
+        const buildFinalPath = buildStageDir ? path.join(buildStageDir, "final.md") : undefined;
+        const [finalBody, recentEvents, artifacts, childStageLineage, buildSessionRecord, buildVerificationRecord, buildFinalBody, buildStderrTail] =
+          await Promise.all([
           fs.readFile(run.finalPath, "utf8").catch(() => ""),
           readRecentEvents(run.eventsPath),
-          walkArtifacts(runDir)
+          walkArtifacts(runDir),
+          readJsonFile<StageLineage>(path.join(runDir, "stage-lineage.json")),
+          readJsonFile<BuildSessionRecord>(buildSessionPath ?? ""),
+          readJsonFile<BuildVerificationRecord>(buildVerificationPath ?? ""),
+          readTextFile(buildFinalPath),
+          tailTextFile(run.stderrPath)
         ]);
-        return {
+        const childInspection: ChildRunInspection = {
           stageName: stage.name,
           run,
           runDir,
@@ -102,8 +333,17 @@ async function loadChildRuns(cwd: string, stageLineage: StageLineage | null): Pr
           artifacts: artifacts
             .filter((artifact) => artifact.path !== "context.md" && artifact.path !== "events.jsonl")
             .slice(0, 8),
-          recentEvents
-        } satisfies ChildRunInspection;
+          recentEvents,
+          stageLineage: childStageLineage,
+          buildSessionRecord,
+          buildVerificationRecord,
+          buildFinalBody,
+          buildFinalPath,
+          buildTranscriptPath: buildSessionRecord?.transcriptPath,
+          buildTranscriptAvailable: buildSessionRecord?.observability.transcriptObserved ?? false,
+          buildStderrTail
+        };
+        return childInspection;
       } catch {
         return null;
       }
@@ -565,6 +805,7 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
   const verificationPath = path.join(runDir, "artifacts", "verification.json");
   const deliverBuildSessionPath = path.join(runDir, "stages", "build", "session.json");
   const deliverBuildVerificationPath = path.join(runDir, "stages", "build", "artifacts", "verification.json");
+  const deliverBuildFinalPath = path.join(runDir, "stages", "build", "final.md");
   const deliverValidationProfilePath = path.join(runDir, "stages", "validation", "repo-profile.json");
   const deliverValidationPlanPath = path.join(runDir, "stages", "validation", "validation-plan.json");
   const deliverValidationToolResearchPath = path.join(runDir, "stages", "validation", "tool-research.json");
@@ -614,11 +855,12 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     walkArtifacts(runDir)
   ]);
   const childRuns = await loadChildRuns(cwd, stageLineage);
-
-  let finalBody = "";
-  try {
-    finalBody = await fs.readFile(run.finalPath, "utf8");
-  } catch {}
+  const buildFinalPath = run.workflow === "deliver" ? deliverBuildFinalPath : run.workflow === "build" ? run.finalPath : undefined;
+  const [finalBody, buildFinalBody, buildStderrTail] = await Promise.all([
+    readTextFile(run.finalPath),
+    readTextFile(buildFinalPath),
+    tailTextFile(run.stderrPath)
+  ]);
 
   return {
     run,
@@ -640,6 +882,9 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     executionContext,
     recentEvents,
     finalBody,
+    buildFinalBody,
+    buildFinalPath,
+    buildStderrTail,
     artifacts,
     childRuns
   };
@@ -713,7 +958,18 @@ function renderLineageSection(inspection: RunInspection): string[] {
 
 export function renderInspectionSummary(cwd: string, inspection: RunInspection): string {
   const { run, recentEvents, finalBody } = inspection;
-  const failedChildRuns = inspection.childRuns.filter((child) => child.run.status === "failed");
+  const failedChildRuns = Array.from(
+    new Map(
+      inspection.childRuns
+        .filter((child) => child.run.status === "failed")
+        .map((child) => [child.run.id, child] as const)
+    ).values()
+  );
+  const buildStageStatus = inspection.stageLineage?.stages.find((stage) => stage.name === "build")?.status;
+  const directBuildFailure =
+    (run.workflow === "deliver" || run.workflow === "build") && buildStageStatus === "failed"
+      ? summarizeInspectionBuildFailure(inspection)
+      : null;
   const reviewDetails =
     inspection.deliverReviewVerdict && reviewMode(inspection.deliverReviewVerdict) === "analysis"
       ? renderAnalysisReviewLines(inspection.deliverReviewVerdict)
@@ -749,15 +1005,23 @@ export function renderInspectionSummary(cwd: string, inspection: RunInspection):
       inspection.verificationRecord ? `- verification: ${renderVerificationSummary(inspection.verificationRecord)}` : undefined,
       inspection.validationPlan ? `- validation: ${inspection.validationPlan.status}` : undefined,
       inspection.validationLocalRecord ? `- local validation: ${inspection.validationLocalRecord.status}` : undefined,
+      directBuildFailure ? `- root cause: build failed: ${directBuildFailure}` : undefined,
+      ...(directBuildFailure ? renderInspectionBuildFailureEvidence(inspection, cwd) : []),
       renderReviewHeadline(inspection.deliverReviewVerdict),
       ...reviewDetails,
       inspection.deliverShipRecord ? `- ship readiness: ${inspection.deliverShipRecord.readiness}` : undefined,
       inspection.githubMutationRecord ? `- github mutation: ${inspection.githubMutationRecord.summary}` : undefined,
       inspection.githubDeliveryRecord ? `- github delivery: ${renderGitHubSummary(inspection.githubDeliveryRecord)}` : undefined,
-      ...failedChildRuns.flatMap((child) => [
-        `- downstream ${child.stageName} failed: ${summarizeChildFailure(child)}`,
-        `- inspect child run: cstack inspect ${child.run.id}`
-      ]),
+      ...failedChildRuns.flatMap((child) => {
+        const rootStage = childRootFailedStage(child);
+        return [
+          rootStage?.name === "build"
+            ? `- root cause: downstream build failed: ${summarizeChildFailure(child)}`
+            : `- downstream ${child.stageName} failed: ${summarizeChildFailure(child)}`,
+          `- inspect child run: cstack inspect ${child.run.id}`,
+          ...(rootStage?.name === "build" ? renderBuildFailureEvidence(child, cwd) : [])
+        ];
+      }),
       "",
       "Plan",
       `- stages: ${renderStageStrip(inspection)}`,
@@ -788,6 +1052,8 @@ function renderArtifacts(inspection: RunInspection): string {
   const childLines = inspection.childRuns.flatMap((child) => [
     `- child ${child.stageName}: ${child.run.id} (${child.run.status})`,
     `  final: ${path.relative(inspection.run.cwd, child.run.finalPath)}`,
+    ...(child.buildFinalPath ? [`  build final: ${path.relative(inspection.run.cwd, child.buildFinalPath)}`] : []),
+    ...(child.buildTranscriptPath ? [`  build transcript: ${child.buildTranscriptPath}`] : []),
     ...child.artifacts.slice(0, 4).map((artifact) => `  artifact: ${path.relative(inspection.run.cwd, path.join(child.runDir, artifact.path))}`)
   ]);
   return [
@@ -972,11 +1238,28 @@ function renderStages(inspection: RunInspection): string {
       if (stage.executed) {
         details.push("executed");
       }
+      if (
+        stage.name === "build" &&
+        stage.status === "failed" &&
+        (inspection.run.workflow === "deliver" || inspection.run.workflow === "build")
+      ) {
+        const directBuildFailure = summarizeInspectionBuildFailure(inspection);
+        if (directBuildFailure) {
+          details.push(`root cause: ${directBuildFailure}`);
+        }
+      }
       const child = stage.childRunId ? inspection.childRuns.find((entry) => entry.run.id === stage.childRunId) : undefined;
       if (child) {
         details.push(`child ${child.run.workflow}=${child.run.status}`);
         if (child.run.status === "failed") {
-          details.push(summarizeChildFailure(child));
+          const rootStage = childRootFailedStage(child);
+          if (rootStage?.name === "build" && stage.name === "build") {
+            details.push(`root cause: ${summarizeChildFailure(child)}`);
+          } else if (rootStage?.name && stage.name !== rootStage.name) {
+            details.push(`blocked by child ${rootStage.name} failure`);
+          } else {
+            details.push(summarizeChildFailure(child));
+          }
         }
       }
       if (stage.notes) {
@@ -1079,8 +1362,13 @@ function renderWhatRemains(inspection: RunInspection): string {
     lines.push(`- stage ${stage.name}: ${stage.status}${stage.notes ? ` (${stage.notes})` : ""}`);
     const child = stage.childRunId ? inspection.childRuns.find((entry) => entry.run.id === stage.childRunId) : undefined;
     if (child) {
+      const rootStage = childRootFailedStage(child);
       lines.push(`- child ${child.run.workflow} run ${child.run.id}: ${child.run.status}`);
-      lines.push(`- child summary: ${summarizeChildFailure(child)}`);
+      if (rootStage?.name === "build" && stage.name !== "build") {
+        lines.push(`- blocked by child build failure: ${summarizeChildFailure(child)}`);
+      } else {
+        lines.push(`- child summary: ${summarizeChildFailure(child)}`);
+      }
       lines.push(`- inspect child with: cstack inspect ${child.run.id}`);
     }
   }
@@ -1494,10 +1782,17 @@ export async function executeInspectorCommand(cwd: string, inspection: RunInspec
       return { output: `No stage named \`${stageName}\` was recorded for this run.` };
     }
     const child = stage.childRunId ? inspection.childRuns.find((entry) => entry.run.id === stage.childRunId) : undefined;
+    const includeDirectBuildEvidence =
+      stageName === "build" &&
+      (inspection.run.workflow === "deliver" || inspection.run.workflow === "build") &&
+      stage.status === "failed";
     return {
       output:
         [
           JSON.stringify(stage, null, 2),
+          includeDirectBuildEvidence ? "" : undefined,
+          includeDirectBuildEvidence ? "Direct build evidence:" : undefined,
+          ...(includeDirectBuildEvidence ? renderInspectionBuildFailureEvidence(inspection, cwd) : []),
           child
             ? [
                 "",
@@ -1507,6 +1802,7 @@ export async function executeInspectorCommand(cwd: string, inspection: RunInspec
                 `- status: ${child.run.status}`,
                 child.run.error ? `- error: ${child.run.error}` : undefined,
                 child.run.lastActivity ? `- last activity: ${child.run.lastActivity}` : undefined,
+                ...(stageName === "build" || childRootFailedStage(child)?.name === "build" ? renderBuildFailureEvidence(child, cwd) : []),
                 `- final: ${path.relative(cwd, child.run.finalPath)}`,
                 `- inspect child with: cstack inspect ${child.run.id}`
               ]
@@ -1531,6 +1827,7 @@ export async function executeInspectorCommand(cwd: string, inspection: RunInspec
         `- workflow: ${child.run.workflow}`,
         `- status: ${child.run.status}`,
         child.run.lastActivity ? `- last activity: ${child.run.lastActivity}` : undefined,
+        ...(stageName === "build" || childRootFailedStage(child)?.name === "build" ? renderBuildFailureEvidence(child, cwd) : []),
         `- final: ${path.relative(cwd, child.run.finalPath)}`,
         `- inspect child with: cstack inspect ${child.run.id}`
       ]
