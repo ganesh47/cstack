@@ -205,6 +205,32 @@ Current limitation:
 - uncommitted local source changes are not copied into the isolated checkout
 - `--allow-dirty` remains the explicit opt-in for source-repo dirty execution
 
+## Build Recovery
+
+`build` and the internal build stage inside `deliver` now use bounded recovery before giving up.
+
+Current contract:
+
+- `cstack` first inventories likely repo requirements from the isolated execution checkout
+- supported workspace bootstrap is bounded and recorded, currently centered on root `pnpm` workspaces and detected `uv` Python workspaces
+- if Codex exits before leaving a usable session, transcript, or final artifact, `cstack` retries once before failing the stage
+- verification failure counts as a build failure for workflow purposes
+- final failure summaries now prefer a classified root cause over a raw `exit code 1`
+
+Build recovery artifacts:
+
+- `artifacts/recovery-attempts.json`
+- `artifacts/recovery-summary.md`
+- `artifacts/failure-diagnosis.json` when the build or verification path still fails
+
+What `inspect` now shows for failed builds:
+
+- the classified build-failure summary
+- bounded recovery attempts that were tried
+- session/transcript/final-artifact visibility
+- verification status
+- recommended next actions instead of only a low-level process exit code
+
 ## Runs and Inspection
 
 `cstack runs` is now the run ledger, not just a raw directory listing.

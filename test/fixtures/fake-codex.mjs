@@ -31,6 +31,11 @@ for await (const chunk of process.stdin) {
 }
 prompt = prompt.trim() || (promptFromArgs ?? "");
 
+if (prompt.includes("## Build execution contract") && process.env.FAKE_CODEX_EARLY_EXIT_BUILD === "1") {
+  process.stderr.write("Interactive codex exited with code 1\n");
+  process.exit(1);
+}
+
 await new Promise((resolve) => process.stderr.write("session id: fake-session-123\n", resolve));
 await new Promise((resolve) => process.stdout.write("scanning repository context\n", resolve));
 await new Promise((resolve) => setTimeout(resolve, 25));

@@ -174,6 +174,7 @@ export interface RunInspection {
   buildFinalBody: string;
   buildFinalPath?: string | undefined;
   buildStderrTail?: string | undefined;
+  buildFailureDiagnosis?: BuildFailureDiagnosisRecord | null;
   artifacts: ArtifactEntry[];
   childRuns: ChildRunInspection[];
 }
@@ -193,6 +194,7 @@ export interface ChildRunInspection {
   buildTranscriptPath?: string | undefined;
   buildTranscriptAvailable: boolean;
   buildStderrTail?: string | undefined;
+  buildFailureDiagnosis?: BuildFailureDiagnosisRecord | null;
 }
 
 export type RunEventType =
@@ -330,6 +332,43 @@ export interface BuildSessionRecord {
     fallbackReason?: string;
   };
   notes?: string[];
+}
+
+export type BuildFailureCategory =
+  | "missing-tool"
+  | "bootstrap-failure"
+  | "transient-external"
+  | "verification-failure"
+  | "build-script-failure"
+  | "codex-process-failure"
+  | "timeout"
+  | "unknown";
+
+export interface BuildRecoveryAttemptRecord {
+  kind: "assessment" | "bootstrap" | "codex-run" | "verification";
+  label: string;
+  status: "completed" | "failed" | "retrying" | "skipped";
+  startedAt: string;
+  endedAt: string;
+  cwd: string;
+  summary: string;
+  command?: string;
+  exitCode?: number;
+  evidence?: string[];
+}
+
+export interface BuildFailureDiagnosisRecord {
+  category: BuildFailureCategory;
+  summary: string;
+  detail: string;
+  evidence: string[];
+  recommendedActions: string[];
+  recoveryAttempts: BuildRecoveryAttemptRecord[];
+  exitCode?: number;
+  signal?: string;
+  timedOut?: boolean;
+  timeoutSeconds?: number;
+  verificationStatus?: BuildVerificationRecord["status"];
 }
 
 export interface ExecutionContextRecord {

@@ -473,20 +473,25 @@ describe("runDeliver", () => {
       readiness: string;
       summary: string;
     };
+    const diagnosis = JSON.parse(await fs.readFile(path.join(runDir, "stages", "build", "artifacts", "failure-diagnosis.json"), "utf8")) as {
+      summary: string;
+      category: string;
+    };
 
     expect(run.status).toBe("failed");
-    expect(run.error).toContain("build exited with code 1");
-    expect(run.lastActivity).toContain("Build failed with exit code 1");
+    expect(run.error).toContain("Build failed after Codex started work");
+    expect(run.lastActivity).toContain("Build failed after Codex started work");
     expect(lineage.stages.find((stage) => stage.name === "build")).toMatchObject({ status: "failed", executed: true });
     expect(lineage.stages.find((stage) => stage.name === "validation")).toMatchObject({ status: "deferred", executed: false });
     expect(lineage.stages.find((stage) => stage.name === "review")).toMatchObject({ status: "deferred", executed: false });
     expect(lineage.stages.find((stage) => stage.name === "ship")).toMatchObject({ status: "deferred", executed: false });
     expect(validationPlan.status).toBe("blocked");
-    expect(validationPlan.summary).toContain("build stage did not complete successfully");
+    expect(validationPlan.summary).toContain("Build failed after Codex started work");
     expect(reviewVerdict.status).toBe("blocked");
-    expect(reviewVerdict.summary).toContain("build failed first");
+    expect(reviewVerdict.summary).toContain("Build failed after Codex started work");
     expect(shipRecord.readiness).toBe("blocked");
-    expect(shipRecord.summary).toContain("build failed first");
+    expect(shipRecord.summary).toContain("Build failed after Codex started work");
+    expect(diagnosis.category).toBe("build-script-failure");
   });
 
   it("times out the build stage and blocks downstream stages", async () => {
@@ -513,7 +518,7 @@ describe("runDeliver", () => {
     const lineage = JSON.parse(await fs.readFile(path.join(runDir, "stage-lineage.json"), "utf8")) as StageLineage;
 
     expect(run.status).toBe("failed");
-    expect(run.error).toContain("build timed out after 1s");
+    expect(run.error).toContain("timed out after 1s");
     expect(session.observability.timedOut).toBe(true);
     expect(session.observability.timeoutSeconds).toBe(1);
     expect(lineage.stages.find((stage) => stage.name === "build")?.status).toBe("failed");

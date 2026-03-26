@@ -130,8 +130,27 @@ Key artifacts:
 - `session.json`
 - `artifacts/change-summary.md`
 - `artifacts/verification.json`
+- `artifacts/recovery-attempts.json`
+- `artifacts/recovery-summary.md`
+- `artifacts/failure-diagnosis.json` when build fails or verification fails
 - `artifacts/build-transcript.log` when interactive transcript capture is observed
 - `final.md`
+
+Failure handling:
+
+- `build` must prefer a root-cause summary over a raw process exit code whenever the wrapper can classify the failure with confidence
+- bounded recovery is allowed before the stage fails:
+  - repo assessment for likely required tools and workspace bootstrap
+  - bounded bootstrap commands for supported workspaces such as `pnpm` and `uv`
+  - at most one opaque early-exit retry when Codex terminates before leaving a usable session, transcript, or final artifact
+- recovery attempts must be persisted in `artifacts/recovery-attempts.json`
+- if build still fails, `artifacts/failure-diagnosis.json` must record:
+  - classified category
+  - human-meaningful summary
+  - evidence
+  - recommended actions
+  - the recovery attempts that were tried
+- verification failure is a build failure for workflow purposes and must block downstream deliver stages just like an implementation failure
 
 ### `review`
 
@@ -244,6 +263,7 @@ Safety:
 - GitHub completion is fail-closed
 - if `build` fails, `deliver` must stop at the root-cause failure and mark downstream `validation`, `review`, and `ship` as blocked/deferred consequences instead of continuing to run them
 - Codex-backed deliver stages may be time-boxed through repo policy; when a configured stage budget is exceeded, the stage must fail with an explicit timeout cause
+- when `build` fails inside `deliver`, blocked downstream stage notes must reference the classified build cause rather than only an exit code
 
 Key artifacts:
 

@@ -235,6 +235,9 @@ function mergeUniqueLines(values: string[]): string[] {
 }
 
 function summarizeBuildFailure(buildExecution: BuildExecutionResult): string {
+  if (buildExecution.failureDiagnosis?.summary) {
+    return buildExecution.failureDiagnosis.summary;
+  }
   if (buildExecution.result.timedOut && buildExecution.result.timeoutSeconds) {
     return `Build timed out after ${buildExecution.result.timeoutSeconds}s.`;
   }
@@ -628,7 +631,10 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
       sessionPath: path.join(buildStageDir, "session.json"),
       transcriptPath: path.join(buildStageDir, "artifacts", "build-transcript.log"),
       changeSummaryPath: path.join(buildStageDir, "artifacts", "change-summary.md"),
-      verificationPath: path.join(buildStageDir, "artifacts", "verification.json")
+      verificationPath: path.join(buildStageDir, "artifacts", "verification.json"),
+      recoveryAttemptsPath: path.join(buildStageDir, "artifacts", "recovery-attempts.json"),
+      recoverySummaryPath: path.join(buildStageDir, "artifacts", "recovery-summary.md"),
+      failureDiagnosisPath: path.join(buildStageDir, "artifacts", "failure-diagnosis.json")
     },
     ...(typeof options.buildTimeoutSeconds === "number" ? { timeoutSeconds: options.buildTimeoutSeconds } : {})
   });
@@ -638,7 +644,7 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
   buildStage.stageDir = buildStageDir;
   buildStage.artifactPath = path.join(buildStageDir, "artifacts", "change-summary.md");
   if (buildExecution.result.code !== 0) {
-    buildStage.notes = `Build exited with code ${buildExecution.result.code}.`;
+    buildStage.notes = summarizeBuildFailure(buildExecution);
   } else {
     delete buildStage.notes;
   }
