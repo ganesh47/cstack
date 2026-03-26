@@ -180,4 +180,48 @@ describe("runRuns", () => {
       stdoutSpy.mockRestore();
     }
   });
+
+  it("skips corrupt run files and still renders malformed-but-parseable runs", async () => {
+    const corruptRunDir = path.join(repoDir, ".cstack", "runs", "2026-03-13T17-40-00-build-corrupt");
+    await fs.mkdir(corruptRunDir, { recursive: true });
+    await fs.writeFile(path.join(corruptRunDir, "run.json"), "{not-json\n", "utf8");
+
+    const partialRunDir = path.join(repoDir, ".cstack", "runs", "2026-03-13T17-45-00-review-partial");
+    await fs.mkdir(partialRunDir, { recursive: true });
+    await fs.writeFile(
+      path.join(partialRunDir, "run.json"),
+      `${JSON.stringify({
+        id: "2026-03-13T17-45-00-review-partial",
+        workflow: "review",
+        createdAt: "2026-03-13T17:45:00.000Z",
+        updatedAt: "2026-03-13T17:45:05.000Z",
+        status: "completed",
+        cwd: repoDir,
+        gitBranch: "main",
+        codexVersion: "fake",
+        codexCommand: ["codex", "exec"],
+        promptPath: path.join(partialRunDir, "prompt.md"),
+        finalPath: path.join(partialRunDir, "final.md"),
+        contextPath: path.join(partialRunDir, "context.md"),
+        stdoutPath: path.join(partialRunDir, "stdout.log"),
+        stderrPath: path.join(partialRunDir, "stderr.log"),
+        configSources: []
+      }, null, 2)}\n`,
+      "utf8"
+    );
+    await fs.writeFile(path.join(partialRunDir, "final.md"), "# final\n", "utf8");
+
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      await runRuns(repoDir);
+      const output = stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join("");
+
+      expect(output).toContain("2026-03-13T17-45-00-review-partial");
+      expect(output).toContain("2026-03-13 17:45:05Z");
+      expect(output).toContain("review 2026-03-13T17-45-00-review-partial");
+      expect(output).not.toContain("2026-03-13T17-40-00-build-corrupt");
+    } finally {
+      stdoutSpy.mockRestore();
+    }
+  });
 });
