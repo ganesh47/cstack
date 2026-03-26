@@ -276,6 +276,7 @@ The active intent contract is:
 - implementation and planning prompts still execute deterministic `discover` and `spec` stages first
 - auto-carry analysis prompts into `review`
 - auto-carry implementation prompts into `deliver`
+- persist enough routing decision metadata for `inspect` to explain which prompt signals caused analysis-only versus implementation-capable routing
 - preserve child workflow lineage in the parent intent run
 
 ## GitHub-Scoped Engineering Delivery

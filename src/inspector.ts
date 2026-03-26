@@ -963,6 +963,25 @@ function renderRoutingSection(inspection: RunInspection): string[] {
   return [
     "",
     `Routing plan: ${path.relative(inspection.run.cwd, path.join(inspection.runDir, "routing-plan.json"))}`,
+    ...(routingPlan.decision
+      ? [
+          `Decision: ${routingPlan.decision.classification}`,
+          `  reason: ${routingPlan.decision.reason}`,
+          `  matched signals: ${routingPlan.decision.winningSignals.join(", ") || "none"}`
+        ]
+      : []),
+    ...(routingPlan.signals && routingPlan.signals.length > 0
+      ? [
+          "Signals:",
+          ...routingPlan.signals.map(
+            (signal) =>
+              `  - ${signal.name}: ${signal.matched ? "matched" : "not matched"}${
+                signal.evidence.length > 0 ? ` (${signal.evidence.join(", ")})` : ""
+              }`
+          ),
+          ""
+        ]
+      : []),
     "Planned stages:",
     ...routingPlan.stages.map((stage) => `  - ${stage.name}: ${stage.status} (${stage.rationale})`),
     "",
@@ -1739,7 +1758,7 @@ export async function executeInspectorCommand(cwd: string, inspection: RunInspec
     return { output: inspection.finalBody || "(missing)" };
   }
   if (trimmed === "r" || trimmed === "show routing") {
-    return { output: inspection.routingPlan ? `${JSON.stringify(inspection.routingPlan, null, 2)}\n` : "No routing plan recorded for this run." };
+    return { output: inspection.routingPlan ? renderRoutingSection(inspection).join("\n").trim() : "No routing plan recorded for this run." };
   }
   if (trimmed === "show research") {
     if (!inspection.discoverResearchPlan) {

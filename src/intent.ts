@@ -9,7 +9,9 @@ import { buildSpecPrompt, buildSpecialistPrompt, excerpt } from "./prompt.js";
 import { detectCodexVersion, detectGitBranch, ensureRunDir, makeRunId, readRun, writeRunRecord } from "./run.js";
 import type {
   CstackConfig,
+  RoutingDecision,
   RoutingPlan,
+  RoutingSignal,
   RunRecord,
   SpecialistDisposition,
   SpecialistExecution,
@@ -85,6 +87,66 @@ function isBroadAnalysisPrompt(lower: string): boolean {
     !hasImplementationIntent(lower) &&
     !hasReleaseIntent(lower)
   );
+}
+
+function collectRoutingSignals(intent: string): RoutingSignal[] {
+  const lower = intent.toLowerCase();
+  const analysisEvidence = [...intent.matchAll(
+    /\b(what are the gaps|gaps in (?:this|the current) project|what is missing|what's missing|assess(?: the)? current state|evaluate(?: the)? current state|key risks)\b/gi
+  )].map((match) => match[0]);
+  const implementationEvidence = [...intent.matchAll(
+    /\b(add|build|implement|fix|refactor|migrate|introduce|create|change|update|close|closing|resolve|address|remediate|work on)\b/gi
+  )].map((match) => match[0]);
+  const reviewEvidence = [...intent.matchAll(
+    /\b(review|audit|security|compliance|traceability|verify|check|gap|gaps|missing|assess|assessment|evaluate|evaluation)\b/gi
+  )].map((match) => match[0]);
+  const releaseEvidence = [...intent.matchAll(/\b(release|ship|deploy|rollout|pipeline|version)\b/gi)].map((match) => match[0]);
+
+  return [
+    { name: "analysis", matched: analysisEvidence.length > 0, evidence: analysisEvidence },
+    { name: "implementation", matched: implementationEvidence.length > 0, evidence: implementationEvidence },
+    { name: "review", matched: reviewEvidence.length > 0, evidence: reviewEvidence },
+    { name: "release", matched: releaseEvidence.length > 0, evidence: releaseEvidence }
+  ];
+}
+
+function inferRoutingDecision(stages: RoutingStagePlan[], signals: RoutingSignal[]): RoutingDecision {
+  const implementationSignal = signals.find((signal) => signal.name === "implementation");
+  const analysisSignal = signals.find((signal) => signal.name === "analysis");
+  const releaseSignal = signals.find((signal) => signal.name === "release");
+  const winningSignals = signals.filter((signal) => signal.matched).map((signal) => signal.name);
+
+  if (stages.length === 1 && stages[0]?.name === "review") {
+    return {
+      classification: "analysis",
+      reason: "Broad gap-analysis language matched without remediation or release intent, so the router skipped planning overhead and went straight to analytical review.",
+      winningSignals
+    };
+  }
+
+  if (implementationSignal?.matched && analysisSignal?.matched) {
+    return {
+      classification: "mixed",
+      reason:
+        "The prompt mixes gap-analysis language with explicit remediation intent, so the router stayed on the implementation path and carried the run through planning and downstream delivery stages.",
+      winningSignals
+    };
+  }
+
+  if (implementationSignal?.matched || releaseSignal?.matched) {
+    return {
+      classification: "implementation",
+      reason:
+        "Implementation or release language outweighed pure analysis intent, so the router kept deterministic planning and downstream delivery stages in the plan.",
+      winningSignals
+    };
+  }
+
+  return {
+    classification: "mixed",
+    reason: "The router kept the deterministic planning path because the prompt was broader than a pure gap-analysis request.",
+    winningSignals
+  };
 }
 
 function inferStagePlans(intent: string): RoutingStagePlan[] {
@@ -229,6 +291,8 @@ export function inferSpecialists(intent: string): SpecialistSelection[] {
 export function inferRoutingPlan(intent: string, entrypoint: "bare" | "run"): RoutingPlan {
   const stages = inferStagePlans(intent);
   const specialists = inferSpecialists(intent);
+  const signals = collectRoutingSignals(intent);
+  const decision = inferRoutingDecision(stages, signals);
   const selectedSpecialists = specialists.filter((specialist) => specialist.selected).map((specialist) => specialist.name);
   const summary =
     selectedSpecialists.length > 0
@@ -241,7 +305,9 @@ export function inferRoutingPlan(intent: string, entrypoint: "bare" | "run"): Ro
     entrypoint,
     stages,
     specialists,
-    summary
+    summary,
+    decision,
+    signals
   };
 }
 
@@ -290,6 +356,7 @@ function buildIntentContext(routingPlan: RoutingPlan): string {
   return [
     `Entry point: ${routingPlan.entrypoint}`,
     `Stages: ${routingPlan.stages.map((stage) => stage.name).join(", ")}`,
+    `Decision: ${routingPlan.decision?.classification ?? "unknown"} (${routingPlan.decision?.winningSignals.join(", ") || "no matched signals"})`,
     `Selected specialists: ${
       routingPlan.specialists.filter((specialist) => specialist.selected).map((specialist) => specialist.name).join(", ") || "none"
     }`

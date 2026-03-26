@@ -90,11 +90,20 @@ describe("intent router", () => {
   it("routes broad gap-analysis prompts directly into review", () => {
     const plan = inferRoutingPlan("What are the gaps in the current project?", "bare");
     expect(plan.stages.map((stage) => stage.name)).toEqual(["review"]);
+    expect(plan.decision?.classification).toBe("analysis");
+    expect(plan.decision?.winningSignals).toEqual(expect.arrayContaining(["analysis", "review"]));
+    expect(plan.signals?.find((signal) => signal.name === "analysis")?.matched).toBe(true);
+    expect(plan.signals?.find((signal) => signal.name === "implementation")?.matched).toBe(false);
   });
 
   it("routes gap-analysis prompts with explicit remediation intent into delivery stages", () => {
     const plan = inferRoutingPlan("What are the gaps in this project? Can you work on closing the gaps?", "bare");
     expect(plan.stages.map((stage) => stage.name)).toEqual(["discover", "spec", "build", "review", "ship"]);
+    expect(plan.decision?.classification).toBe("mixed");
+    expect(plan.decision?.winningSignals).toEqual(expect.arrayContaining(["analysis", "implementation", "review"]));
+    expect(plan.signals?.find((signal) => signal.name === "implementation")?.evidence).toEqual(
+      expect.arrayContaining(["work on", "closing"])
+    );
   });
 
   it("creates an intent run and auto-executes downstream delivery when the inferred plan warrants it", async () => {
