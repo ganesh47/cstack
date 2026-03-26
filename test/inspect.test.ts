@@ -1272,6 +1272,7 @@ describe("inspect", () => {
     await runGit(repoDir, ["init", "-b", "main"]);
     await runGit(repoDir, ["config", "user.name", "cstack inspect"]);
     await runGit(repoDir, ["config", "user.email", "cstack-inspect@example.com"]);
+    await runGit(repoDir, ["config", "commit.gpgsign", "false"]);
     await runGit(repoDir, ["add", "."]);
     await runGit(repoDir, ["commit", "-m", "fixture"]);
     runId = await seedIntentRun(repoDir);
@@ -1479,5 +1480,59 @@ describe("inspect", () => {
     await expect(handleInspectorCommand(repoDir, inspection, "show stage build")).resolves.toContain("Direct build evidence:");
     await expect(handleInspectorCommand(repoDir, inspection, "show stage build")).resolves.toContain("verification: not-run");
     await expect(handleInspectorCommand(repoDir, inspection, "stages")).resolves.toContain("root cause: interactive Codex exited with code 1");
+  });
+
+  it("surfaces stale child lineage instead of hiding missing child runs", async () => {
+    const failedIntentRunId = await seedIntentFailedDeliverBuildRun(repoDir);
+    const runDir = path.join(repoDir, ".cstack", "runs", failedIntentRunId);
+    const stageLineagePath = path.join(runDir, "stage-lineage.json");
+    const stageLineage = JSON.parse(await fs.readFile(stageLineagePath, "utf8")) as StageLineage;
+    const deliverRunId = stageLineage.stages.find((stage) => stage.name === "build")?.childRunId;
+    expect(deliverRunId).toBeTruthy();
+    await fs.rm(path.join(repoDir, ".cstack", "runs", deliverRunId!), { recursive: true, force: true });
+
+    const inspection = await loadRunInspection(repoDir, failedIntentRunId);
+
+    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("linked child run missing for stage build");
+    await expect(handleInspectorCommand(repoDir, inspection, "artifacts")).resolves.toContain("Stale child lineage:");
+    await expect(handleInspectorCommand(repoDir, inspection, "what remains")).resolves.toContain("child run");
+    await expect(handleInspectorCommand(repoDir, inspection, "what remains")).resolves.toContain("missing or unreadable");
+    await expect(handleInspectorCommand(repoDir, inspection, "show child build")).resolves.toContain("missing or unreadable");
+    await expect(handleInspectorCommand(repoDir, inspection, "show stage build")).resolves.toContain("Linked child run:");
+  });
+
+  it("degrades to missing-artifact messages when inspection json artifacts are corrupt", async () => {
+    const deliverRunId = await seedDeliverRun(repoDir, { readiness: "blocked" });
+    const runDir = path.join(repoDir, ".cstack", "runs", deliverRunId);
+    await fs.writeFile(path.join(runDir, "stages", "validation", "validation-plan.json"), "{not-json\n", "utf8");
+    await fs.writeFile(path.join(runDir, "stages", "review", "artifacts", "verdict.json"), "{still-not-json\n", "utf8");
+
+    const inspection = await loadRunInspection(repoDir, deliverRunId);
+
+    expect(inspection.validationPlan).toBeNull();
+    expect(inspection.deliverReviewVerdict).toBeNull();
+    await expect(handleInspectorCommand(repoDir, inspection, "show validation")).resolves.toContain("No validation plan was recorded");
+    await expect(handleInspectorCommand(repoDir, inspection, "show review")).resolves.toContain("No deliver review verdict was recorded");
+    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("ship readiness: blocked");
+  });
+
+  it("keeps partial nested child runs inspectable when child artifacts are missing or corrupt", async () => {
+    const failedIntentRunId = await seedIntentFailedDeliverBuildRun(repoDir);
+    const parentLineage = JSON.parse(
+      await fs.readFile(path.join(repoDir, ".cstack", "runs", failedIntentRunId, "stage-lineage.json"), "utf8")
+    ) as StageLineage;
+    const childRunId = parentLineage.stages.find((stage) => stage.name === "build")?.childRunId;
+    expect(childRunId).toBeTruthy();
+    const childRunDir = path.join(repoDir, ".cstack", "runs", childRunId!);
+    await fs.rm(path.join(childRunDir, "stages", "build", "final.md"), { force: true });
+    await fs.writeFile(path.join(childRunDir, "stage-lineage.json"), "{broken-lineage\n", "utf8");
+
+    const inspection = await loadRunInspection(repoDir, failedIntentRunId);
+
+    expect(inspection.childRuns.some((child) => child.stageName === "build" && child.run.id === childRunId)).toBe(true);
+    await expect(handleInspectorCommand(repoDir, inspection, "show child build")).resolves.toContain(`- run: ${childRunId}`);
+    await expect(handleInspectorCommand(repoDir, inspection, "show child build")).resolves.toContain("root cause stage: build");
+    await expect(handleInspectorCommand(repoDir, inspection, "show stage build")).resolves.toContain("Linked child run:");
+    await expect(handleInspectorCommand(repoDir, inspection, "artifacts")).resolves.toContain(`- child build: ${childRunId} (failed)`);
   });
 });

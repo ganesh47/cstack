@@ -88,6 +88,19 @@ function summarizePrompt(input: string, max = 72): string {
   return `${compact.slice(0, max - 1)}…`;
 }
 
+function summarizeRun(run: RunRecord): string {
+  if (typeof run.summary === "string" && run.summary.trim()) {
+    return run.summary;
+  }
+
+  const prompt = typeof run.inputs?.userPrompt === "string" ? run.inputs.userPrompt : "";
+  if (prompt.trim()) {
+    return summarizePrompt(prompt);
+  }
+
+  return `${run.workflow} ${run.id}`;
+}
+
 export async function readStageLineage(cwd: string, runId: string): Promise<StageLineage | null> {
   return readJsonFile<StageLineage>(path.join(runDirForId(cwd, runId), "stage-lineage.json"));
 }
@@ -108,7 +121,7 @@ export async function buildRunLedgerEntry(cwd: string, run: RunRecord): Promise<
     status: run.status,
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,
-    summary: run.summary ?? summarizePrompt(run.inputs.userPrompt),
+    summary: summarizeRun(run),
     currentStage: run.currentStage ?? runningStage?.name,
     activeSpecialists,
     finalPath: run.finalPath

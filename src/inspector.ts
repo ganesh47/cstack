@@ -365,6 +365,25 @@ function badge(name: string, status: string): string {
   return `[${name}:${status}]`;
 }
 
+function findChildRunForStage(inspection: RunInspection, stage: StageLineage["stages"][number]): ChildRunInspection | undefined {
+  return stage.childRunId ? inspection.childRuns.find((entry) => entry.run.id === stage.childRunId) : undefined;
+}
+
+function missingChildRunLines(cwd: string, stage: StageLineage["stages"][number]): string[] {
+  if (!stage.childRunId) {
+    return [];
+  }
+
+  return [
+    `- linked child run: ${stage.childRunId} (missing or unreadable)`,
+    `- expected dir: ${path.relative(cwd, runDirForId(cwd, stage.childRunId))}`
+  ];
+}
+
+function staleChildStages(inspection: RunInspection): StageLineage["stages"] {
+  return inspection.stageLineage?.stages.filter((stage) => Boolean(stage.childRunId) && !findChildRunForStage(inspection, stage)) ?? [];
+}
+
 function renderStageStrip(inspection: RunInspection): string {
   if (inspection.stageLineage) {
     return inspection.stageLineage.stages.map((stage) => badge(stage.name, stage.status)).join(" ");
@@ -416,6 +435,10 @@ function renderReadinessReviewLines(verdict: DeliverReviewVerdict): string[] {
 function renderSuggestedActions(inspection: RunInspection): string[] {
   const lines: string[] = [];
   const deferredStages = inspection.stageLineage?.stages.filter((stage) => stage.status === "deferred" || stage.status === "skipped") ?? [];
+  const linkedChildStageNames = uniqueSorted([
+    ...inspection.childRuns.map((child) => child.stageName),
+    ...(inspection.stageLineage?.stages.filter((stage) => stage.childRunId).map((stage) => stage.name) ?? [])
+  ]);
 
   if (inspection.run.workflow === "build" || inspection.run.workflow === "deliver") {
     lines.push(
@@ -479,8 +502,8 @@ function renderSuggestedActions(inspection: RunInspection): string[] {
   if (inspection.artifacts.some((artifact) => artifact.path === "routing-plan.json")) {
     lines.push("- review routing with `show routing`");
   }
-  if (inspection.childRuns.length > 0) {
-    lines.push(`- inspect linked child runs with \`show child ${inspection.childRuns[0]!.stageName}\``);
+  if (linkedChildStageNames.length > 0) {
+    lines.push(`- inspect linked child runs with \`show child ${linkedChildStageNames[0]!}\``);
   }
 
   return lines.length > 0 ? lines : ["- no obvious follow-up recorded"];
@@ -506,7 +529,12 @@ function classifyArtifact(relativePath: string): ArtifactEntry["kind"] {
 }
 
 async function walkArtifacts(root: string, current = root): Promise<ArtifactEntry[]> {
-  const entries = await fs.readdir(current, { withFileTypes: true });
+  let entries;
+  try {
+    entries = await fs.readdir(current, { withFileTypes: true });
+  } catch {
+    return [];
+  }
   const artifacts: ArtifactEntry[] = [];
 
   for (const entry of entries) {
@@ -984,6 +1012,7 @@ export function renderInspectionSummary(cwd: string, inspection: RunInspection):
       : inspection.deliverReviewVerdict
         ? renderReadinessReviewLines(inspection.deliverReviewVerdict)
         : [];
+  const staleChildLinks = staleChildStages(inspection);
 
   return (
     [
@@ -1030,6 +1059,10 @@ export function renderInspectionSummary(cwd: string, inspection: RunInspection):
           ...(rootStage?.name === "build" ? renderBuildFailureEvidence(child, cwd) : [])
         ];
       }),
+      ...staleChildLinks.flatMap((stage) => [
+        `- linked child run missing for stage ${stage.name}: ${stage.childRunId}`,
+        ...missingChildRunLines(cwd, stage)
+      ]),
       "",
       "Plan",
       `- stages: ${renderStageStrip(inspection)}`,
@@ -1064,10 +1097,15 @@ function renderArtifacts(inspection: RunInspection): string {
     ...(child.buildTranscriptPath ? [`  build transcript: ${child.buildTranscriptPath}`] : []),
     ...child.artifacts.slice(0, 4).map((artifact) => `  artifact: ${path.relative(inspection.run.cwd, path.join(child.runDir, artifact.path))}`)
   ]);
+  const staleChildLines = staleChildStages(inspection).flatMap((stage) => [
+    `- child ${stage.name}: ${stage.childRunId} (missing or unreadable)`,
+    `  expected dir: ${path.relative(inspection.run.cwd, runDirForId(inspection.run.cwd, stage.childRunId!))}`
+  ]);
   return [
     "Artifacts:",
     ...(artifactLines.length > 0 ? artifactLines : ["- none found"]),
-    ...(childLines.length > 0 ? ["", "Linked child runs:", ...childLines] : [])
+    ...(childLines.length > 0 ? ["", "Linked child runs:", ...childLines] : []),
+    ...(staleChildLines.length > 0 ? ["", "Stale child lineage:", ...staleChildLines] : [])
   ].join("\n");
 }
 
@@ -1256,7 +1294,7 @@ function renderStages(inspection: RunInspection): string {
           details.push(`root cause: ${directBuildFailure}`);
         }
       }
-      const child = stage.childRunId ? inspection.childRuns.find((entry) => entry.run.id === stage.childRunId) : undefined;
+      const child = findChildRunForStage(inspection, stage);
       if (child) {
         details.push(`child ${child.run.workflow}=${child.run.status}`);
         if (child.run.status === "failed") {
@@ -1269,6 +1307,8 @@ function renderStages(inspection: RunInspection): string {
             details.push(summarizeChildFailure(child));
           }
         }
+      } else if (stage.childRunId) {
+        details.push(`child missing=${stage.childRunId}`);
       }
       if (stage.notes) {
         details.push(stage.notes);
@@ -1368,7 +1408,7 @@ function renderWhatRemains(inspection: RunInspection): string {
 
   for (const stage of outstandingStages) {
     lines.push(`- stage ${stage.name}: ${stage.status}${stage.notes ? ` (${stage.notes})` : ""}`);
-    const child = stage.childRunId ? inspection.childRuns.find((entry) => entry.run.id === stage.childRunId) : undefined;
+    const child = findChildRunForStage(inspection, stage);
     if (child) {
       const rootStage = childRootFailedStage(child);
       lines.push(`- child ${child.run.workflow} run ${child.run.id}: ${child.run.status}`);
@@ -1378,6 +1418,9 @@ function renderWhatRemains(inspection: RunInspection): string {
         lines.push(`- child summary: ${summarizeChildFailure(child)}`);
       }
       lines.push(`- inspect child with: cstack inspect ${child.run.id}`);
+    } else if (stage.childRunId) {
+      lines.push(`- child run ${stage.childRunId}: missing or unreadable`);
+      lines.push(`- expected child dir: ${path.relative(inspection.run.cwd, runDirForId(inspection.run.cwd, stage.childRunId))}`);
     }
   }
   for (const specialist of skippedSpecialists) {
@@ -1520,7 +1563,10 @@ function buildInspectorCompletionContext(inspection: RunInspection): InspectorCo
     ],
     delegateTracks: inspection.discoverDelegates.map((delegate) => delegate.track),
     artifactPaths: inspection.artifacts.map((artifact) => artifact.path),
-    childStages: inspection.childRuns.map((child) => child.stageName)
+    childStages: uniqueSorted([
+      ...inspection.childRuns.map((child) => child.stageName),
+      ...(inspection.stageLineage?.stages.filter((stage) => stage.childRunId).map((stage) => stage.name) ?? [])
+    ])
   };
 }
 
@@ -1789,7 +1835,7 @@ export async function executeInspectorCommand(cwd: string, inspection: RunInspec
     if (!stage) {
       return { output: `No stage named \`${stageName}\` was recorded for this run.` };
     }
-    const child = stage.childRunId ? inspection.childRuns.find((entry) => entry.run.id === stage.childRunId) : undefined;
+    const child = findChildRunForStage(inspection, stage);
     const includeDirectBuildEvidence =
       stageName === "build" &&
       (inspection.run.workflow === "deliver" || inspection.run.workflow === "build") &&
@@ -1816,6 +1862,12 @@ export async function executeInspectorCommand(cwd: string, inspection: RunInspec
               ]
                 .filter(Boolean)
                 .join("\n")
+            : stage.childRunId
+              ? [
+                  "",
+                  "Linked child run:",
+                  ...missingChildRunLines(cwd, stage)
+                ].join("\n")
             : undefined
         ]
           .filter(Boolean)
@@ -1826,6 +1878,15 @@ export async function executeInspectorCommand(cwd: string, inspection: RunInspec
     const stageName = trimmed.slice("show child ".length).trim();
     const child = inspection.childRuns.find((entry) => entry.stageName === stageName);
     if (!child) {
+      const stage = inspection.stageLineage?.stages.find((entry) => entry.name === stageName);
+      if (stage?.childRunId) {
+        return {
+          output: [
+            `Child run for stage \`${stageName}\`:`,
+            ...missingChildRunLines(cwd, stage)
+          ].join("\n")
+        };
+      }
       return { output: `No linked child run was recorded for stage \`${stageName}\`.` };
     }
     return {
