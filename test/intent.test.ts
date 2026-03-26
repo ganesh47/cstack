@@ -194,23 +194,18 @@ describe("intent router", () => {
   });
 
   it("keeps intent completed when downstream review finds blocked gaps", async () => {
-    await runIntent(repoDir, "What are the gaps in this project", {
+    const intentRunId = await runIntent(repoDir, "What are the gaps in this project", {
       entrypoint: "bare",
       dryRun: false
     });
 
-    const runs = await listRuns(repoDir);
-    const intentRun = await readRun(
-      repoDir,
-      runs.find((entry) => entry.workflow === "intent")!.id
-    );
-    const reviewRun = await readRun(
-      repoDir,
-      runs.find((entry) => entry.workflow === "review")!.id
-    );
+    const intentRun = await readRun(repoDir, intentRunId);
     const intentRunDir = path.dirname(intentRun.finalPath);
-    const reviewRunDir = path.dirname(reviewRun.finalPath);
     const lineage = JSON.parse(await fs.readFile(path.join(intentRunDir, "stage-lineage.json"), "utf8")) as StageLineage;
+    const reviewRunId = lineage.stages.find((stage) => stage.name === "review")?.childRunId;
+    expect(reviewRunId).toBeTruthy();
+    const reviewRun = await readRun(repoDir, reviewRunId!);
+    const reviewRunDir = path.dirname(reviewRun.finalPath);
     const reviewVerdict = JSON.parse(await fs.readFile(path.join(reviewRunDir, "artifacts", "verdict.json"), "utf8")) as {
       mode: string;
       status: string;
