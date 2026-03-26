@@ -33,6 +33,13 @@ interface CommandResult {
   stderr: string;
 }
 
+interface CommandFailureDetails {
+  message: string;
+  stderr: string;
+  stdout: string;
+  combined: string;
+}
+
 export interface CollectGitHubDeliveryOptions {
   cwd: string;
   gitBranch: string;
@@ -112,6 +119,69 @@ async function runGit(cwd: string, args: string[]): Promise<CommandResult> {
 
 async function runGh(command: string, cwd: string, args: string[]): Promise<CommandResult> {
   return runCommand(command, args, cwd);
+}
+
+function commandFailureDetails(error: unknown): CommandFailureDetails {
+  const candidate = error as {
+    message?: unknown;
+    stderr?: unknown;
+    stdout?: unknown;
+    code?: unknown;
+  };
+  const message = typeof candidate?.message === "string" ? candidate.message.trim() : String(error);
+  const stderr = typeof candidate?.stderr === "string" ? candidate.stderr.trim() : "";
+  const stdout = typeof candidate?.stdout === "string" ? candidate.stdout.trim() : "";
+  const combined = [stderr, stdout, message].filter(Boolean).join("\n").trim();
+  return {
+    message,
+    stderr,
+    stdout,
+    combined: combined || message
+  };
+}
+
+function classifyGitHubFailure(action: string, error: unknown): { summary: string; detail: string } {
+  const detail = commandFailureDetails(error).combined;
+  const normalized = detail.toLowerCase();
+
+  if (
+    /\b(auth|authenticate|authentication|not logged in|login)\b/.test(normalized) ||
+    /\b401\b/.test(normalized) ||
+    /\b403\b/.test(normalized)
+  ) {
+    return {
+      summary: `GitHub authentication failed while ${action}.`,
+      detail
+    };
+  }
+
+  if (/\b(rate limit|secondary rate limit)\b/.test(normalized) || /\b429\b/.test(normalized)) {
+    return {
+      summary: `GitHub rate limiting blocked ${action}.`,
+      detail
+    };
+  }
+
+  if (
+    /\b(econnreset|econnrefused|enotfound|network|timeout|timed out|tls|connection reset|temporary failure)\b/.test(normalized)
+  ) {
+    return {
+      summary: `GitHub connectivity failed while ${action}.`,
+      detail
+    };
+  }
+
+  if (/\bnot found\b/.test(normalized) || /\b404\b/.test(normalized)) {
+    return {
+      summary: `GitHub returned not-found while ${action}.`,
+      detail
+    };
+  }
+
+  return {
+    summary: `GitHub failed while ${action}.`,
+    detail
+  };
 }
 
 function parseGitHubRepository(remoteUrl: string): string | null {
@@ -439,14 +509,15 @@ async function detectPullRequest(options: {
       blockers
     );
   } catch (error) {
+    const failure = classifyGitHubFailure("resolving the pull request", error);
     return gate(
       prRequired,
       prRequired ? "blocked" : "not-applicable",
-      prRequired ? "A pull request is required but none could be resolved for the current branch." : "Pull request checks were not required.",
+      prRequired ? failure.summary : "Pull request checks were not required.",
       null,
       "gh",
-      prRequired ? ["No pull request could be resolved for the current branch."] : [],
-      error instanceof Error ? error.message : String(error)
+      prRequired ? [failure.summary] : [],
+      failure.detail
     );
   }
 }
@@ -500,16 +571,15 @@ async function detectIssues(options: {
         blockers.push(`Issue #${raw.number} is ${raw.state} but closed issues are required.`);
       }
     } catch (error) {
-      blockers.push(`Issue #${number} could not be inspected.`);
+      const failure = classifyGitHubFailure(`inspecting issue #${number}`, error);
+      blockers.push(failure.summary);
       issues.push({
         number,
         title: `Issue #${number}`,
         state: "UNKNOWN",
         url: ""
       });
-      if (error instanceof Error) {
-        blockers.push(error.message);
-      }
+      blockers.push(failure.detail);
     }
   }
 
@@ -598,14 +668,15 @@ async function detectChecks(options: {
       blockers
     );
   } catch (error) {
+    const failure = classifyGitHubFailure("inspecting required checks", error);
     return gate(
       required,
       required ? "blocked" : "not-applicable",
-      required ? "Required checks could not be inspected." : "Checks were not required for this deliver run.",
+      required ? failure.summary : "Checks were not required for this deliver run.",
       [],
       "gh",
-      required ? ["Required checks could not be inspected."] : [],
-      error instanceof Error ? error.message : String(error)
+      required ? [failure.summary] : [],
+      failure.detail
     );
   }
 }
@@ -688,14 +759,15 @@ async function detectActions(options: {
       blockers
     );
   } catch (error) {
+    const failure = classifyGitHubFailure("inspecting GitHub Actions workflow runs", error);
     return gate(
       true,
       "blocked",
-      "Required GitHub Actions workflows could not be inspected.",
+      failure.summary,
       [],
       "gh",
-      ["Required GitHub Actions workflows could not be inspected."],
-      error instanceof Error ? error.message : String(error)
+      [failure.summary],
+      failure.detail
     );
   }
 }
@@ -759,8 +831,9 @@ async function detectSecurity(options: {
         }
       }
     } catch (error) {
-      blockers.push("Dependabot alerts could not be inspected.");
-      return gate(required, "blocked", "Dependabot alerts could not be inspected.", { dependabot, codeScanning }, "gh", blockers, error instanceof Error ? error.message : String(error));
+      const failure = classifyGitHubFailure("inspecting Dependabot alerts", error);
+      blockers.push(failure.summary);
+      return gate(required, "blocked", failure.summary, { dependabot, codeScanning }, "gh", blockers, failure.detail);
     }
   }
 
@@ -784,8 +857,9 @@ async function detectSecurity(options: {
         }
       }
     } catch (error) {
-      blockers.push("Code scanning alerts could not be inspected.");
-      return gate(required, "blocked", "Code scanning alerts could not be inspected.", { dependabot, codeScanning }, "gh", blockers, error instanceof Error ? error.message : String(error));
+      const failure = classifyGitHubFailure("inspecting code scanning alerts", error);
+      blockers.push(failure.summary);
+      return gate(required, "blocked", failure.summary, { dependabot, codeScanning }, "gh", blockers, failure.detail);
     }
   }
 
@@ -885,6 +959,7 @@ async function detectRelease(options: {
       blockers
     );
   } catch (error) {
+    const failure = classifyGitHubFailure(`inspecting GitHub release ${expectedTag}`, error);
     const release: GitHubReleaseRecord = {
       tagName: expectedTag,
       version: packageVersion,
@@ -893,7 +968,7 @@ async function detectRelease(options: {
       releaseExists: false
     };
     if (requireRelease) {
-      blockers.push(`GitHub release ${expectedTag} was not found.`);
+      blockers.push(failure.summary);
     }
     return gate(
       true,
@@ -902,7 +977,7 @@ async function detectRelease(options: {
       release,
       requireRelease ? "gh" : "git",
       blockers,
-      error instanceof Error ? error.message : String(error)
+      failure.detail
     );
   }
 }
@@ -1066,7 +1141,9 @@ export async function performGitHubDeliverMutations(options: PerformGitHubMutati
           pullRequestUpdated = true;
         }
       } catch (error) {
-        blockers.push(`Failed to create or update the pull request: ${error instanceof Error ? error.message : String(error)}`);
+        const failure = classifyGitHubFailure("creating or updating the pull request", error);
+        blockers.push(failure.summary);
+        blockers.push(failure.detail);
       }
 
       try {
@@ -1078,7 +1155,9 @@ export async function performGitHubDeliverMutations(options: PerformGitHubMutati
         });
       } catch (error) {
         if (policy.createPullRequest || policy.updatePullRequest) {
-          blockers.push(`Failed to load pull request state after mutation: ${error instanceof Error ? error.message : String(error)}`);
+          const failure = classifyGitHubFailure("loading pull request state after mutation", error);
+          blockers.push(failure.summary);
+          blockers.push(failure.detail);
         }
       }
     }

@@ -126,6 +126,9 @@ if (args[0] === "pr" && args[1] === "edit") {
 }
 
 if (args[0] === "pr" && args[1] === "checks") {
+  if (fixture.prChecksError) {
+    fail(fixture.prChecksError);
+  }
   printJson(fixture.prChecks ?? fixture.checks ?? []);
   process.exit(0);
 }
@@ -147,6 +150,9 @@ if (args[0] === "issue" && args[1] === "view") {
 }
 
 if (args[0] === "run" && args[1] === "list") {
+  if (fixture.actionsError) {
+    fail(fixture.actionsError);
+  }
   printJson(fixture.actions ?? []);
   process.exit(0);
 }
@@ -187,6 +193,9 @@ if (args[0] === "api") {
     process.exit(0);
   }
   if (/^repos\/.+$/.test(endpoint)) {
+    if (fixture.repoApiError) {
+      fail(fixture.repoApiError);
+    }
     printJson({ default_branch: fixture.repoView?.defaultBranchRef?.name ?? "main" });
     process.exit(0);
   }
