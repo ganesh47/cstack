@@ -560,10 +560,97 @@ describe("runDeliver", () => {
     expect(run.status).toBe("failed");
     expect(githubMutation.pullRequest.created).toBe(false);
     expect(githubMutation.pullRequest.updated).toBe(false);
-    expect(githubMutation.summary).toContain("Failed to create or update the pull request");
+    expect(githubMutation.summary).toContain("GitHub failed while creating or updating the pull request.");
     expect(githubMutation.blockers.join("\n")).toContain("simulated PR create failure");
     expect(githubDelivery.pullRequest.status).toBe("blocked");
     expect(githubDelivery.overall.status).toBe("blocked");
+    expect(githubDelivery.overall.blockers.join("\n")).toContain("GitHub failed while creating or updating the pull request.");
     expect(githubDelivery.overall.blockers.join("\n")).toContain("simulated PR create failure");
+  });
+
+  it("classifies GitHub authentication failures during pull request creation", async () => {
+    await writeGitHubFixture({
+      repoView: {
+        nameWithOwner: "ganesh47/cstack",
+        defaultBranchRef: { name: "main" }
+      },
+      prCreateError: "HTTP 401: authentication required. Run gh auth login.",
+      issues: [
+        {
+          number: 902,
+          title: "Auth failure issue",
+          state: "CLOSED",
+          url: "https://github.com/ganesh47/cstack/issues/902",
+          closedAt: "2026-03-14T00:00:00.000Z"
+        }
+      ],
+      prChecks: [],
+      actions: [],
+      security: {
+        dependabot: [],
+        codeScanning: []
+      }
+    });
+
+    await runDeliver(repoDir, ["Deliver a fix that will hit GitHub auth failure for #902"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const githubMutation = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "github-mutation.json"), "utf8")) as {
+      blockers: string[];
+      summary: string;
+    };
+
+    expect(run.status).toBe("failed");
+    expect(githubMutation.summary).toContain("GitHub authentication failed while creating or updating the pull request.");
+    expect(githubMutation.blockers.join("\n")).toContain("Run gh auth login");
+  });
+
+  it("classifies GitHub connectivity failures during required check inspection", async () => {
+    await writeGitHubFixture({
+      repoView: {
+        nameWithOwner: "ganesh47/cstack",
+        defaultBranchRef: { name: "main" }
+      },
+      createdPullRequest: {
+        reviewDecision: "APPROVED",
+        mergeStateStatus: "CLEAN"
+      },
+      issues: [
+        {
+          number: 903,
+          title: "Checks connectivity issue",
+          state: "CLOSED",
+          url: "https://github.com/ganesh47/cstack/issues/903",
+          closedAt: "2026-03-14T00:00:00.000Z"
+        }
+      ],
+      prChecksError: "network timeout contacting api.github.com",
+      actions: [
+        { databaseId: 1, workflowName: "Release", status: "completed", conclusion: "success", url: "https://github.com/ganesh47/cstack/actions/runs/1" }
+      ],
+      security: {
+        dependabot: [],
+        codeScanning: []
+      }
+    });
+
+    await runDeliver(repoDir, ["Deliver a fix that will hit required-check network failure for #903"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const githubDelivery = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "github-delivery.json"), "utf8")) as {
+      checks: { status: string; summary: string; error?: string };
+      overall: { status: string; blockers: string[] };
+    };
+
+    expect(run.status).toBe("failed");
+    expect(githubDelivery.checks.status).toBe("blocked");
+    expect(githubDelivery.checks.summary).toContain("GitHub connectivity failed while inspecting required checks.");
+    expect(githubDelivery.checks.error).toContain("network timeout contacting api.github.com");
+    expect(githubDelivery.overall.status).toBe("blocked");
+    expect(githubDelivery.overall.blockers.join("\n")).toContain("GitHub connectivity failed while inspecting required checks.");
   });
 });
