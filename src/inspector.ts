@@ -604,6 +604,10 @@ function renderGitHubSummary(record: GitHubDeliveryRecord | null): string {
   if (blockingGates.length === 0) {
     return record.overall.status;
   }
+  const firstBlocker = record.overall.blockers[0]?.replace(/\s+/g, " ").trim();
+  if (firstBlocker) {
+    return `${record.overall.status} (${blockingGates.join(", ")}: ${firstBlocker})`;
+  }
   return `${record.overall.status} (${blockingGates.join(", ")})`;
 }
 

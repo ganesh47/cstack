@@ -653,4 +653,108 @@ describe("runDeliver", () => {
     expect(githubDelivery.overall.status).toBe("blocked");
     expect(githubDelivery.overall.blockers.join("\n")).toContain("GitHub connectivity failed while inspecting required checks.");
   });
+
+  it("classifies git push rejection during deliver mutations", async () => {
+    await writeGitHubFixture({
+      repoView: {
+        nameWithOwner: "ganesh47/cstack",
+        defaultBranchRef: { name: "main" }
+      },
+      createdPullRequest: {
+        reviewDecision: "APPROVED",
+        mergeStateStatus: "CLEAN"
+      },
+      issues: [
+        {
+          number: 904,
+          title: "Push rejection issue",
+          state: "CLOSED",
+          url: "https://github.com/ganesh47/cstack/issues/904",
+          closedAt: "2026-03-14T00:00:00.000Z"
+        }
+      ],
+      prChecks: [],
+      actions: [],
+      security: {
+        dependabot: [],
+        codeScanning: []
+      }
+    });
+
+    const hookPath = path.join(remoteDir, "hooks", "pre-receive");
+    await fs.writeFile(
+      hookPath,
+      "#!/bin/sh\n" +
+        "echo 'remote rejected: protected branch hook declined' >&2\n" +
+        "exit 1\n",
+      "utf8"
+    );
+    chmodSync(hookPath, 0o755);
+
+    await runDeliver(repoDir, ["Deliver a fix that will hit git push rejection for #904"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const githubMutation = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "github-mutation.json"), "utf8")) as {
+      summary: string;
+      blockers: string[];
+      branch: { pushed: boolean };
+    };
+
+    expect(run.status).toBe("failed");
+    expect(githubMutation.branch.pushed).toBe(false);
+    expect(githubMutation.summary).toContain("Git rejected the push while pushing branch");
+    expect(githubMutation.blockers.join("\n")).toContain("protected branch hook declined");
+  });
+
+  it("classifies GitHub pull request update conflicts", async () => {
+    await writeGitHubFixture({
+      repoView: {
+        nameWithOwner: "ganesh47/cstack",
+        defaultBranchRef: { name: "main" }
+      },
+      pullRequest: {
+        number: 44,
+        title: "Existing PR",
+        state: "OPEN",
+        isDraft: false,
+        reviewDecision: "APPROVED",
+        url: "https://github.com/ganesh47/cstack/pull/44",
+        headRefName: "cstack/existing-branch",
+        baseRefName: "main",
+        mergeStateStatus: "CLEAN"
+      },
+      prEditError: "GraphQL: Update failed because the pull request was modified concurrently",
+      issues: [
+        {
+          number: 905,
+          title: "PR conflict issue",
+          state: "CLOSED",
+          url: "https://github.com/ganesh47/cstack/issues/905",
+          closedAt: "2026-03-14T00:00:00.000Z"
+        }
+      ],
+      prChecks: [],
+      actions: [],
+      security: {
+        dependabot: [],
+        codeScanning: []
+      }
+    });
+
+    await runDeliver(repoDir, ["Deliver a fix that will hit PR update conflict for #905"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const githubMutation = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "github-mutation.json"), "utf8")) as {
+      summary: string;
+      blockers: string[];
+    };
+
+    expect(run.status).toBe("failed");
+    expect(githubMutation.summary).toContain("GitHub failed while creating or updating the pull request.");
+    expect(githubMutation.blockers.join("\n")).toContain("modified concurrently");
+  });
 });

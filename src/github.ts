@@ -235,6 +235,37 @@ async function detectDefaultBranch(ghCommand: string, cwd: string, repository: s
   }
 }
 
+function classifyGitFailure(action: string, error: unknown): { summary: string; detail: string } {
+  const detail = commandFailureDetails(error).combined;
+  const normalized = detail.toLowerCase();
+
+  if (/\b(rejected|non-fast-forward|failed to push some refs|protected branch)\b/.test(normalized)) {
+    return {
+      summary: `Git rejected the push while ${action}.`,
+      detail
+    };
+  }
+
+  if (/\b(not a git repository|could not read from remote repository|repository not found|no such remote)\b/.test(normalized)) {
+    return {
+      summary: `Git could not reach the configured remote while ${action}.`,
+      detail
+    };
+  }
+
+  if (/\b(already exists|would be overwritten by checkout)\b/.test(normalized)) {
+    return {
+      summary: `Git could not prepare the working branch while ${action}.`,
+      detail
+    };
+  }
+
+  return {
+    summary: `Git failed while ${action}.`,
+    detail
+  };
+}
+
 async function readPackageVersion(cwd: string): Promise<string | null> {
   try {
     const body = await fs.readFile(path.join(cwd, "package.json"), "utf8");
@@ -1048,7 +1079,9 @@ export async function performGitHubDeliverMutations(options: PerformGitHubMutati
       createdBranch = true;
     }
   } catch (error) {
-    blockers.push(`Failed to create branch ${branch}: ${error instanceof Error ? error.message : String(error)}`);
+    const failure = classifyGitFailure(`creating branch ${branch}`, error);
+    blockers.push(failure.summary);
+    blockers.push(failure.detail);
   }
 
   if (policy.commitChanges && blockers.length === 0) {
@@ -1064,7 +1097,9 @@ export async function performGitHubDeliverMutations(options: PerformGitHubMutati
         commitCreated = true;
         commitSha = await currentHeadSha(options.cwd);
       } catch (error) {
-        blockers.push(`Failed to commit deliver changes: ${error instanceof Error ? error.message : String(error)}`);
+        const failure = classifyGitFailure("creating the deliver commit", error);
+        blockers.push(failure.summary);
+        blockers.push(failure.detail);
       }
     }
   }
@@ -1077,7 +1112,9 @@ export async function performGitHubDeliverMutations(options: PerformGitHubMutati
         await runGit(options.cwd, ["push", "--set-upstream", remote, branch]);
         pushed = true;
       } catch (error) {
-        blockers.push(`Failed to push branch ${branch}: ${error instanceof Error ? error.message : String(error)}`);
+        const failure = classifyGitFailure(`pushing branch ${branch}`, error);
+        blockers.push(failure.summary);
+        blockers.push(failure.detail);
       }
     }
   }
