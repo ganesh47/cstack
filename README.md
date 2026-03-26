@@ -597,6 +597,7 @@ Deliver notes:
 - failed or timed-out build stages now become the root cause shown in both deliver summaries and parent intent inspection
 - when repo policy enables it, `deliver` can create or reuse a working branch, auto-commit the deliver change set, push it to `origin`, and create or update the GitHub pull request
 - `deliver` now evaluates GitHub-scoped engineering completion, including PR, checks, Actions, issue linkage, release evidence, and security gates when policy requires them
+- GitHub delivery failures stay root-cause-first: default-branch discovery failures and required-check watch failures are reported with their specific GitHub failure class, and the raw `gh` detail remains in the recorded blocker evidence
 - `deliver` fails closed when required GitHub evidence is missing or blocked
 - `deliver --release` switches the run into release-bearing mode and expects tag and release evidence
 - `deliver --issue <n>` links a specific GitHub issue into deliver evaluation

@@ -221,17 +221,28 @@ async function detectHeadSha(cwd: string): Promise<string> {
   }
 }
 
-async function detectDefaultBranch(ghCommand: string, cwd: string, repository: string | null): Promise<string | null> {
-  if (!repository) {
-    return null;
+async function resolveDefaultBranch(options: {
+  ghCommand: string;
+  cwd: string;
+  repository: string | null;
+}): Promise<{ name: string | null; failure?: { summary: string; detail: string } }> {
+  if (!options.repository) {
+    return {
+      name: null
+    };
   }
 
   try {
-    const { stdout } = await runGh(ghCommand, cwd, ["api", `repos/${repository}`]);
+    const { stdout } = await runGh(options.ghCommand, options.cwd, ["api", `repos/${options.repository}`]);
     const payload = JSON.parse(stdout) as { default_branch?: string };
-    return payload.default_branch ?? null;
-  } catch {
-    return null;
+    return {
+      name: payload.default_branch ?? null
+    };
+  } catch (error) {
+    return {
+      name: null,
+      failure: classifyGitHubFailure("resolving the repository default branch", error)
+    };
   }
 }
 
@@ -443,10 +454,11 @@ async function waitForRequiredChecks(options: {
   pullRequestNumber: number;
   timeoutSeconds: number;
   pollSeconds: number;
-}): Promise<{ polls: number; completed: boolean; summary: string }> {
+}): Promise<{ polls: number; completed: boolean; summary: string; blockers: string[] }> {
   const startedAt = Date.now();
   let polls = 0;
   let summary = "Required checks were not observed.";
+  const blockers: string[] = [];
 
   while ((Date.now() - startedAt) / 1000 < options.timeoutSeconds) {
     polls += 1;
@@ -476,21 +488,32 @@ async function waitForRequiredChecks(options: {
           return {
             polls,
             completed: true,
-            summary
+            summary,
+            blockers
           };
         }
       }
     } catch (error) {
-      summary = error instanceof Error ? error.message : String(error);
+      const failure = classifyGitHubFailure("watching required checks", error);
+      blockers.push(failure.summary);
+      blockers.push(failure.detail);
+      return {
+        polls,
+        completed: false,
+        summary: failure.summary,
+        blockers
+      };
     }
 
     await new Promise((resolve) => setTimeout(resolve, options.pollSeconds * 1000));
   }
 
+  blockers.push(`Timed out while waiting for required checks. Last observation: ${summary}`);
   return {
     polls,
     completed: false,
-    summary: `Timed out while waiting for required checks. Last observation: ${summary}`
+    summary: `Timed out while waiting for required checks. Last observation: ${summary}`,
+    blockers
   };
 }
 
@@ -1025,7 +1048,8 @@ export async function performGitHubDeliverMutations(options: PerformGitHubMutati
   const remote = await resolveRemoteForPush(options.cwd);
   const { repository } = await detectRepository(options.cwd, policy.repository);
   const ghCommand = policy.command || "gh";
-  const defaultBranch = await detectDefaultBranch(ghCommand, options.cwd, repository);
+  const defaultBranchInfo = await resolveDefaultBranch({ ghCommand, cwd: options.cwd, repository });
+  const defaultBranch = defaultBranchInfo.name;
   let branch = options.gitBranch;
   let createdBranch = false;
   let pushed = false;
@@ -1036,6 +1060,11 @@ export async function performGitHubDeliverMutations(options: PerformGitHubMutati
   let pullRequestUpdated = false;
   let pullRequestRecord: GitHubPullRequestRecord | null = null;
   const blockers: string[] = [];
+
+  if (!policy.pullRequestBase && repository && !defaultBranch && defaultBranchInfo.failure) {
+    blockers.push(defaultBranchInfo.failure.summary);
+    blockers.push(defaultBranchInfo.failure.detail);
+  }
 
   if (!enabled) {
     return {
@@ -1215,6 +1244,9 @@ export async function performGitHubDeliverMutations(options: PerformGitHubMutati
     checkPolls = watchResult.polls;
     checksCompleted = watchResult.completed;
     checksSummary = watchResult.summary;
+    if (watchResult.blockers.length > 0) {
+      blockers.push(...watchResult.blockers);
+    }
   }
 
   return {
@@ -1373,21 +1405,38 @@ export async function collectGitHubDeliveryEvidence(options: CollectGitHubDelive
   const ghCommand = policy.command || "gh";
   const { repository, remoteUrl } = await detectRepository(options.cwd, policy.repository);
   const headSha = await detectHeadSha(options.cwd);
-  const defaultBranch = await detectDefaultBranch(ghCommand, options.cwd, repository);
+  const defaultBranchInfo = await resolveDefaultBranch({ ghCommand, cwd: options.cwd, repository });
+  const defaultBranch = defaultBranchInfo.name;
+  const requiresDefaultBranch =
+    !policy.pullRequestBase &&
+    Boolean(
+      policy.pushBranch ||
+        policy.createPullRequest ||
+        policy.updatePullRequest ||
+        policy.prRequired ||
+        options.deliveryMode === "merge-ready"
+    );
+  const branchBlockers =
+    repository && options.gitBranch && headSha
+      ? requiresDefaultBranch && !defaultBranch && defaultBranchInfo.failure
+        ? [defaultBranchInfo.failure.summary, defaultBranchInfo.failure.detail]
+        : []
+      : ["GitHub repository, branch, or HEAD SHA could not be resolved."];
 
   const branchState = gate(
     true,
-    repository && options.gitBranch && headSha ? "ready" : "blocked",
-    repository && options.gitBranch && headSha
+    branchBlockers.length === 0 ? "ready" : "blocked",
+    branchBlockers.length === 0
       ? `Resolved ${repository} on branch ${options.gitBranch}.`
-      : "GitHub repository, branch, or HEAD SHA could not be resolved.",
+      : branchBlockers[0]!,
     {
       current: options.gitBranch,
       headSha,
       defaultBranch
     },
     repository ? "git" : "none",
-    repository && options.gitBranch && headSha ? [] : ["GitHub repository, branch, or HEAD SHA could not be resolved."]
+    branchBlockers,
+    branchBlockers.length > 1 ? branchBlockers[1] : undefined
   );
 
   const pullRequest = await detectPullRequest({
@@ -1515,6 +1564,7 @@ export async function collectGitHubDeliveryEvidence(options: CollectGitHubDelive
     },
     limitations: [
       remoteUrl ? `origin remote: ${remoteUrl}` : "origin remote could not be resolved",
+      ...(defaultBranchInfo.failure ? [`default branch lookup: ${defaultBranchInfo.failure.summary}`] : []),
       "GitHub evidence is based on current observable git and gh state; unavailable permissions are reported as blockers when the policy requires those checks."
     ]
   };

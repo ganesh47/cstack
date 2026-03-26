@@ -143,7 +143,8 @@ Continuation commands:
 
 - treat `.cstack/runs/<run-id>/` as the durable source of truth
 - update inspector behavior whenever you introduce a new artifact family
-- `build`, `ship`, and `deliver` require a clean worktree unless `--allow-dirty` or repo policy allows otherwise
+- `build` and `deliver` execute from isolated checkouts by default and ignore uncommitted local dirt unless `--allow-dirty` or repo policy opts into source-repo dirty execution
+- `ship` still requires a clean worktree unless `--allow-dirty` or repo policy allows otherwise
 - GitHub mutation and GitHub delivery evidence must remain reconstructable from artifacts alone
 
 ## CI And Validation
