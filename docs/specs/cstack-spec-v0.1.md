@@ -302,6 +302,8 @@ When repo policy enables GitHub mutation, the wrapper may:
 - create or update the pull request
 - watch required checks
 
+GitHub mutation and delivery summaries must stay root-cause-first. When the wrapper cannot resolve the repository default branch or cannot complete required-check watching, the recorded summary must preserve that exact GitHub failure class and retain the raw `gh` detail as blocker evidence rather than collapsing it into a generic delivery failure.
+
 The wrapper does not currently promise to:
 
 - merge pull requests automatically

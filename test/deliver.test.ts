@@ -6,6 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { chmodSync } from "node:fs";
 import { runDeliver } from "../src/commands/deliver.js";
+import { performGitHubDeliverMutations } from "../src/github.js";
 import { listRuns, readRun } from "../src/run.js";
 import type { RunRecord, StageLineage } from "../src/types.js";
 
@@ -756,5 +757,117 @@ describe("runDeliver", () => {
     expect(run.status).toBe("failed");
     expect(githubMutation.summary).toContain("GitHub failed while creating or updating the pull request.");
     expect(githubMutation.blockers.join("\n")).toContain("modified concurrently");
+  });
+
+  it("fails closed when the default branch cannot be resolved for PR mutation", async () => {
+    await writeGitHubFixture({
+      repoApiError: "HTTP 403: resource not accessible while resolving default branch",
+      issues: [
+        {
+          number: 906,
+          title: "Default branch discovery issue",
+          state: "CLOSED",
+          url: "https://github.com/ganesh47/cstack/issues/906",
+          closedAt: "2026-03-14T00:00:00.000Z"
+        }
+      ],
+      prChecks: [],
+      actions: [],
+      security: {
+        dependabot: [],
+        codeScanning: []
+      }
+    });
+
+    await fs.writeFile(path.join(repoDir, "delivery-change.txt"), "deliver change\n", "utf8");
+
+    const result = await performGitHubDeliverMutations({
+      cwd: repoDir,
+      gitBranch: "main",
+      runId: "test-default-branch",
+      input: "Deliver a fix that will hit default branch discovery failure for #906",
+      issueNumbers: [906],
+      policy: {
+        enabled: true,
+        command: path.resolve("test/fixtures/fake-gh.mjs"),
+        repository: "ganesh47/cstack",
+        pushBranch: true,
+        branchPrefix: "cstack",
+        commitChanges: true,
+        createPullRequest: true,
+        updatePullRequest: true,
+        watchChecks: true,
+        checkWatchTimeoutSeconds: 1,
+        checkWatchPollSeconds: 0
+      },
+      buildSummary: "Build completed.",
+      reviewVerdict: {
+        mode: "readiness",
+        status: "ready",
+        summary: "Ready",
+        findings: [],
+        recommendedActions: [],
+        acceptedSpecialists: [],
+        reportMarkdown: "# Review\n"
+      },
+      verificationRecord: {},
+      pullRequestBodyPath: path.join(repoDir, ".cstack", "pr-body.md")
+    });
+
+    expect(result.record.summary).toContain("GitHub authentication failed while resolving the repository default branch.");
+    expect(result.record.blockers.join("\n")).toContain("resource not accessible");
+    expect(result.record.branch.created).toBe(true);
+    expect(result.record.pullRequest.created).toBe(false);
+  });
+
+  it("surfaces required-check watch timeouts as GitHub mutation blockers", async () => {
+    await writeGitHubFixture({
+      repoView: {
+        nameWithOwner: "ganesh47/cstack",
+        defaultBranchRef: { name: "main" }
+      },
+      createdPullRequest: {
+        reviewDecision: "APPROVED",
+        mergeStateStatus: "CLEAN"
+      },
+      issues: [
+        {
+          number: 907,
+          title: "Checks timeout issue",
+          state: "CLOSED",
+          url: "https://github.com/ganesh47/cstack/issues/907",
+          closedAt: "2026-03-14T00:00:00.000Z"
+        }
+      ],
+      prChecks: [
+        { name: "deliver/test", bucket: "pending", state: "queued", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/10" },
+        { name: "deliver/typecheck", bucket: "pending", state: "in_progress", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/11" }
+      ],
+      actions: [
+        { databaseId: 1, workflowName: "Release", status: "completed", conclusion: "success", url: "https://github.com/ganesh47/cstack/actions/runs/1" }
+      ],
+      security: {
+        dependabot: [],
+        codeScanning: []
+      }
+    });
+
+    await runDeliver(repoDir, ["Deliver a fix that will hit required-check watch timeout for #907"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const githubMutation = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "github-mutation.json"), "utf8")) as {
+      summary: string;
+      blockers: string[];
+      checks: { watched: boolean; completed: boolean; summary: string };
+    };
+
+    expect(run.status).toBe("failed");
+    expect(githubMutation.checks.watched).toBe(true);
+    expect(githubMutation.checks.completed).toBe(false);
+    expect(githubMutation.checks.summary).toContain("Timed out while waiting for required checks.");
+    expect(githubMutation.summary).toContain("Timed out while waiting for required checks.");
+    expect(githubMutation.blockers.join("\n")).toContain("Waiting for 2 required checks.");
   });
 });
