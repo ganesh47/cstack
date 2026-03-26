@@ -1506,7 +1506,7 @@ describe("inspect", () => {
     await expect(handleInspectorCommand(repoDir, inspection, "show stage build")).resolves.toContain("root cause stage: build");
     await expect(handleInspectorCommand(repoDir, inspection, "show stage build")).resolves.toContain("transcript: missing");
     await expect(handleInspectorCommand(repoDir, inspection, "show child build")).resolves.toContain("build final:");
-    await expect(handleInspectorCommand(repoDir, inspection, "show child build")).resolves.toContain("Interactive codex exited with code 1");
+    await expect(handleInspectorCommand(repoDir, inspection, "show child build")).resolves.toContain("- exit code: 1");
     await expect(handleInspectorCommand(repoDir, inspection, "what remains")).resolves.toContain("child summary: interactive Codex exited with code 1");
   });
 

@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import readline from "node:readline/promises";
 import type {
   ArtifactEntry,
+  BuildFailureDiagnosisRecord,
   ChildRunInspection,
   BuildSessionRecord,
   BuildVerificationRecord,
@@ -125,6 +126,9 @@ function childRootFailedStage(child: ChildRunInspection): { name: StageName; not
 }
 
 function summarizeBuildRootCause(child: ChildRunInspection): string | null {
+  if (child.buildFailureDiagnosis?.summary) {
+    return child.buildFailureDiagnosis.summary;
+  }
   if (!child.buildSessionRecord && !child.buildFinalBody && !child.buildStderrTail) {
     return null;
   }
@@ -211,6 +215,19 @@ function renderBuildFailureEvidence(child: ChildRunInspection, cwd: string): str
   } else {
     lines.push("- verification: not recorded");
   }
+  if (child.buildFailureDiagnosis) {
+    lines.push(`- diagnosis: ${child.buildFailureDiagnosis.category}`);
+    lines.push(`- summary: ${child.buildFailureDiagnosis.summary}`);
+    lines.push(...child.buildFailureDiagnosis.recommendedActions.map((action) => `- action: ${action}`));
+    if (child.buildFailureDiagnosis.recoveryAttempts.length > 0) {
+      lines.push("- recovery attempts:");
+      lines.push(
+        ...child.buildFailureDiagnosis.recoveryAttempts.map(
+          (attempt) => `  [${attempt.kind}/${attempt.status}] ${attempt.label}: ${attempt.summary}`
+        )
+      );
+    }
+  }
   if (buildFinalPath) {
     lines.push(`- build final: ${buildFinalPath}`);
   } else if (buildStageDir) {
@@ -236,6 +253,9 @@ function extractInspectionBuildExitCode(inspection: RunInspection): number | nul
 }
 
 function summarizeInspectionBuildFailure(inspection: RunInspection): string | null {
+  if (inspection.buildFailureDiagnosis?.summary) {
+    return inspection.buildFailureDiagnosis.summary;
+  }
   if (!inspection.sessionRecord && !inspection.buildFinalBody && !inspection.buildStderrTail) {
     return null;
   }
@@ -288,6 +308,19 @@ function renderInspectionBuildFailureEvidence(inspection: RunInspection, cwd: st
     }
   }
   lines.push(`- verification: ${renderVerificationSummary(inspection.verificationRecord)}`);
+  if (inspection.buildFailureDiagnosis) {
+    lines.push(`- diagnosis: ${inspection.buildFailureDiagnosis.category}`);
+    lines.push(`- summary: ${inspection.buildFailureDiagnosis.summary}`);
+    lines.push(...inspection.buildFailureDiagnosis.recommendedActions.map((action) => `- action: ${action}`));
+    if (inspection.buildFailureDiagnosis.recoveryAttempts.length > 0) {
+      lines.push("- recovery attempts:");
+      lines.push(
+        ...inspection.buildFailureDiagnosis.recoveryAttempts.map(
+          (attempt) => `  [${attempt.kind}/${attempt.status}] ${attempt.label}: ${attempt.summary}`
+        )
+      );
+    }
+  }
   if (inspection.buildFinalPath) {
     lines.push(`- build final: ${path.relative(cwd, inspection.buildFinalPath)}`);
   }
@@ -315,6 +348,7 @@ async function loadChildRuns(cwd: string, stageLineage: StageLineage | null): Pr
         const runDir = runDirForId(cwd, childRunId);
         const buildStageDir = run.workflow === "deliver" ? path.join(runDir, "stages", "build") : run.workflow === "build" ? runDir : null;
         const buildSessionPath = buildStageDir ? path.join(buildStageDir, "session.json") : undefined;
+        const buildStderrPath = buildStageDir ? path.join(buildStageDir, "stderr.log") : run.stderrPath;
         const buildVerificationPath =
           run.workflow === "deliver"
             ? path.join(runDir, "stages", "build", "artifacts", "verification.json")
@@ -322,7 +356,13 @@ async function loadChildRuns(cwd: string, stageLineage: StageLineage | null): Pr
               ? path.join(runDir, "artifacts", "verification.json")
               : undefined;
         const buildFinalPath = buildStageDir ? path.join(buildStageDir, "final.md") : undefined;
-        const [finalBody, recentEvents, artifacts, childStageLineage, buildSessionRecord, buildVerificationRecord, buildFinalBody, buildStderrTail] =
+        const buildFailureDiagnosisPath =
+          run.workflow === "deliver"
+            ? path.join(runDir, "stages", "build", "artifacts", "failure-diagnosis.json")
+            : run.workflow === "build"
+              ? path.join(runDir, "artifacts", "failure-diagnosis.json")
+              : undefined;
+        const [finalBody, recentEvents, artifacts, childStageLineage, buildSessionRecord, buildVerificationRecord, buildFinalBody, buildStderrTail, buildFailureDiagnosis] =
           await Promise.all([
           fs.readFile(run.finalPath, "utf8").catch(() => ""),
           readRecentEvents(run.eventsPath),
@@ -331,7 +371,8 @@ async function loadChildRuns(cwd: string, stageLineage: StageLineage | null): Pr
           readJsonFile<BuildSessionRecord>(buildSessionPath ?? ""),
           readJsonFile<BuildVerificationRecord>(buildVerificationPath ?? ""),
           readTextFile(buildFinalPath),
-          tailTextFile(run.stderrPath)
+          tailTextFile(buildStderrPath),
+          readJsonFile<BuildFailureDiagnosisRecord>(buildFailureDiagnosisPath ?? "")
         ]);
         const childInspection: ChildRunInspection = {
           stageName: stage.name,
@@ -349,7 +390,8 @@ async function loadChildRuns(cwd: string, stageLineage: StageLineage | null): Pr
           buildFinalPath,
           buildTranscriptPath: buildSessionRecord?.transcriptPath,
           buildTranscriptAvailable: buildSessionRecord?.observability.transcriptObserved ?? false,
-          buildStderrTail
+          buildStderrTail,
+          buildFailureDiagnosis
         };
         return childInspection;
       } catch {
@@ -626,6 +668,8 @@ function uniqueLines(values: string[]): string[] {
 
 function collectMitigationActions(inspection: RunInspection): string[] {
   return uniqueLines([
+    ...(inspection.buildFailureDiagnosis?.recommendedActions ?? []),
+    ...inspection.childRuns.flatMap((child) => child.buildFailureDiagnosis?.recommendedActions ?? []),
     ...(inspection.deliverReviewVerdict?.recommendedActions ?? []),
     ...(inspection.deliverShipRecord?.nextActions ?? []),
     ...(inspection.deliverShipRecord?.unresolved ?? []),
@@ -857,6 +901,12 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
   const executionContextPath = path.join(runDir, "execution-context.json");
   const githubDeliveryPath = path.join(runDir, "artifacts", "github-delivery.json");
   const githubMutationPath = path.join(runDir, "artifacts", "github-mutation.json");
+  const buildFailureDiagnosisPath =
+    run.workflow === "deliver"
+      ? path.join(runDir, "stages", "build", "artifacts", "failure-diagnosis.json")
+      : run.workflow === "build"
+        ? path.join(runDir, "artifacts", "failure-diagnosis.json")
+        : "";
   const [
     recentEvents,
     routingPlan,
@@ -874,6 +924,7 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     githubDeliveryRecord,
     githubMutationRecord,
     executionContext,
+    buildFailureDiagnosis,
     artifacts
   ] = await Promise.all([
     readRecentEvents(run.eventsPath),
@@ -892,14 +943,16 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     readJsonFile<GitHubDeliveryRecord>(githubDeliveryPath),
     readJsonFile<GitHubMutationRecord>(githubMutationPath),
     readJsonFile<ExecutionContextRecord>(executionContextPath),
+    readJsonFile<BuildFailureDiagnosisRecord>(buildFailureDiagnosisPath),
     walkArtifacts(runDir)
   ]);
   const childRuns = await loadChildRuns(cwd, stageLineage);
   const buildFinalPath = run.workflow === "deliver" ? deliverBuildFinalPath : run.workflow === "build" ? run.finalPath : undefined;
+  const buildStderrPath = run.workflow === "deliver" ? path.join(runDir, "stages", "build", "stderr.log") : run.stderrPath;
   const [finalBody, buildFinalBody, buildStderrTail] = await Promise.all([
     readTextFile(run.finalPath),
     readTextFile(buildFinalPath),
-    tailTextFile(run.stderrPath)
+    tailTextFile(buildStderrPath)
   ]);
 
   return {
@@ -925,6 +978,7 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     buildFinalBody,
     buildFinalPath,
     buildStderrTail,
+    buildFailureDiagnosis,
     artifacts,
     childRuns
   };

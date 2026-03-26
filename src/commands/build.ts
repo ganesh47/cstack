@@ -92,6 +92,9 @@ export async function runBuild(cwd: string, args: string[] = []): Promise<string
   const transcriptPath = path.join(runDir, "artifacts", "build-transcript.log");
   const changeSummaryPath = path.join(runDir, "artifacts", "change-summary.md");
   const verificationPath = path.join(runDir, "artifacts", "verification.json");
+  const recoveryAttemptsPath = path.join(runDir, "artifacts", "recovery-attempts.json");
+  const recoverySummaryPath = path.join(runDir, "artifacts", "recovery-summary.md");
+  const failureDiagnosisPath = path.join(runDir, "artifacts", "failure-diagnosis.json");
   const [gitBranch, codexVersion] = await Promise.all([
     detectGitBranch(cwd),
     detectCodexVersion(cwd, config.codex.command)
@@ -162,7 +165,10 @@ export async function runBuild(cwd: string, args: string[] = []): Promise<string
         sessionPath,
         transcriptPath,
         changeSummaryPath,
-        verificationPath
+        verificationPath,
+        recoveryAttemptsPath,
+        recoverySummaryPath,
+        failureDiagnosisPath
       },
       requestedMode,
       verificationCommands,
@@ -182,9 +188,12 @@ export async function runBuild(cwd: string, args: string[] = []): Promise<string
     }
     runRecord.inputs.observedMode = execution.observedMode;
     if (execution.result.code !== 0) {
-      runRecord.error = execution.result.timedOut
-        ? `build timed out after ${execution.result.timeoutSeconds}s`
-        : `build exited with code ${execution.result.code}${execution.result.signal ? ` (${execution.result.signal})` : ""}`;
+      runRecord.lastActivity = execution.failureDiagnosis?.summary ?? runRecord.lastActivity;
+      runRecord.error =
+        execution.failureDiagnosis?.summary ??
+        (execution.result.timedOut
+          ? `build timed out after ${execution.result.timeoutSeconds}s`
+          : `build exited with code ${execution.result.code}${execution.result.signal ? ` (${execution.result.signal})` : ""}`);
     }
     await writeRunRecord(runDir, runRecord);
 
@@ -209,6 +218,8 @@ export async function runBuild(cwd: string, args: string[] = []): Promise<string
         `  ${path.relative(cwd, finalPath)}`,
         `  ${path.relative(cwd, changeSummaryPath)}`,
         `  ${path.relative(cwd, verificationPath)}`,
+        `  ${path.relative(cwd, recoveryAttemptsPath)}`,
+        `  ${path.relative(cwd, recoverySummaryPath)}`,
         `  ${path.relative(cwd, sessionPath)}`,
         linkedContext ? `Linked run: ${linkedContext.run.id}` : undefined,
         `  ${path.relative(cwd, path.join(runDir, "run.json"))}`

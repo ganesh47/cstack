@@ -104,6 +104,7 @@ describe("runBuild", () => {
   afterEach(async () => {
     delete process.env.FAKE_CODEX_DELAY_MS;
     delete process.env.CSTACK_FORCE_CLONE_FALLBACK;
+    delete process.env.FAKE_CODEX_EARLY_EXIT_BUILD;
     await fs.rm(repoDir, { recursive: true, force: true });
     await fs.rm(remoteDir, { recursive: true, force: true });
   });
@@ -248,8 +249,35 @@ describe("runBuild", () => {
     };
 
     expect(run.status).toBe("failed");
-    expect(run.error).toContain("build timed out after 1s");
+    expect(run.error).toContain("timed out after 1s");
     expect(session.observability.timedOut).toBe(true);
     expect(session.observability.timeoutSeconds).toBe(1);
+  });
+
+  it("records bounded recovery attempts and a richer diagnosis for opaque early build exits", async () => {
+    process.env.FAKE_CODEX_EARLY_EXIT_BUILD = "1";
+
+    await expect(runBuild(repoDir, ["--exec", "Implement the queued billing retry cleanup"])).rejects.toThrow(
+      "usable session"
+    );
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const diagnosis = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "failure-diagnosis.json"), "utf8")) as {
+      category: string;
+      summary: string;
+      recoveryAttempts: Array<{ kind: string; status: string; label: string }>;
+      recommendedActions: string[];
+    };
+    const recoverySummary = await fs.readFile(path.join(runDir, "artifacts", "recovery-summary.md"), "utf8");
+
+    expect(run.status).toBe("failed");
+    expect(run.error).toContain("usable session");
+    expect(diagnosis.category).toBe("codex-process-failure");
+    expect(diagnosis.recoveryAttempts.filter((attempt) => attempt.kind === "codex-run")).toHaveLength(2);
+    expect(diagnosis.recoveryAttempts.some((attempt) => attempt.status === "retrying")).toBe(true);
+    expect(diagnosis.recommendedActions.join("\n")).toContain("Inspect stderr");
+    expect(recoverySummary).toContain("codex build attempt 2");
   });
 });

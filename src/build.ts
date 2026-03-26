@@ -7,6 +7,9 @@ import type { CodexRunResult } from "./codex.js";
 import { buildBuildPrompt } from "./prompt.js";
 import { readRun } from "./run.js";
 import type {
+  BuildFailureCategory,
+  BuildFailureDiagnosisRecord,
+  BuildRecoveryAttemptRecord,
   BuildSessionRecord,
   BuildVerificationCommandRecord,
   BuildVerificationRecord,
@@ -18,6 +21,17 @@ import type {
 const execFileAsync = promisify(execFile);
 const INTERNAL_RUN_ARTIFACT_PREFIX = ".cstack/runs/";
 const GIT_STATUS_PORCELAIN_ARGS = ["status", "--porcelain", "--untracked-files=all"] as const;
+const TRANSIENT_FAILURE_PATTERNS = [
+  /eai_again/i,
+  /timed?\s*out/i,
+  /etimedout/i,
+  /econreset/i,
+  /temporary failure/i,
+  /network is unreachable/i,
+  /registry/i,
+  /service unavailable/i,
+  /\b5\d\d\b/
+] as const;
 
 function isInternalRunArtifactPath(filePath: string): boolean {
   const normalized = filePath.replace(/\\/g, "/").replace(/^\.?\//, "");
@@ -42,6 +56,9 @@ export interface BuildPaths {
   transcriptPath: string;
   changeSummaryPath: string;
   verificationPath: string;
+  recoveryAttemptsPath: string;
+  recoverySummaryPath: string;
+  failureDiagnosisPath: string;
 }
 
 export interface BuildExecutionOptions {
@@ -64,6 +81,312 @@ export interface BuildExecutionResult {
   observedMode: WorkflowMode;
   sessionRecord: BuildSessionRecord;
   verificationRecord: BuildVerificationRecord;
+  recoveryAttempts: BuildRecoveryAttemptRecord[];
+  failureDiagnosis: BuildFailureDiagnosisRecord | null;
+}
+
+interface BuildBootstrapAction {
+  label: string;
+  cwd: string;
+  command: string;
+  rationale: string;
+}
+
+interface BuildEnvironmentAssessment {
+  summary: string;
+  requiredTools: string[];
+  bootstrapActions: BuildBootstrapAction[];
+  evidence: string[];
+  notes: string[];
+}
+
+interface CodexAttemptOutcome {
+  result: CodexRunResult;
+  observedMode: WorkflowMode;
+  fallbackReason?: string;
+  notes: string[];
+  finalBody: string;
+  transcriptBody: string;
+  stderrTail: string;
+}
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function truncateLine(value: string, max = 220): string {
+  const trimmed = value.replace(/\s+/g, " ").trim();
+  if (!trimmed) {
+    return "";
+  }
+  return trimmed.length > max ? `${trimmed.slice(0, max - 3)}...` : trimmed;
+}
+
+function firstMeaningfulErrorLine(stderrTail: string): string {
+  return (
+    stderrTail
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line && !/^session id:/i.test(line)) ?? ""
+  );
+}
+
+function uniqueLines(values: string[]): string[] {
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const value of values.map((entry) => truncateLine(entry)).filter(Boolean)) {
+    if (seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    lines.push(value);
+  }
+  return lines;
+}
+
+function isTransientFailure(output: string): boolean {
+  return TRANSIENT_FAILURE_PATTERNS.some((pattern) => pattern.test(output));
+}
+
+function buildAttemptRecord(input: {
+  kind: BuildRecoveryAttemptRecord["kind"];
+  label: string;
+  status: BuildRecoveryAttemptRecord["status"];
+  startedAt: string;
+  cwd: string;
+  summary: string;
+  command?: string;
+  exitCode?: number;
+  evidence?: string[];
+}): BuildRecoveryAttemptRecord {
+  return {
+    kind: input.kind,
+    label: input.label,
+    status: input.status,
+    startedAt: input.startedAt,
+    endedAt: nowIso(),
+    cwd: input.cwd,
+    summary: input.summary,
+    ...(input.command ? { command: input.command } : {}),
+    ...(typeof input.exitCode === "number" ? { exitCode: input.exitCode } : {}),
+    ...(input.evidence && input.evidence.length > 0 ? { evidence: uniqueLines(input.evidence) } : {})
+  };
+}
+
+function renderRecoverySummary(diagnosis: BuildFailureDiagnosisRecord | null, attempts: BuildRecoveryAttemptRecord[]): string {
+  return [
+    "# Build Recovery Summary",
+    "",
+    diagnosis ? `## Diagnosis\n- category: ${diagnosis.category}\n- summary: ${diagnosis.summary}` : "## Diagnosis\n- Build completed without recovery blockers.",
+    ...(diagnosis?.recommendedActions?.length
+      ? ["", "## Recommended actions", ...diagnosis.recommendedActions.map((action) => `- ${action}`)]
+      : []),
+    "",
+    "## Attempts",
+    ...(attempts.length > 0
+      ? attempts.map((attempt) =>
+          `- [${attempt.kind}/${attempt.status}] ${attempt.label}: ${attempt.summary}${attempt.command ? ` (${attempt.command})` : ""}`
+        )
+      : ["- No recovery or bootstrap attempts were recorded."])
+  ].join("\n") + "\n";
+}
+
+async function readPackageManager(cwd: string): Promise<string | null> {
+  try {
+    const packageJson = JSON.parse(await fs.readFile(path.join(cwd, "package.json"), "utf8")) as { packageManager?: string };
+    return packageJson.packageManager ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function findFiles(root: string, names: Set<string>, maxDepth = 4, current = root, depth = 0): Promise<string[]> {
+  if (depth > maxDepth) {
+    return [];
+  }
+
+  let entries;
+  try {
+    entries = await fs.readdir(current, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const matches: string[] = [];
+  for (const entry of entries) {
+    if (entry.name === ".git" || entry.name === ".cstack" || entry.name === "node_modules" || entry.name === ".venv") {
+      continue;
+    }
+    const absolute = path.join(current, entry.name);
+    if (entry.isDirectory()) {
+      matches.push(...(await findFiles(root, names, maxDepth, absolute, depth + 1)));
+      continue;
+    }
+    if (names.has(entry.name)) {
+      matches.push(absolute);
+    }
+  }
+  return matches;
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function commandExists(command: string, cwd: string): Promise<boolean> {
+  try {
+    await execFileAsync("bash", ["-lc", `command -v ${command}`], { cwd });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveBuildEnvironmentAssessment(cwd: string): Promise<BuildEnvironmentAssessment> {
+  const packageManager = await readPackageManager(cwd);
+  const foundFiles = await findFiles(cwd, new Set(["pnpm-lock.yaml", "pnpm-workspace.yaml", "package.json", "pyproject.toml", "uv.lock", "pom.xml"]));
+  const evidence: string[] = [];
+  const notes: string[] = [];
+  const requiredTools = new Set<string>();
+  const bootstrapActions: BuildBootstrapAction[] = [];
+
+  const hasRootNodeWorkspace =
+    (await pathExists(path.join(cwd, "package.json"))) ||
+    (await pathExists(path.join(cwd, "pnpm-lock.yaml"))) ||
+    (await pathExists(path.join(cwd, "pnpm-workspace.yaml")));
+  if (hasRootNodeWorkspace) {
+    requiredTools.add("node");
+    evidence.push("Detected a Node workspace from package.json / pnpm lockfiles.");
+    if ((packageManager ?? "").startsWith("pnpm@") || (await pathExists(path.join(cwd, "pnpm-lock.yaml")))) {
+      requiredTools.add("pnpm");
+      requiredTools.add("corepack");
+      evidence.push(`Root package manager: ${packageManager ?? "pnpm (inferred from lockfile)"}.`);
+      if (!(await pathExists(path.join(cwd, "node_modules")))) {
+        bootstrapActions.push({
+          label: "bootstrap root pnpm workspace",
+          cwd,
+          command: "corepack pnpm install --frozen-lockfile",
+          rationale: "The workspace uses pnpm and has not been bootstrapped yet."
+        });
+      }
+    }
+  }
+
+  const pyprojectDirs = Array.from(
+    new Set(
+      foundFiles
+        .filter((filePath) => path.basename(filePath) === "pyproject.toml")
+        .map((filePath) => path.dirname(filePath))
+        .filter((dir) => foundFiles.some((candidate) => path.dirname(candidate) === dir && path.basename(candidate) === "uv.lock"))
+    )
+  ).slice(0, 3);
+  if (pyprojectDirs.length > 0) {
+    requiredTools.add("uv");
+    evidence.push(`Detected ${pyprojectDirs.length} uv-managed Python workspace${pyprojectDirs.length > 1 ? "s" : ""}.`);
+    for (const dir of pyprojectDirs) {
+      if (!(await pathExists(path.join(dir, ".venv")))) {
+        bootstrapActions.push({
+          label: `bootstrap uv environment (${path.relative(cwd, dir) || "."})`,
+          cwd: dir,
+          command: "uv sync --frozen",
+          rationale: "The Python workspace uses uv and does not have a local environment yet."
+        });
+      }
+    }
+  }
+
+  const pomDirs = Array.from(
+    new Set(foundFiles.filter((filePath) => path.basename(filePath) === "pom.xml").map((filePath) => path.dirname(filePath)))
+  );
+  if (pomDirs.length > 0) {
+    requiredTools.add("mvn");
+    evidence.push(`Detected ${pomDirs.length} Maven module${pomDirs.length > 1 ? "s" : ""}.`);
+    notes.push("Maven support is inventory-first in build recovery; cstack records the requirement but does not pre-resolve the full dependency tree.");
+  }
+
+  const toolChecks = await Promise.all(
+    [...requiredTools].map(async (tool) => ({ tool, available: await commandExists(tool, cwd) }))
+  );
+  for (const check of toolChecks) {
+    if (check.available) {
+      evidence.push(`Tool available in execution checkout: ${check.tool}`);
+    } else {
+      notes.push(`Required tool not currently available in execution checkout: ${check.tool}`);
+    }
+  }
+
+  return {
+    summary:
+      bootstrapActions.length > 0
+        ? `Prepared ${bootstrapActions.length} bootstrap action${bootstrapActions.length > 1 ? "s" : ""} for the execution checkout.`
+        : "No pre-build bootstrap actions were required for the execution checkout.",
+    requiredTools: [...requiredTools],
+    bootstrapActions,
+    evidence: uniqueLines(evidence),
+    notes: uniqueLines(notes)
+  };
+}
+
+async function runBootstrapAction(action: BuildBootstrapAction): Promise<BuildRecoveryAttemptRecord> {
+  const startedAt = nowIso();
+  const shell = process.env.SHELL || "/bin/bash";
+  try {
+    const { stdout, stderr } = await execFileAsync(shell, ["-lc", action.command], {
+      cwd: action.cwd,
+      maxBuffer: 20 * 1024 * 1024
+    });
+    return buildAttemptRecord({
+      kind: "bootstrap",
+      label: action.label,
+      status: "completed",
+      startedAt,
+      cwd: action.cwd,
+      command: action.command,
+      summary: `${action.rationale} Bootstrap completed successfully.`,
+      evidence: [stdout, stderr].filter(Boolean)
+    });
+  } catch (error) {
+    const execError = error as NodeJS.ErrnoException & { stdout?: string; stderr?: string; code?: number };
+    const combined = `${execError.stderr ?? ""}\n${execError.stdout ?? ""}\n${execError.message ?? ""}`;
+    return buildAttemptRecord({
+      kind: "bootstrap",
+      label: action.label,
+      status: "failed",
+      startedAt,
+      cwd: action.cwd,
+      command: action.command,
+      exitCode: typeof execError.code === "number" ? execError.code : 1,
+      summary: isTransientFailure(combined)
+        ? `${action.rationale} Bootstrap failed because of a likely transient dependency or network issue.`
+        : `${action.rationale} Bootstrap failed before build could start.`,
+      evidence: [combined]
+    });
+  }
+}
+
+export async function resolveLinkedBuildContext(cwd: string, runId: string): Promise<LinkedBuildContext> {
+  const run = await readRun(cwd, runId);
+  for (const candidate of resolveCandidateArtifacts(run)) {
+    try {
+      const artifactBody = await fs.readFile(candidate, "utf8");
+      return {
+        run,
+        artifactPath: candidate,
+        artifactBody
+      };
+    } catch {}
+  }
+
+  return {
+    run,
+    artifactPath: null,
+    artifactBody: ""
+  };
 }
 
 function resolveCandidateArtifacts(run: RunRecord): string[] {
@@ -90,26 +413,6 @@ function resolveCandidateArtifacts(run: RunRecord): string[] {
     default:
       return [run.finalPath];
   }
-}
-
-export async function resolveLinkedBuildContext(cwd: string, runId: string): Promise<LinkedBuildContext> {
-  const run = await readRun(cwd, runId);
-  for (const candidate of resolveCandidateArtifacts(run)) {
-    try {
-      const artifactBody = await fs.readFile(candidate, "utf8");
-      return {
-        run,
-        artifactPath: candidate,
-        artifactBody
-      };
-    } catch {}
-  }
-
-  return {
-    run,
-    artifactPath: null,
-    artifactBody: ""
-  };
 }
 
 export async function detectDirtyWorktree(cwd: string): Promise<boolean> {
@@ -168,6 +471,124 @@ async function readTextFile(filePath: string): Promise<string> {
   }
 }
 
+async function tailText(filePath: string, maxLines = 24): Promise<string> {
+  const body = await readTextFile(filePath);
+  if (!body.trim()) {
+    return "";
+  }
+  return body
+    .trim()
+    .split("\n")
+    .slice(-maxLines)
+    .join("\n");
+}
+
+function renderVerificationSummary(record: BuildVerificationRecord): string {
+  if (record.status === "not-run") {
+    return record.notes ?? "Verification did not run.";
+  }
+  if (record.status === "failed") {
+    const failed = record.results.find((result) => result.status === "failed");
+    if (failed) {
+      return `${failed.command} failed with exit ${failed.exitCode}.`;
+    }
+  }
+  return "Verification passed.";
+}
+
+function classifyBuildFailure(options: {
+  result: CodexRunResult;
+  sessionRecord: BuildSessionRecord;
+  verificationRecord: BuildVerificationRecord;
+  finalBody: string;
+  stderrTail: string;
+  assessment: BuildEnvironmentAssessment;
+  recoveryAttempts: BuildRecoveryAttemptRecord[];
+}): BuildFailureDiagnosisRecord | null {
+  if (options.result.code === 0 && options.verificationRecord.status !== "failed") {
+    return null;
+  }
+
+  const evidence = uniqueLines([
+    ...options.assessment.evidence,
+    ...options.assessment.notes,
+    ...options.recoveryAttempts.flatMap((attempt) => attempt.evidence ?? []),
+    options.stderrTail,
+    options.finalBody
+  ]);
+  const recommendedActions: string[] = [];
+  let category: BuildFailureCategory = "unknown";
+  let summary = "Build failed for an unspecified reason.";
+  let detail = "cstack could not recover a higher-confidence cause from the build artifacts.";
+
+  const failedBootstrap = [...options.recoveryAttempts].reverse().find((attempt) => attempt.kind === "bootstrap" && attempt.status === "failed");
+  if (options.result.timedOut && options.result.timeoutSeconds) {
+    category = "timeout";
+    summary = `Build timed out after ${options.result.timeoutSeconds}s before the implementation stage completed.`;
+    detail = "The Codex-backed build exceeded the configured stage timeout, so downstream deliver stages were blocked.";
+    recommendedActions.push("Increase the build timeout or narrow the requested implementation scope before rerunning.");
+  } else if (failedBootstrap) {
+    const combinedEvidence = (failedBootstrap.evidence ?? []).join("\n");
+    category = isTransientFailure(combinedEvidence) ? "transient-external" : "bootstrap-failure";
+    summary = failedBootstrap.summary;
+    detail = `cstack attempted ${failedBootstrap.label} before rerunning build, but bootstrap did not complete successfully.`;
+    recommendedActions.push("Inspect the recovery attempts artifact to see which bootstrap command failed.");
+    if (category === "transient-external") {
+      recommendedActions.push("Retry once network or registry access is stable.");
+    }
+  } else if (options.verificationRecord.status === "failed") {
+    category = "verification-failure";
+    summary = `Build completed, but verification failed: ${renderVerificationSummary(options.verificationRecord)}`;
+    detail = "The implementation stage produced output, but the requested verification commands did not all pass.";
+    recommendedActions.push("Fix the failing verification command and rerun build.");
+  } else if (
+    !options.sessionRecord.observability.sessionIdObserved &&
+    !options.sessionRecord.observability.transcriptObserved &&
+    !options.sessionRecord.observability.finalArtifactObserved
+  ) {
+    category = "codex-process-failure";
+    summary =
+      options.assessment.bootstrapActions.length > 0
+        ? `Build failed before Codex produced a usable session, even after ${options.assessment.bootstrapActions.length} bounded environment preparation step${options.assessment.bootstrapActions.length > 1 ? "s" : ""}.`
+        : "Build failed because Codex exited before producing a usable session or final artifact.";
+    detail =
+      "The Codex process terminated before cstack observed a session id, transcript, or usable final artifact, so the wrapper could not recover a repo-level build failure from the generated output.";
+    recommendedActions.push("Inspect stderr and the recovery attempts artifact to confirm whether the failure is environmental or inside Codex itself.");
+    recommendedActions.push("Retry with a narrower remediation prompt if the repo scope is very large.");
+  } else if (/command not found|not found/i.test(options.stderrTail)) {
+    category = "missing-tool";
+    summary = "Build failed because a required tool was missing during execution.";
+    detail = `The captured build stderr suggests a missing command while operating on a repo that requires: ${options.assessment.requiredTools.join(", ") || "unknown tools"}.`;
+    recommendedActions.push("Install or expose the missing tool in the execution environment, then rerun build.");
+  } else {
+    const firstErrorLine = firstMeaningfulErrorLine(options.stderrTail);
+    category = "build-script-failure";
+    summary = firstErrorLine
+      ? `Build failed after Codex started work: ${truncateLine(firstErrorLine)}`
+      : `Build failed with exit code ${options.result.code}${options.result.signal ? ` (${options.result.signal})` : ""}.`;
+    detail = "The failure appears to be inside the repo build or implementation flow rather than an immediately recoverable environment bootstrap problem.";
+    recommendedActions.push("Inspect the build final summary and stderr tail for the concrete repo-level failure.");
+  }
+
+  if (options.assessment.requiredTools.length > 0) {
+    recommendedActions.push(`Required tools observed for this repo: ${options.assessment.requiredTools.join(", ")}.`);
+  }
+
+  return {
+    category,
+    summary,
+    detail,
+    evidence,
+    recommendedActions: uniqueLines(recommendedActions),
+    recoveryAttempts: options.recoveryAttempts,
+    ...(typeof options.result.code === "number" ? { exitCode: options.result.code } : {}),
+    ...(options.result.signal ? { signal: options.result.signal } : {}),
+    ...(options.result.timedOut ? { timedOut: true } : {}),
+    ...(options.result.timeoutSeconds ? { timeoutSeconds: options.result.timeoutSeconds } : {}),
+    verificationStatus: options.verificationRecord.status
+  };
+}
+
 function buildFallbackFinalBody(options: {
   input: string;
   requestedMode: WorkflowMode;
@@ -177,6 +598,8 @@ function buildFallbackFinalBody(options: {
   verificationRecord: BuildVerificationRecord;
   transcriptPath: string;
   notes: string[];
+  diagnosis: BuildFailureDiagnosisRecord | null;
+  recoveryAttempts: BuildRecoveryAttemptRecord[];
 }): string {
   const linked = options.linkedContext;
   const relativeTranscript = linked ? options.transcriptPath : options.transcriptPath;
@@ -207,6 +630,16 @@ function buildFallbackFinalBody(options: {
         )
       : ["- no verification results recorded"]),
     "",
+    "## Recovery",
+    ...(options.recoveryAttempts.length > 0
+      ? options.recoveryAttempts.map((attempt) => `- [${attempt.kind}/${attempt.status}] ${attempt.label}: ${attempt.summary}`)
+      : ["- no bounded recovery attempts were recorded"]),
+    "",
+    "## Diagnosis",
+    ...(options.diagnosis
+      ? [`- category: ${options.diagnosis.category}`, `- summary: ${options.diagnosis.summary}`, `- detail: ${options.diagnosis.detail}`]
+      : ["- Build completed without a classified failure diagnosis."]),
+    "",
     "## Notes",
     ...(options.notes.length > 0 ? options.notes.map((note) => `- ${note}`) : ["- Codex did not leave a final markdown summary."])
   ].join("\n") + "\n";
@@ -216,13 +649,16 @@ async function runVerificationCommands(
   cwd: string,
   runDir: string,
   commands: string[]
-): Promise<BuildVerificationRecord> {
+): Promise<{ record: BuildVerificationRecord; attempts: BuildRecoveryAttemptRecord[] }> {
   if (commands.length === 0) {
     return {
-      status: "not-run",
-      requestedCommands: [],
-      results: [],
-      notes: "No verification commands were requested."
+      record: {
+        status: "not-run",
+        requestedCommands: [],
+        results: [],
+        notes: "No verification commands were requested."
+      },
+      attempts: []
     };
   }
 
@@ -230,12 +666,13 @@ async function runVerificationCommands(
   await fs.mkdir(verificationDir, { recursive: true });
   const shell = process.env.SHELL || "/bin/sh";
   const results: BuildVerificationCommandRecord[] = [];
+  const attempts: BuildRecoveryAttemptRecord[] = [];
 
   for (let index = 0; index < commands.length; index += 1) {
     const command = commands[index]!;
     const stdoutPath = path.join(verificationDir, `${index + 1}.stdout.log`);
     const stderrPath = path.join(verificationDir, `${index + 1}.stderr.log`);
-    const startedAt = Date.now();
+    const startedAt = nowIso();
     try {
       const { stdout, stderr } = await execFileAsync(shell, ["-lc", command], { cwd, maxBuffer: 10 * 1024 * 1024 });
       await fs.writeFile(stdoutPath, stdout, "utf8");
@@ -244,76 +681,95 @@ async function runVerificationCommands(
         command,
         exitCode: 0,
         status: "passed",
-        durationMs: Date.now() - startedAt,
+        durationMs: Date.now() - Date.parse(startedAt),
         stdoutPath,
         stderrPath
       });
+      attempts.push(
+        buildAttemptRecord({
+          kind: "verification",
+          label: `verification ${index + 1}`,
+          status: "completed",
+          startedAt,
+          cwd,
+          command,
+          summary: `Verification command passed: ${command}`,
+          evidence: [stdout, stderr]
+        })
+      );
     } catch (error) {
       const execError = error as NodeJS.ErrnoException & { stdout?: string; stderr?: string; code?: number };
       await fs.writeFile(stdoutPath, execError.stdout ?? "", "utf8");
       await fs.writeFile(stderrPath, execError.stderr ?? execError.message, "utf8");
+      const exitCode = typeof execError.code === "number" ? execError.code : 1;
       results.push({
         command,
-        exitCode: typeof execError.code === "number" ? execError.code : 1,
+        exitCode,
         status: "failed",
-        durationMs: Date.now() - startedAt,
+        durationMs: Date.now() - Date.parse(startedAt),
         stdoutPath,
         stderrPath
       });
+      attempts.push(
+        buildAttemptRecord({
+          kind: "verification",
+          label: `verification ${index + 1}`,
+          status: "failed",
+          startedAt,
+          cwd,
+          command,
+          exitCode,
+          summary: `Verification command failed: ${command}`,
+          evidence: [execError.stdout ?? "", execError.stderr ?? execError.message]
+        })
+      );
     }
   }
 
   return {
-    status: results.every((result) => result.status === "passed") ? "passed" : "failed",
-    requestedCommands: commands,
-    results
+    record: {
+      status: results.every((result) => result.status === "passed") ? "passed" : "failed",
+      requestedCommands: commands,
+      results
+    },
+    attempts
   };
 }
 
 async function writeJson(filePath: string, value: unknown): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
-export async function runBuildExecution(options: BuildExecutionOptions): Promise<BuildExecutionResult> {
-  const executionCwd = options.executionCwd ?? options.cwd;
-  const dirtyWorktree = await detectDirtyWorktree(executionCwd);
-  const notes: string[] = [];
-  const requestedMode = options.requestedMode;
-  let observedMode: WorkflowMode = requestedMode;
+async function runCodexBuildAttempt(options: {
+  executionCwd: string;
+  requestedMode: WorkflowMode;
+  promptBuilder: (mode: WorkflowMode) => Promise<{ prompt: string; context: string }>;
+  paths: BuildPaths;
+  config: CstackConfig;
+  runId: string;
+  timeoutSeconds?: number;
+}): Promise<CodexAttemptOutcome> {
+  let observedMode = options.requestedMode;
   let fallbackReason: string | undefined;
+  const notes: string[] = [];
 
-  if (requestedMode === "interactive" && !canUseInteractiveBuild()) {
+  if (observedMode === "interactive" && !canUseInteractiveBuild()) {
     observedMode = "exec";
     fallbackReason = "Interactive build requested but no TTY was available, so cstack fell back to exec mode.";
     notes.push(fallbackReason);
   }
 
-  const buildPrompt = async (mode: WorkflowMode) =>
-    buildBuildPrompt({
-      cwd: executionCwd,
-      input: options.input,
-      config: options.config,
-      mode,
-      finalArtifactPath: options.paths.finalPath,
-      verificationCommands: options.verificationCommands,
-      dirtyWorktree,
-      ...(options.linkedContext?.artifactPath ? { linkedArtifactPath: options.linkedContext.artifactPath } : {}),
-      ...(options.linkedContext?.artifactBody ? { linkedArtifactBody: options.linkedContext.artifactBody } : {}),
-      ...(options.linkedContext?.run.id ? { linkedRunId: options.linkedContext.run.id } : {}),
-      ...(options.linkedContext?.run.workflow ? { linkedWorkflow: options.linkedContext.run.workflow } : {})
-    });
-
-  let { prompt, context } = await buildPrompt(observedMode);
+  let { prompt, context } = await options.promptBuilder(observedMode);
   await fs.writeFile(options.paths.promptPath, prompt, "utf8");
   await fs.writeFile(options.paths.contextPath, `${context}\n`, "utf8");
 
-  const startedAt = new Date().toISOString();
   let result: CodexRunResult;
 
   if (observedMode === "interactive") {
     try {
       result = await runCodexInteractive({
-        cwd: executionCwd,
+        cwd: options.executionCwd,
         workflow: "build",
         runId: options.runId,
         prompt,
@@ -331,11 +787,11 @@ export async function runBuildExecution(options: BuildExecutionOptions): Promise
       observedMode = "exec";
       fallbackReason = "Interactive build launch failed because the local `script` utility was unavailable; cstack fell back to exec mode.";
       notes.push(fallbackReason);
-      ({ prompt, context } = await buildPrompt(observedMode));
+      ({ prompt, context } = await options.promptBuilder(observedMode));
       await fs.writeFile(options.paths.promptPath, prompt, "utf8");
       await fs.writeFile(options.paths.contextPath, `${context}\n`, "utf8");
       result = await runCodexExec({
-        cwd: executionCwd,
+        cwd: options.executionCwd,
         workflow: "build",
         runId: options.runId,
         prompt,
@@ -349,7 +805,7 @@ export async function runBuildExecution(options: BuildExecutionOptions): Promise
     }
   } else {
     result = await runCodexExec({
-      cwd: executionCwd,
+      cwd: options.executionCwd,
       workflow: "build",
       runId: options.runId,
       prompt,
@@ -362,67 +818,223 @@ export async function runBuildExecution(options: BuildExecutionOptions): Promise
     });
   }
 
-  const verificationRecord: BuildVerificationRecord =
-    result.code === 0
+  return {
+    result,
+    observedMode,
+    ...(fallbackReason ? { fallbackReason } : {}),
+    notes,
+    finalBody: await readTextFile(options.paths.finalPath),
+    transcriptBody: observedMode === "interactive" ? await readTextFile(options.paths.transcriptPath) : "",
+    stderrTail: await tailText(options.paths.stderrPath)
+  };
+}
+
+function shouldRetryCodexAttempt(outcome: CodexAttemptOutcome, attemptNumber: number): boolean {
+  if (attemptNumber >= 2 || outcome.result.code === 0 || outcome.result.timedOut) {
+    return false;
+  }
+  if (outcome.result.sessionId) {
+    return false;
+  }
+  if (outcome.transcriptBody.trim()) {
+    return false;
+  }
+  const finalBody = outcome.finalBody.trim();
+  const stderrTail = outcome.stderrTail.trim();
+  if (!finalBody && !stderrTail) {
+    return true;
+  }
+  if (!finalBody && /interactive codex exited with code/i.test(stderrTail)) {
+    return true;
+  }
+  if (/interactive codex exited with code/i.test(stderrTail) && /no build transcript|no final markdown/i.test(finalBody)) {
+    return true;
+  }
+  return false;
+}
+
+export async function runBuildExecution(options: BuildExecutionOptions): Promise<BuildExecutionResult> {
+  const executionCwd = options.executionCwd ?? options.cwd;
+  const dirtyWorktree = await detectDirtyWorktree(executionCwd);
+  const requestedMode = options.requestedMode;
+  const startedAt = nowIso();
+  const recoveryAttempts: BuildRecoveryAttemptRecord[] = [];
+
+  const assessment = await resolveBuildEnvironmentAssessment(executionCwd);
+  recoveryAttempts.push(
+    buildAttemptRecord({
+      kind: "assessment",
+      label: "inspect repo requirements",
+      status: "completed",
+      startedAt,
+      cwd: executionCwd,
+      summary: assessment.summary,
+      evidence: [...assessment.evidence, ...assessment.notes]
+    })
+  );
+
+  for (const action of assessment.bootstrapActions) {
+    const attempt = await runBootstrapAction(action);
+    recoveryAttempts.push(attempt);
+    if (attempt.status === "failed" && !isTransientFailure((attempt.evidence ?? []).join("\n"))) {
+      break;
+    }
+  }
+
+  const promptBuilder = async (mode: WorkflowMode) =>
+    buildBuildPrompt({
+      cwd: executionCwd,
+      input: options.input,
+      config: options.config,
+      mode,
+      finalArtifactPath: options.paths.finalPath,
+      verificationCommands: options.verificationCommands,
+      dirtyWorktree,
+      ...(options.linkedContext?.artifactPath ? { linkedArtifactPath: options.linkedContext.artifactPath } : {}),
+      ...(options.linkedContext?.artifactBody ? { linkedArtifactBody: options.linkedContext.artifactBody } : {}),
+      ...(options.linkedContext?.run.id ? { linkedRunId: options.linkedContext.run.id } : {}),
+      ...(options.linkedContext?.run.workflow ? { linkedWorkflow: options.linkedContext.run.workflow } : {})
+    });
+
+  let attemptNumber = 0;
+  let codexOutcome: CodexAttemptOutcome | null = null;
+  do {
+    attemptNumber += 1;
+    const attemptStartedAt = nowIso();
+    codexOutcome = await runCodexBuildAttempt({
+      executionCwd,
+      requestedMode,
+      promptBuilder,
+      paths: options.paths,
+      config: options.config,
+      runId: options.runId,
+      ...(typeof options.timeoutSeconds === "number" ? { timeoutSeconds: options.timeoutSeconds } : {})
+    });
+    const retrying = shouldRetryCodexAttempt(codexOutcome, attemptNumber);
+    recoveryAttempts.push(
+      buildAttemptRecord({
+        kind: "codex-run",
+        label: `codex build attempt ${attemptNumber}`,
+        status: retrying ? "retrying" : codexOutcome.result.code === 0 ? "completed" : "failed",
+        startedAt: attemptStartedAt,
+        cwd: executionCwd,
+        summary:
+          codexOutcome.result.code === 0
+            ? "Codex build attempt completed successfully."
+            : retrying
+              ? "Codex exited before producing a usable session; retrying once with the prepared execution checkout."
+              : `Codex build attempt failed with exit code ${codexOutcome.result.code}.`,
+        command: codexOutcome.result.command.join(" "),
+        exitCode: codexOutcome.result.code,
+        evidence: [codexOutcome.stderrTail, codexOutcome.finalBody, ...codexOutcome.notes]
+      })
+    );
+    if (!retrying) {
+      break;
+    }
+  } while (attemptNumber < 2);
+
+  if (!codexOutcome) {
+    throw new Error("Build execution did not produce a Codex attempt outcome.");
+  }
+
+  const verificationOutcome =
+    codexOutcome.result.code === 0
       ? await runVerificationCommands(executionCwd, options.paths.runDir, options.verificationCommands)
       : {
-          status: "not-run",
-          requestedCommands: options.verificationCommands,
-          results: [],
-          notes: "Verification was skipped because the build run did not complete successfully."
+          record: {
+            status: "not-run" as const,
+            requestedCommands: options.verificationCommands,
+            results: [],
+            notes: "Verification was skipped because the build run did not complete successfully."
+          },
+          attempts: [] as BuildRecoveryAttemptRecord[]
         };
-  await writeJson(options.paths.verificationPath, verificationRecord);
+  recoveryAttempts.push(...verificationOutcome.attempts);
+  await writeJson(options.paths.verificationPath, verificationOutcome.record);
 
-  let finalBody = await readTextFile(options.paths.finalPath);
+  const sessionRecord: BuildSessionRecord = {
+    workflow: "build",
+    requestedMode,
+    mode: codexOutcome.observedMode,
+    startedAt,
+    endedAt: nowIso(),
+    ...(codexOutcome.result.sessionId ? { sessionId: codexOutcome.result.sessionId } : {}),
+    ...(options.linkedContext?.run.id ? { linkedRunId: options.linkedContext.run.id } : {}),
+    ...(options.linkedContext?.run.workflow ? { linkedRunWorkflow: options.linkedContext.run.workflow } : {}),
+    ...(options.linkedContext?.artifactPath ? { linkedArtifactPath: options.linkedContext.artifactPath } : {}),
+    ...(codexOutcome.observedMode === "interactive" ? { transcriptPath: options.paths.transcriptPath } : {}),
+    codexCommand: codexOutcome.result.command,
+    ...(codexOutcome.result.sessionId ? { resumeCommand: `codex resume ${codexOutcome.result.sessionId}` } : {}),
+    ...(codexOutcome.result.sessionId ? { forkCommand: `codex fork ${codexOutcome.result.sessionId}` } : {}),
+    observability: {
+      sessionIdObserved: Boolean(codexOutcome.result.sessionId),
+      transcriptObserved: Boolean(codexOutcome.transcriptBody.trim()),
+      finalArtifactObserved: Boolean(codexOutcome.finalBody.trim()),
+      ...(codexOutcome.result.timedOut ? { timedOut: true } : {}),
+      ...(codexOutcome.result.timeoutSeconds ? { timeoutSeconds: codexOutcome.result.timeoutSeconds } : {}),
+      ...(codexOutcome.fallbackReason ? { fallbackReason: codexOutcome.fallbackReason } : {})
+    },
+    notes: uniqueLines([...codexOutcome.notes, ...assessment.notes])
+  };
+
+  let finalBody = codexOutcome.finalBody;
+  const failureDiagnosis = classifyBuildFailure({
+    result: codexOutcome.result,
+    sessionRecord,
+    verificationRecord: verificationOutcome.record,
+    finalBody,
+    stderrTail: codexOutcome.stderrTail,
+    assessment,
+    recoveryAttempts
+  });
+  await writeJson(options.paths.recoveryAttemptsPath, recoveryAttempts);
+  if (failureDiagnosis) {
+    await writeJson(options.paths.failureDiagnosisPath, failureDiagnosis);
+  }
+  await fs.writeFile(options.paths.recoverySummaryPath, renderRecoverySummary(failureDiagnosis, recoveryAttempts), "utf8");
+
   if (!finalBody.trim()) {
     finalBody = buildFallbackFinalBody({
       input: options.input,
       requestedMode,
-      observedMode,
-      result,
-      verificationRecord,
+      observedMode: codexOutcome.observedMode,
+      result: codexOutcome.result,
+      verificationRecord: verificationOutcome.record,
       transcriptPath: path.relative(options.cwd, options.paths.transcriptPath),
-      notes: executionCwd !== options.cwd ? [...notes, `Execution checkout: ${executionCwd}`] : notes,
+      notes: executionCwd !== options.cwd ? [...codexOutcome.notes, `Execution checkout: ${executionCwd}`] : codexOutcome.notes,
+      diagnosis: failureDiagnosis,
+      recoveryAttempts,
       ...(options.linkedContext ? { linkedContext: options.linkedContext } : {})
     });
+    await fs.writeFile(options.paths.finalPath, finalBody, "utf8");
+    sessionRecord.observability.finalArtifactObserved = true;
+  }
+
+  if (failureDiagnosis && !/## Diagnosis/.test(finalBody)) {
+    finalBody +=
+      [
+        "",
+        "## Diagnosis",
+        `- category: ${failureDiagnosis.category}`,
+        `- summary: ${failureDiagnosis.summary}`,
+        `- detail: ${failureDiagnosis.detail}`,
+        ...failureDiagnosis.recommendedActions.map((action) => `- action: ${action}`)
+      ].join("\n") + "\n";
     await fs.writeFile(options.paths.finalPath, finalBody, "utf8");
   }
 
   await fs.writeFile(options.paths.changeSummaryPath, finalBody, "utf8");
-
-  const transcriptBody = observedMode === "interactive" ? await readTextFile(options.paths.transcriptPath) : "";
-  const sessionRecord: BuildSessionRecord = {
-    workflow: "build",
-    requestedMode,
-    mode: observedMode,
-    startedAt,
-    endedAt: new Date().toISOString(),
-    ...(result.sessionId ? { sessionId: result.sessionId } : {}),
-    ...(options.linkedContext?.run.id ? { linkedRunId: options.linkedContext.run.id } : {}),
-    ...(options.linkedContext?.run.workflow ? { linkedRunWorkflow: options.linkedContext.run.workflow } : {}),
-    ...(options.linkedContext?.artifactPath ? { linkedArtifactPath: options.linkedContext.artifactPath } : {}),
-    ...(observedMode === "interactive" ? { transcriptPath: options.paths.transcriptPath } : {}),
-    codexCommand: result.command,
-    ...(result.sessionId ? { resumeCommand: `codex resume ${result.sessionId}` } : {}),
-    ...(result.sessionId ? { forkCommand: `codex fork ${result.sessionId}` } : {}),
-    observability: {
-      sessionIdObserved: Boolean(result.sessionId),
-      transcriptObserved: Boolean(transcriptBody.trim()),
-      finalArtifactObserved: Boolean(finalBody.trim()),
-      ...(result.timedOut ? { timedOut: true } : {}),
-      ...(result.timeoutSeconds ? { timeoutSeconds: result.timeoutSeconds } : {}),
-      ...(fallbackReason ? { fallbackReason } : {})
-    },
-    ...(notes.length > 0 ? { notes } : {})
-  };
   await writeJson(options.paths.sessionPath, sessionRecord);
 
   return {
-    result,
+    result: codexOutcome.result,
     finalBody,
     requestedMode,
-    observedMode,
+    observedMode: codexOutcome.observedMode,
     sessionRecord,
-    verificationRecord
+    verificationRecord: verificationOutcome.record,
+    recoveryAttempts,
+    failureDiagnosis
   };
 }

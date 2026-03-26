@@ -210,9 +210,7 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
     }
     runRecord.lastActivity =
       execution.buildExecution.result.code !== 0
-        ? execution.buildExecution.result.timedOut
-          ? `Build timed out after ${execution.buildExecution.result.timeoutSeconds}s; downstream stages blocked`
-          : `Build failed with exit code ${execution.buildExecution.result.code}; downstream stages blocked`
+        ? `${execution.buildExecution.failureDiagnosis?.summary ?? (execution.buildExecution.result.timedOut ? `Build timed out after ${execution.buildExecution.result.timeoutSeconds}s` : `Build failed with exit code ${execution.buildExecution.result.code}`)}; downstream stages blocked`
         : `Validation: ${execution.validationExecution.validationPlan.status}; Ship readiness: ${execution.shipRecord.readiness}; GitHub delivery: ${execution.githubDeliveryRecord.overall.status}`;
     runRecord.inputs.observedMode = execution.buildExecution.observedMode;
     runRecord.inputs.selectedSpecialists = execution.selectedSpecialists.map((specialist) => specialist.name);
@@ -224,9 +222,10 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
       runRecord.error =
         execution.buildExecution.result.code !== 0
           ? [
-              execution.buildExecution.result.timedOut
-                ? `build timed out after ${execution.buildExecution.result.timeoutSeconds}s`
-                : `build exited with code ${execution.buildExecution.result.code}`,
+              execution.buildExecution.failureDiagnosis?.summary ??
+                (execution.buildExecution.result.timedOut
+                  ? `build timed out after ${execution.buildExecution.result.timeoutSeconds}s`
+                  : `build exited with code ${execution.buildExecution.result.code}`),
               "downstream validation/review/ship blocked"
             ].join("; ")
           : [
