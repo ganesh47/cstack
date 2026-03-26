@@ -1370,7 +1370,7 @@ describe("inspect", () => {
     await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("ship readiness: blocked");
     await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("validation: partial");
     await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("github mutation: Branch pushed and pull request prepared.");
-    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("github delivery: blocked (checks, security)");
+    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("github delivery: blocked (checks, security: Required check deliver/test is failing.)");
   });
 
   it("shows ready GitHub delivery details for ready deliver runs", async () => {
