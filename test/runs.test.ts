@@ -148,4 +148,36 @@ describe("runRuns", () => {
       stdoutSpy.mockRestore();
     }
   });
+
+  it("falls back to prompt or workflow metadata when run summary is missing", async () => {
+    await writeRun(repoDir, {
+      id: "2026-03-13T17-40-00-build-no-summary",
+      workflow: "build",
+      createdAt: "2026-03-13T17:40:00.000Z",
+      updatedAt: "2026-03-13T17:40:05.000Z",
+      status: "completed",
+      cwd: repoDir,
+      gitBranch: "main",
+      codexVersion: "fake",
+      codexCommand: ["codex", "exec"],
+      promptPath: path.join(repoDir, ".cstack", "runs", "2026-03-13T17-40-00-build-no-summary", "prompt.md"),
+      finalPath: path.join(repoDir, ".cstack", "runs", "2026-03-13T17-40-00-build-no-summary", "final.md"),
+      contextPath: path.join(repoDir, ".cstack", "runs", "2026-03-13T17-40-00-build-no-summary", "context.md"),
+      stdoutPath: path.join(repoDir, ".cstack", "runs", "2026-03-13T17-40-00-build-no-summary", "stdout.log"),
+      stderrPath: path.join(repoDir, ".cstack", "runs", "2026-03-13T17-40-00-build-no-summary", "stderr.log"),
+      configSources: [],
+      inputs: {
+        userPrompt: "Investigate a missing summary fallback in the run ledger"
+      }
+    });
+
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      await runRuns(repoDir);
+      const output = stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join("");
+      expect(output).toContain("Investigate a missing summary fallback in the run ledger");
+    } finally {
+      stdoutSpy.mockRestore();
+    }
+  });
 });

@@ -10,6 +10,14 @@ async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
+async function writeUserConfig(homeDir: string, body: string): Promise<void> {
+  await fs.writeFile(path.join(homeDir, ".config", "cstack", "config.toml"), body, "utf8");
+}
+
+async function writeRepoConfig(repoDir: string, body: string): Promise<void> {
+  await fs.writeFile(path.join(repoDir, ".cstack", "config.toml"), body, "utf8");
+}
+
 describe("loadConfig", () => {
   let repoDir: string;
   let homeDir: string;
@@ -29,17 +37,16 @@ describe("loadConfig", () => {
   });
 
   it("merges user and repo config with repo taking precedence", async () => {
-    await fs.writeFile(
-      path.join(homeDir, ".config", "cstack", "config.toml"),
+    await writeUserConfig(
+      homeDir,
       `
 [codex]
 model = "gpt-5"
 sandbox = "read-only"
 `,
-      "utf8"
     );
-    await fs.writeFile(
-      path.join(repoDir, ".cstack", "config.toml"),
+    await writeRepoConfig(
+      repoDir,
       `
 [codex]
 sandbox = "workspace-write"
@@ -104,8 +111,7 @@ changelogPaths = ["README.md", "CHANGELOG.md"]
 requireDependabot = true
 requireCodeScanning = true
 blockSeverities = ["medium", "high", "critical"]
-`,
-      "utf8"
+`
     );
 
     const { config, sources } = await loadConfig(repoDir);
@@ -190,5 +196,96 @@ blockSeverities = ["medium", "high", "critical"]
     expect(config.workflows.deliver.github?.security?.requireDependabot).toBe(false);
     expect(config.workflows.deliver.github?.security?.requireCodeScanning).toBe(false);
     expect(config.workflows.deliver.github?.security?.blockSeverities).toEqual(["high", "critical"]);
+  });
+
+  it("rejects invalid workflow mode enums with the exact config path", async () => {
+    await writeRepoConfig(
+      repoDir,
+      `
+[workflows.build]
+mode = "tty"
+`
+    );
+
+    await expect(loadConfig(repoDir)).rejects.toThrow(
+      new RegExp(`Invalid config in .*config\\.toml at workflows\\.build\\.mode: expected one of .* received "tty"`)
+    );
+  });
+
+  it("rejects invalid nested field types for deliver github policy", async () => {
+    await writeRepoConfig(
+      repoDir,
+      `
+[workflows.deliver.github]
+requiredChecks = "deliver/test"
+`
+    );
+
+    await expect(loadConfig(repoDir)).rejects.toThrow(
+      new RegExp(
+        `Invalid config in .*config\\.toml at workflows\\.deliver\\.github\\.requiredChecks: expected string array, received string`
+      )
+    );
+  });
+
+  it("rejects partially corrupted workflow tables instead of merging them", async () => {
+    await writeRepoConfig(
+      repoDir,
+      `
+workflows = "broken"
+`
+    );
+
+    await expect(loadConfig(repoDir)).rejects.toThrow(
+      new RegExp(`Invalid config in .*config\\.toml at workflows: expected table/object, received string`)
+    );
+  });
+
+  it("reports the repo source when a later config file is structurally corrupted", async () => {
+    await writeUserConfig(
+      homeDir,
+      `
+[codex]
+model = "gpt-5"
+`
+    );
+    await writeRepoConfig(
+      repoDir,
+      `
+[workflows.deliver.validation]
+mode = "smart"
+
+[workflows.deliver.validation.coverage]
+minimumSignal = 123
+`
+    );
+
+    await expect(loadConfig(repoDir)).rejects.toThrow(
+      new RegExp(
+        `Invalid config in .*\\.cstack/config\\.toml at workflows\\.deliver\\.validation\\.coverage\\.minimumSignal: expected string enum, received number`
+      )
+    );
+  });
+
+  it("surfaces TOML parse failures from a partially corrupted repo config", async () => {
+    await writeUserConfig(
+      homeDir,
+      `
+[codex]
+model = "gpt-5"
+`
+    );
+    await writeRepoConfig(
+      repoDir,
+      `
+[workflows.build]
+mode = "exec"
+timeoutSeconds =
+`
+    );
+
+    await expect(loadConfig(repoDir)).rejects.toThrow(
+      new RegExp(`Failed to load config from .*\\.cstack/config\\.toml:`)
+    );
   });
 });
