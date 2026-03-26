@@ -451,6 +451,18 @@ export interface ValidationExistingTestSuite {
   tool?: string;
 }
 
+export interface ValidationWorkspaceTarget {
+  path: string;
+  manifests: string[];
+  languages: string[];
+  buildSystems: string[];
+  surfaces: string[];
+  packageScripts: ValidationDetectedScript[];
+  detectedTools: string[];
+  support: "native" | "partial" | "inventory-only";
+  notes: string[];
+}
+
 export interface ValidationRepoProfile {
   detectedAt: string;
   languages: string[];
@@ -464,6 +476,7 @@ export interface ValidationRepoProfile {
   existingTests: ValidationExistingTestSuite[];
   packageScripts: ValidationDetectedScript[];
   detectedTools: string[];
+  workspaceTargets: ValidationWorkspaceTarget[];
   limitations: string[];
 }
 

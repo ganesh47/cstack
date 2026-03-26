@@ -257,6 +257,7 @@ function createBlockedValidationExecution(buildExecution: BuildExecutionResult):
       existingTests: [],
       packageScripts: [],
       detectedTools: [],
+      workspaceTargets: [],
       limitations: ["Validation profiling was skipped because build failed first."]
     },
     toolResearch: {

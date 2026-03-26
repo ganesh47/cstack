@@ -590,7 +590,8 @@ Ship notes:
 Deliver notes:
 
 - `deliver` is the operator-facing umbrella workflow over internal `build`, `validation`, `review`, and `ship` stages
-- the validation stage profiles the repo, chooses a layered validation strategy, records OSS tool research, and runs the selected local validation commands
+- the validation stage profiles the repo, inventories nested workspace targets, chooses a layered validation strategy, records OSS tool research, and runs the selected local validation commands
+- validation command inference is still root-biased by default; nested packages, Python targets, and container folders are surfaced explicitly in the profile and gaps when they are not backed by deterministic repo-level commands
 - stage-local artifacts live under `stages/build`, `stages/validation`, `stages/review`, and `stages/ship`
 - `deliver` executes those mutation-capable stages from an isolated checkout by default and records the source-vs-execution lineage in `execution-context.json`
 - if the internal `build` stage fails, `deliver` now stops immediately and marks `validation`, `review`, and `ship` as blocked/deferred instead of continuing to run them
@@ -603,6 +604,7 @@ Deliver notes:
 - `deliver --issue <n>` links a specific GitHub issue into deliver evaluation
 - uncommitted local source edits are ignored by default for `deliver`; `--allow-dirty` remains the explicit opt-in for source-repo dirty execution
 - `cstack inspect <run-id>` supports `show validation`, `show pyramid`, `show coverage`, `show ci-validation`, `show tool-research`, `show review`, `show ship`, `show mutation`, and `show github` for deliver runs
+- `show validation` now summarizes workspace targets and support levels before the raw plan so mixed repos are easier to reason about
 - when a deliver build fails, `cstack inspect` now separates the root-cause build failure from later blocked stages and surfaces timeout/session/transcript evidence when available
 
 ## Development

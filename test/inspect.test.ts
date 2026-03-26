@@ -901,7 +901,31 @@ async function seedDeliverRun(
         existingTests: [{ kind: "unit", location: "test/inspect.test.ts", tool: "vitest" }],
         packageScripts: [{ name: "test", command: "npm test" }],
         detectedTools: ["vitest"],
-        limitations: []
+        workspaceTargets: [
+          {
+            path: ".",
+            manifests: ["package.json"],
+            languages: ["typescript"],
+            buildSystems: ["npm"],
+            surfaces: ["cli-binary", "github-workflows"],
+            packageScripts: [{ name: "test", command: "npm test" }],
+            detectedTools: ["vitest"],
+            support: "native",
+            notes: []
+          },
+          {
+            path: "packages/cli",
+            manifests: ["pyproject.toml"],
+            languages: ["python"],
+            buildSystems: ["python"],
+            surfaces: ["library"],
+            packageScripts: [],
+            detectedTools: [],
+            support: "inventory-only",
+            notes: ["Validation command inference is currently rooted in the top-level repo; inspect this target manually."]
+          }
+        ],
+        limitations: ["Validation command inference is currently root-biased; nested workspace targets are inventoried and reported explicitly."]
       },
       null,
       2
@@ -1363,7 +1387,9 @@ describe("inspect", () => {
     expect(inspection.githubDeliveryRecord?.overall.status).toBe("blocked");
     expect(inspection.run.status).toBe("failed");
     await expect(handleInspectorCommand(repoDir, inspection, "show verification")).resolves.toContain("\"status\": \"passed\"");
+    await expect(handleInspectorCommand(repoDir, inspection, "show validation")).resolves.toContain("Workspace targets: 2");
     await expect(handleInspectorCommand(repoDir, inspection, "show validation")).resolves.toContain("\"status\": \"partial\"");
+    await expect(handleInspectorCommand(repoDir, inspection, "show validation")).resolves.toContain("packages/cli: inventory-only");
     await expect(handleInspectorCommand(repoDir, inspection, "show pyramid")).resolves.toContain("# Test Pyramid");
     await expect(handleInspectorCommand(repoDir, inspection, "show coverage")).resolves.toContain("\"localValidationStatus\": \"passed\"");
     await expect(handleInspectorCommand(repoDir, inspection, "show ci-validation")).resolves.toContain("\"runner\": \"ubuntu-latest\"");

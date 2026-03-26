@@ -59,6 +59,65 @@ describe("validation intelligence", () => {
     expect(profile.ciSystems).toContain("github-actions");
     expect(profile.runnerConstraints).toContain("docker-preferred");
     expect(profile.packageScripts.map((script) => script.name)).toEqual(["lint", "test", "test:e2e", "typecheck"]);
+    expect(profile.workspaceTargets.find((target) => target.path === ".")?.support).toBe("native");
+  });
+
+  it("profiles nested workspace targets truthfully", async () => {
+    await fs.mkdir(path.join(repoDir, "packages", "api"), { recursive: true });
+    await fs.mkdir(path.join(repoDir, "packages", "cli"), { recursive: true });
+    await fs.mkdir(path.join(repoDir, "docker", "api"), { recursive: true });
+
+    await fs.writeFile(
+      path.join(repoDir, "package.json"),
+      JSON.stringify(
+        {
+          name: "fixture-monorepo",
+          private: true,
+          scripts: {
+            test: "vitest run"
+          },
+          workspaces: ["packages/*"],
+          devDependencies: {
+            vitest: "^3.2.4"
+          }
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(repoDir, "packages", "api", "package.json"),
+      JSON.stringify(
+        {
+          name: "@fixture/api",
+          version: "1.0.0",
+          scripts: {
+            test: "vitest run"
+          },
+          dependencies: {
+            express: "^5.0.0"
+          },
+          devDependencies: {
+            vitest: "^3.2.4"
+          }
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+    await fs.writeFile(path.join(repoDir, "packages", "cli", "pyproject.toml"), "[project]\nname='fixture-cli'\n", "utf8");
+    await fs.writeFile(path.join(repoDir, "docker", "api", "Dockerfile"), "FROM node:24-alpine\n", "utf8");
+
+    const profile = await profileValidationRepository(repoDir);
+
+    expect(profile.workspaceTargets.map((target) => target.path)).toEqual([".", "docker/api", "packages/api", "packages/cli"]);
+    expect(profile.workspaceTargets.find((target) => target.path === "packages/api")?.support).toBe("partial");
+    expect(profile.workspaceTargets.find((target) => target.path === "packages/cli")?.support).toBe("inventory-only");
+    expect(profile.workspaceTargets.find((target) => target.path === "docker/api")?.support).toBe("inventory-only");
+    expect(profile.limitations).toContain("Validation command inference is currently root-biased; nested workspace targets are inventoried and reported explicitly.");
+    expect(profile.limitations.join("\n")).toContain("packages/cli");
   });
 
   it("selects OSS tool research aligned with the repo profile", async () => {
