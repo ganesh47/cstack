@@ -1,6 +1,6 @@
 {
   "name": "cstack",
-  "version": "0.17.22",
+  "version": "0.17.23",
   "private": true,
   "type": "module",
   "description": "Workflow wrapper around Codex CLI",
