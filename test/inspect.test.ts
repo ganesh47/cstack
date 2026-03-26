@@ -1272,6 +1272,7 @@ describe("inspect", () => {
     await runGit(repoDir, ["init", "-b", "main"]);
     await runGit(repoDir, ["config", "user.name", "cstack inspect"]);
     await runGit(repoDir, ["config", "user.email", "cstack-inspect@example.com"]);
+    await runGit(repoDir, ["config", "commit.gpgsign", "false"]);
     await runGit(repoDir, ["add", "."]);
     await runGit(repoDir, ["commit", "-m", "fixture"]);
     runId = await seedIntentRun(repoDir);
@@ -1517,14 +1518,18 @@ describe("inspect", () => {
 
   it("keeps partial nested child runs inspectable when child artifacts are missing or corrupt", async () => {
     const failedIntentRunId = await seedIntentFailedDeliverBuildRun(repoDir);
-    const childRunId = "2026-03-14T12-15-00-deliver-billing-cleanup-blocked";
-    const childRunDir = path.join(repoDir, ".cstack", "runs", childRunId);
+    const parentLineage = JSON.parse(
+      await fs.readFile(path.join(repoDir, ".cstack", "runs", failedIntentRunId, "stage-lineage.json"), "utf8")
+    ) as StageLineage;
+    const childRunId = parentLineage.stages.find((stage) => stage.name === "build")?.childRunId;
+    expect(childRunId).toBeTruthy();
+    const childRunDir = path.join(repoDir, ".cstack", "runs", childRunId!);
     await fs.rm(path.join(childRunDir, "stages", "build", "final.md"), { force: true });
     await fs.writeFile(path.join(childRunDir, "stage-lineage.json"), "{broken-lineage\n", "utf8");
 
     const inspection = await loadRunInspection(repoDir, failedIntentRunId);
 
-    expect(inspection.childRuns).toHaveLength(1);
+    expect(inspection.childRuns.some((child) => child.stageName === "build" && child.run.id === childRunId)).toBe(true);
     await expect(handleInspectorCommand(repoDir, inspection, "show child build")).resolves.toContain(`- run: ${childRunId}`);
     await expect(handleInspectorCommand(repoDir, inspection, "show child build")).resolves.toContain("root cause stage: build");
     await expect(handleInspectorCommand(repoDir, inspection, "show stage build")).resolves.toContain("Linked child run:");
