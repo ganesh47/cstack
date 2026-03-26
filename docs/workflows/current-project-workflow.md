@@ -38,7 +38,7 @@ Implemented behavior:
 - `review` is a standalone critique workflow with verdict artifacts and bounded specialist reviewers
 - `ship` is a standalone GitHub-aware handoff and release-readiness workflow
 - `deliver` runs internal `build -> validation -> review -> ship` inside one durable run
-- `deliver` validation profiles the repo, records OSS tool research, writes a test pyramid, and runs selected local validation commands
+- `deliver` validation profiles the repo, inventories nested workspace targets, records OSS tool research, writes a test pyramid, and runs selected local validation commands
 - `deliver` and `ship` can publish branches and create or update pull requests when repo policy enables it
 - `rerun` replays supported workflows into fresh run ids
 - `resume` and `fork` resolve run ids to Codex sessions

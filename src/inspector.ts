@@ -1153,7 +1153,24 @@ function renderValidation(inspection: RunInspection): string {
     return "No validation plan was recorded for this run.";
   }
 
+  const summaryLines =
+    inspection.validationRepoProfile
+      ? [
+          `Validation status: ${inspection.validationPlan.status}`,
+          `Profile surfaces: ${inspection.validationRepoProfile.surfaces.join(", ") || "unknown"}`,
+          `Workspace targets: ${inspection.validationRepoProfile.workspaceTargets.length}`,
+          ...inspection.validationRepoProfile.workspaceTargets.map(
+            (target) =>
+              `- ${target.path}: ${target.support} (${target.surfaces.join(", ") || "unknown surface"}; manifests ${target.manifests.join(", ") || "none"})`
+          ),
+          ...(inspection.validationRepoProfile.limitations.length > 0
+            ? ["Limitations:", ...inspection.validationRepoProfile.limitations.map((line) => `- ${line}`)]
+            : [])
+        ]
+      : [];
+
   return [
+    ...(summaryLines.length > 0 ? [...summaryLines, ""] : []),
     JSON.stringify(inspection.validationPlan, null, 2),
     "",
     inspection.validationLocalRecord ? JSON.stringify(inspection.validationLocalRecord, null, 2) : "No local validation record was recorded for this run."

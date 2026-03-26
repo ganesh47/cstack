@@ -222,6 +222,7 @@ Execution model:
 
 - build stage: interactive `codex` by default, `exec` fallback or `--exec`
 - validation stage: repo-aware validation planning plus bounded validation specialists and local command execution
+  the shipped profile inventories nested workspace targets, but local command inference is still strongest at the repo root unless the repo already exposes deterministic package-level entrypoints
 - review stage: `codex exec` plus bounded specialist reviewers
 - ship stage: `codex exec` plus GitHub mutation and delivery evidence collection
 

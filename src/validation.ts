@@ -17,9 +17,11 @@ import type {
   SpecialistName,
   ValidationCommandRecord,
   ValidationCoverageSummary,
+  ValidationDetectedScript,
   ValidationRepoProfile,
   ValidationToolCandidate,
-  ValidationToolResearch
+  ValidationToolResearch,
+  ValidationWorkspaceTarget
 } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -178,6 +180,14 @@ async function collectManifestHints(cwd: string): Promise<string[]> {
   return manifests;
 }
 
+async function readPackageJsonAt(filePath: string): Promise<Record<string, unknown> | null> {
+  try {
+    return JSON.parse(await fs.readFile(filePath, "utf8")) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 async function findFiles(cwd: string, names: string[], options: { maxDepth?: number; maxResults?: number } = {}): Promise<string[]> {
   const maxDepth = options.maxDepth ?? 4;
   const maxResults = options.maxResults ?? 50;
@@ -223,6 +233,24 @@ function pushUnique(target: string[], values: string[]): void {
       target.push(value);
     }
   }
+}
+
+function classifyWorkspaceSupport(target: {
+  path: string;
+  manifests: string[];
+  packageScripts: ValidationDetectedScript[];
+  workflowFiles: string[];
+}): ValidationWorkspaceTarget["support"] {
+  if (target.path === ".") {
+    return "native";
+  }
+  if (target.workflowFiles.length > 0) {
+    return "native";
+  }
+  if (target.manifests.includes("package.json") && target.packageScripts.length > 0) {
+    return "partial";
+  }
+  return "inventory-only";
 }
 
 function extractPackageScripts(pkg: Record<string, unknown> | null): Array<{ name: string; command: string }> {
@@ -414,6 +442,109 @@ function buildExistingSuites(options: {
   return suites;
 }
 
+async function collectWorkspaceTargets(cwd: string, rootPkg: Record<string, unknown> | null, rootManifests: string[], workflowFiles: string[]): Promise<ValidationWorkspaceTarget[]> {
+  const manifestFiles = await findFiles(
+    cwd,
+    [
+      "package.json",
+      "pyproject.toml",
+      "requirements.txt",
+      "Cargo.toml",
+      "go.mod",
+      "Dockerfile",
+      "docker-compose.yml",
+      "docker-compose.yaml",
+      "build.gradle",
+      "build.gradle.kts",
+      "settings.gradle",
+      "settings.gradle.kts",
+      "Package.swift",
+      "Podfile"
+    ],
+    { maxDepth: 6, maxResults: 200 }
+  );
+  const targets = new Map<string, ValidationWorkspaceTarget>();
+  const ensureTarget = async (targetPath: string): Promise<ValidationWorkspaceTarget> => {
+    const existing = targets.get(targetPath);
+    if (existing) {
+      return existing;
+    }
+    const pkgPath = targetPath === "." ? path.join(cwd, "package.json") : path.join(cwd, targetPath, "package.json");
+    const pkg = targetPath === "." ? rootPkg : await readPackageJsonAt(pkgPath);
+    const manifests = targetPath === "." ? [...rootManifests] : [];
+    const workflowSubset = targetPath === "." ? [...workflowFiles] : [];
+    const target: ValidationWorkspaceTarget = {
+      path: targetPath,
+      manifests,
+      languages: detectLanguages(manifests, pkg),
+      buildSystems: detectBuildSystems(manifests, pkg),
+      surfaces: [],
+      packageScripts: extractPackageScripts(pkg),
+      detectedTools: collectPackageTools(pkg),
+      support: "inventory-only",
+      notes: []
+    };
+    targets.set(targetPath, target);
+    return target;
+  };
+
+  const rootTarget = await ensureTarget(".");
+  rootTarget.surfaces = detectSurfaces({
+    pkg: rootPkg,
+    manifests: rootTarget.manifests,
+    detectedTools: rootTarget.detectedTools,
+    workflowFiles,
+    existingTests: []
+  });
+  rootTarget.support = classifyWorkspaceSupport({
+    path: ".",
+    manifests: rootTarget.manifests,
+    packageScripts: rootTarget.packageScripts,
+    workflowFiles
+  });
+
+  for (const manifestFile of manifestFiles) {
+    const directory = path.dirname(manifestFile);
+    const targetPath = directory === "" ? "." : directory;
+    const target = await ensureTarget(targetPath);
+    const manifestName = path.basename(manifestFile);
+    if (!target.manifests.includes(manifestName)) {
+      target.manifests.push(manifestName);
+      target.manifests.sort();
+    }
+  }
+
+  for (const target of targets.values()) {
+    const pkgPath = target.path === "." ? path.join(cwd, "package.json") : path.join(cwd, target.path, "package.json");
+    const pkg = target.path === "." ? rootPkg : await readPackageJsonAt(pkgPath);
+    target.languages = detectLanguages(target.manifests, pkg);
+    target.buildSystems = detectBuildSystems(target.manifests, pkg);
+    target.packageScripts = extractPackageScripts(pkg);
+    target.detectedTools = collectPackageTools(pkg);
+    target.surfaces = detectSurfaces({
+      pkg,
+      manifests: target.manifests,
+      detectedTools: target.detectedTools,
+      workflowFiles: target.path === "." ? workflowFiles : [],
+      existingTests: []
+    });
+    target.support = classifyWorkspaceSupport({
+      path: target.path,
+      manifests: target.manifests,
+      packageScripts: target.packageScripts,
+      workflowFiles: target.path === "." ? workflowFiles : []
+    });
+    if (target.path !== "." && target.support !== "native") {
+      target.notes.push("Validation command inference is currently rooted in the top-level repo; inspect this target manually.");
+    }
+    if (target.path !== "." && !target.manifests.includes("package.json")) {
+      target.notes.push("No top-level JS package manifest was found for this target.");
+    }
+  }
+
+  return [...targets.values()].sort((left, right) => left.path.localeCompare(right.path));
+}
+
 export async function profileValidationRepository(cwd: string): Promise<ValidationRepoProfile> {
   const pkg = await readPackageJson(cwd);
   const manifests = await collectManifestHints(cwd);
@@ -450,6 +581,7 @@ export async function profileValidationRepository(cwd: string): Promise<Validati
     existingTests: existingTests.map((entry) => entry.location)
   });
   const ciSystems = workflowFiles.length > 0 ? ["github-actions"] : [];
+  const workspaceTargets = await collectWorkspaceTargets(cwd, pkg, manifests, workflowFiles);
   const runnerConstraints: string[] = [];
   if (surfaces.includes("ios-app")) {
     runnerConstraints.push("macos-required", "ios-simulator");
@@ -474,6 +606,13 @@ export async function profileValidationRepository(cwd: string): Promise<Validati
   if (surfaces.length === 0) {
     limitations.push("Repository surface could not be classified confidently.");
   }
+  const nestedTargets = workspaceTargets.filter((target) => target.path !== ".");
+  if (nestedTargets.length > 0) {
+    limitations.push("Validation command inference is currently root-biased; nested workspace targets are inventoried and reported explicitly.");
+  }
+  for (const target of nestedTargets.filter((entry) => entry.support !== "native")) {
+    limitations.push(`Workspace target ${target.path} is ${target.support}; direct validation commands were not inferred for it.`);
+  }
 
   return {
     detectedAt: new Date().toISOString(),
@@ -488,6 +627,7 @@ export async function profileValidationRepository(cwd: string): Promise<Validati
     existingTests,
     packageScripts: scripts,
     detectedTools: packageTools,
+    workspaceTargets,
     limitations
   };
 }
@@ -745,7 +885,7 @@ function buildInitialValidationPlan(profile: ValidationRepoProfile, toolResearch
   return {
     status: localCommands.length > 0 ? "ready" : "partial",
     summary: `Validation planning selected ${layers.filter((layer) => layer.selected).length} pyramid layers.`,
-    profileSummary: `Surfaces: ${profile.surfaces.join(", ") || "unknown"}; build systems: ${profile.buildSystems.join(", ") || "unknown"}.`,
+    profileSummary: `Surfaces: ${profile.surfaces.join(", ") || "unknown"}; build systems: ${profile.buildSystems.join(", ") || "unknown"}; workspace targets: ${profile.workspaceTargets.length}.`,
     layers,
     selectedSpecialists: selectedSpecialists.filter((entry) => entry.selected).map((entry) => ({
       name: entry.name,
@@ -763,9 +903,14 @@ function buildInitialValidationPlan(profile: ValidationRepoProfile, toolResearch
       notes: profile.workflowFiles.length > 0 ? [] : ["GitHub Actions workflow files are not present yet."]
     },
     coverage: {
-      confidence: localCommands.length > 0 ? "medium" : "low",
+      confidence: localCommands.length > 0 && profile.limitations.length === 0 ? "medium" : "low",
       summary: "Coverage is summarized by layer, with emphasis on representative risk reduction rather than one percentage.",
-      signals: ["repo profile completed", "tool families selected", "pyramid layers planned"],
+      signals: [
+        "repo profile completed",
+        "tool families selected",
+        "pyramid layers planned",
+        ...(profile.workspaceTargets.length > 1 ? [`workspace inventory recorded for ${profile.workspaceTargets.length} targets`] : [])
+      ],
       gaps: localCommands.length > 0 ? [] : ["No runnable local validation commands were inferred."]
     },
     recommendedChanges: [],
