@@ -420,6 +420,18 @@ async function seedIntentFailedDeliverBuildRun(repoDir: string): Promise<string>
     inferredAt: "2026-03-16T12:49:00.000Z",
     entrypoint: "bare",
     summary: "Infer discover -> spec -> build -> review -> ship with no specialist reviews selected",
+    decision: {
+      classification: "mixed",
+      reason:
+        "The prompt mixes gap-analysis language with explicit remediation intent, so the router stayed on the implementation path and carried the run through planning and downstream delivery stages.",
+      winningSignals: ["analysis", "implementation", "review"]
+    },
+    signals: [
+      { name: "analysis", matched: true, evidence: ["What are the gaps"] },
+      { name: "implementation", matched: true, evidence: ["work on", "closing"] },
+      { name: "review", matched: true, evidence: ["gaps"] },
+      { name: "release", matched: false, evidence: [] }
+    ],
     stages: [
       { name: "discover", rationale: "Gather repo context.", status: "planned", executed: false },
       { name: "spec", rationale: "Plan the implementation.", status: "planned", executed: false },
@@ -1470,6 +1482,19 @@ describe("inspect", () => {
     await expect(handleInspectorCommand(repoDir, inspection, "show child build")).resolves.toContain("build final:");
     await expect(handleInspectorCommand(repoDir, inspection, "show child build")).resolves.toContain("Interactive codex exited with code 1");
     await expect(handleInspectorCommand(repoDir, inspection, "what remains")).resolves.toContain("child summary: interactive Codex exited with code 1");
+  });
+
+  it("explains routing decisions for mixed prompts in inspect output", async () => {
+    const failedIntentRunId = await seedIntentFailedDeliverBuildRun(repoDir);
+    const inspection = await loadRunInspection(repoDir, failedIntentRunId);
+
+    await expect(handleInspectorCommand(repoDir, inspection, "show routing")).resolves.toContain("Decision: mixed");
+    await expect(handleInspectorCommand(repoDir, inspection, "show routing")).resolves.toContain(
+      "matched signals: analysis, implementation, review"
+    );
+    await expect(handleInspectorCommand(repoDir, inspection, "show routing")).resolves.toContain(
+      "implementation: matched (work on, closing)"
+    );
   });
 
   it("surfaces direct build root cause inside failed deliver inspections", async () => {

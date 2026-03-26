@@ -160,6 +160,7 @@ Current intent behavior:
 - implementation and planning prompts still execute `discover` and `spec` automatically inside the intent run
 - broad analysis prompts like `What are the gaps in this project` can route directly to downstream `review` to avoid paying full planning overhead first
 - mixed prompts that also ask `cstack` to close or remediate the gaps stay on the implementation path and continue through planning and delivery stages
+- `routing-plan.json` now records both the winning routing decision and the matched prompt signals so `cstack inspect` can explain why a broad or mixed prompt took its chosen path
 - review-shaped analysis prompts auto-run standalone `review`
 - implementation-shaped prompts auto-run `deliver`, which carries the work through internal `build -> validation -> review -> ship`
 - explicit `build`, `review`, `ship`, and `deliver` commands still exist when you want a narrower workflow than the routed front door

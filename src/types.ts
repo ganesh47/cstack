@@ -95,6 +95,18 @@ export interface SpecialistSelection {
   selected: boolean;
 }
 
+export interface RoutingSignal {
+  name: "analysis" | "implementation" | "review" | "release";
+  matched: boolean;
+  evidence: string[];
+}
+
+export interface RoutingDecision {
+  classification: "analysis" | "implementation" | "mixed";
+  reason: string;
+  winningSignals: string[];
+}
+
 export interface SpecialistExecution {
   name: SpecialistName;
   reason: string;
@@ -112,6 +124,8 @@ export interface RoutingPlan {
   stages: RoutingStagePlan[];
   specialists: SpecialistSelection[];
   summary: string;
+  decision?: RoutingDecision;
+  signals?: RoutingSignal[];
 }
 
 export interface StageLineage {
