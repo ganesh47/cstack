@@ -6,6 +6,15 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      base_ref:
+        description: "Optional base ref for dependency review when dispatched manually"
+        required: false
+        type: string
+      head_ref:
+        description: "Optional head ref for dependency review when dispatched manually"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -15,9 +24,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  dependency-review:
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.base_ref != '' && inputs.head_ref != '')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+
+      - name: Run dependency review
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48
+        with:
+          base-ref: ${{ inputs.base_ref || '' }}
+          head-ref: ${{ inputs.head_ref || '' }}
+
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
       - name: Check out repository
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd

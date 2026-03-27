@@ -1,0 +1,84 @@
+name: Security Intelligence
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-intelligence
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+
+      - name: Set up Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Prepare report directory
+        run: mkdir -p reports
+
+      - name: Run npm audit
+        shell: bash
+        continue-on-error: true
+        run: |
+          npm audit --json > reports/npm-audit.json
+
+      - name: Install OSV-Scanner
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="v2.3.5"
+          base_url="https://github.com/google/osv-scanner/releases/download/${version}"
+          curl -fsSLo /tmp/osv-scanner "${base_url}/osv-scanner_linux_amd64"
+          curl -fsSLo /tmp/osv-scanner_SHA256SUMS "${base_url}/osv-scanner_SHA256SUMS"
+          expected="$(grep 'osv-scanner_linux_amd64$' /tmp/osv-scanner_SHA256SUMS | awk '{print $1}')"
+          actual="$(sha256sum /tmp/osv-scanner | awk '{print $1}')"
+          if [ "${expected}" != "${actual}" ]; then
+            echo "OSV-Scanner checksum mismatch"
+            exit 1
+          fi
+          install -m 0755 /tmp/osv-scanner "${RUNNER_TEMP}/osv-scanner"
+
+      - name: Run OSV-Scanner
+        shell: bash
+        continue-on-error: true
+        run: |
+          "${RUNNER_TEMP}/osv-scanner" --format sarif -L package-lock.json > reports/osv-scanner.sarif
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        with:
+          path: .
+          format: spdx-json
+          output-file: reports/sbom.spdx.json
+          upload-artifact: false
+
+      - name: Run OSSF Scorecard
+        uses: ossf/scorecard-action@99c09fe975337306107572b4fdf4db224cf8e2f2
+        with:
+          results_file: reports/scorecard.sarif
+          results_format: sarif
+          publish_results: false
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file_mode: archive
+
+      - name: Upload security reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: security-reports
+          path: reports/
+          if-no-files-found: error
+          retention-days: 14
