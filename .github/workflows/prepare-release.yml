@@ -8,10 +8,6 @@ on:
         required: true
         type: string
 
-permissions:
-  actions: write
-  contents: write
-
 concurrency:
   group: prepare-release-${{ inputs.version }}
   cancel-in-progress: false
@@ -19,10 +15,14 @@ concurrency:
 jobs:
   prepare-release:
     runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
     env:
       VERSION: ${{ inputs.version }}
       TAG: v${{ inputs.version }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      REPOSITORY: ${{ github.repository }}
     steps:
       - name: Check out default branch
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
@@ -62,7 +62,9 @@ jobs:
         run: npm ci
 
       - name: Check current package version
-        run: echo "CURRENT_VERSION=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
+        run: |
+          echo "CURRENT_VERSION=$(node -p 'require(\"./package.json\").version')" >> "$GITHUB_ENV"
+          echo "BASE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: Bump package version
         shell: bash
@@ -110,30 +112,92 @@ jobs:
         if: steps.commit.outputs.created == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: gh workflow run ci.yml --ref "${DEFAULT_BRANCH}"
+        run: |
+          RELEASE_SHA="$(git rev-parse HEAD)"
+          gh workflow run ci.yml \
+            --ref "${DEFAULT_BRANCH}" \
+            -f base_ref="${BASE_SHA}" \
+            -f head_ref="${RELEASE_SHA}"
 
-      - name: Wait for required CI on pushed release commit
+      - name: Dispatch CodeQL for pushed release commit
+        if: steps.commit.outputs.created == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: gh workflow run codeql.yml --ref "${DEFAULT_BRANCH}"
+
+      - name: Dispatch Gitleaks for pushed release commit
+        if: steps.commit.outputs.created == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: gh workflow run secrets.yml --ref "${DEFAULT_BRANCH}"
+
+      - name: Wait for required checks on pushed release commit
         if: steps.commit.outputs.created == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          REQUIRED_CHECKS=("validate" "dependency-review" "CodeQL" "Gitleaks")
           RELEASE_SHA="$(git rev-parse HEAD)"
-          RUN_ID=""
-          for attempt in $(seq 1 30); do
-            RUN_ID="$(gh run list --workflow ci.yml --commit "${RELEASE_SHA}" --json databaseId --jq '.[0].databaseId // empty' || true)"
-            if [ -n "${RUN_ID}" ]; then
-              break
+          MAX_ATTEMPTS=180
+
+          get_check_state() {
+            local check_name="$1"
+            gh api "repos/${REPOSITORY}/commits/${RELEASE_SHA}/check-runs?per_page=100" \
+              | jq -r --arg name "${check_name}" '
+                  [.check_runs[]
+                   | select(.name == $name)
+                   | {id, status, conclusion}]
+                  | sort_by(.id)
+                  | last
+                  | if . == null then
+                      "missing\t"
+                    else
+                      "\(.status)\t\(.conclusion // "")"
+                    end
+                '
+          }
+
+          for _ in $(seq 1 "${MAX_ATTEMPTS}"); do
+            pending_checks=()
+            failed_checks=()
+
+            for check_name in "${REQUIRED_CHECKS[@]}"; do
+              check_state="$(get_check_state "${check_name}" || true)"
+              check_status="${check_state%%$'\t'*}"
+              check_conclusion="${check_state#*$'\t'}"
+
+              if [ -z "${check_state}" ] || [ "${check_status}" = "missing" ]; then
+                pending_checks+=("${check_name}")
+                continue
+              fi
+
+              if [ "${check_status}" != "completed" ]; then
+                pending_checks+=("${check_name}")
+                continue
+              fi
+
+              if [ "${check_conclusion}" != "success" ]; then
+                failed_checks+=("${check_name}:${check_conclusion:-unknown}")
+              fi
+            done
+
+            if [ "${#failed_checks[@]}" -gt 0 ]; then
+              printf 'Required check failure(s): %s\n' "${failed_checks[*]}"
+              exit 1
             fi
-            sleep 3
+
+            if [ "${#pending_checks[@]}" -eq 0 ]; then
+              echo "All required checks passed for ${RELEASE_SHA}."
+              exit 0
+            fi
+
+            echo "Waiting for required checks: ${pending_checks[*]}"
+            sleep 10
           done
 
-          if [ -z "${RUN_ID}" ]; then
-            echo "Required CI run was not found for ${RELEASE_SHA}"
-            exit 1
-          fi
-
-          gh run watch "${RUN_ID}" --exit-status
+          echo "Timed out waiting for required checks on ${RELEASE_SHA}."
+          exit 1
 
       - name: Create release tag
         run: git tag "${TAG}"

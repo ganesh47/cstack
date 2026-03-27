@@ -11,9 +11,6 @@ on:
         required: true
         type: string
 
-permissions:
-  contents: write
-
 concurrency:
   group: release-${{ github.ref_name }}
   cancel-in-progress: false
@@ -21,6 +18,11 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      attestations: write
+      artifact-metadata: write
+      id-token: write
     steps:
       - name: Check out repository
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
@@ -48,7 +50,7 @@ jobs:
       - name: Validate package version matches tag
         shell: bash
         run: |
-          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          PACKAGE_VERSION="$(node -p 'require(\"./package.json\").version')"
           EXPECTED_TAG="v${PACKAGE_VERSION}"
           if [ "${EXPECTED_TAG}" != "${RELEASE_TAG}" ]; then
             echo "package.json version ${PACKAGE_VERSION} does not match tag ${RELEASE_TAG}"
@@ -76,6 +78,13 @@ jobs:
           cp "release/${PACKAGE_FILE}" "release/cstack-latest.tgz"
           echo "PACKAGE_FILE=${PACKAGE_FILE}" >> "$GITHUB_ENV"
 
+      - name: Record release artifact paths
+        id: release_paths
+        shell: bash
+        run: |
+          echo "package_file=${PACKAGE_FILE}" >> "$GITHUB_OUTPUT"
+          echo "sbom_file=release/cstack-${PACKAGE_VERSION}.sbom.spdx.json" >> "$GITHUB_OUTPUT"
+
       - name: Smoke-test packaged install
         shell: bash
         run: |
@@ -84,6 +93,22 @@ jobs:
           mkdir -p "${INSTALL_ROOT}"
           npm install -g "./release/${PACKAGE_FILE}" --prefix "${INSTALL_ROOT}"
           "${INSTALL_ROOT}/bin/cstack" --help >/dev/null
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        with:
+          file: release/${{ steps.release_paths.outputs.package_file }}
+          format: spdx-json
+          output-file: ${{ steps.release_paths.outputs.sbom_file }}
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Create provenance attestation
+        uses: actions/attest-build-provenance@b3e506e8c389afc651c5bacf2b8f2a1ea0557215
+        with:
+          subject-path: |
+            release/${{ steps.release_paths.outputs.package_file }}
+            release/cstack-latest.tgz
 
       - name: Generate checksums
         shell: bash
@@ -132,6 +157,7 @@ jobs:
           - packaged CLI entrypoint
           - compiled \`dist/\` runtime
           - current README and install guidance
+          - SBOM and provenance attestation for the published tarball
 
           ## Quick start
 
@@ -151,6 +177,7 @@ jobs:
               "release/${PACKAGE_FILE}" \
               "release/cstack-latest.tgz" \
               "release/SHA256SUMS.txt" \
+              "${{ steps.release_paths.outputs.sbom_file }}" \
               --clobber
             gh release edit "${RELEASE_TAG}" \
               --title "cstack ${RELEASE_TAG}" \
@@ -160,6 +187,7 @@ jobs:
               "release/${PACKAGE_FILE}" \
               "release/cstack-latest.tgz" \
               "release/SHA256SUMS.txt" \
+              "${{ steps.release_paths.outputs.sbom_file }}" \
               --title "cstack ${RELEASE_TAG}" \
               --notes-file release/RELEASE_NOTES.md
           fi
