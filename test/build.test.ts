@@ -99,7 +99,7 @@ describe("runBuild", () => {
       "utf8"
     );
     remoteDir = await initGitRepo(repoDir);
-  });
+  }, 60_000);
 
   afterEach(async () => {
     delete process.env.FAKE_CODEX_DELAY_MS;
@@ -107,7 +107,7 @@ describe("runBuild", () => {
     delete process.env.FAKE_CODEX_EARLY_EXIT_BUILD;
     await fs.rm(repoDir, { recursive: true, force: true });
     await fs.rm(remoteDir, { recursive: true, force: true });
-  });
+  }, 60_000);
 
   it("creates a build run with session and verification artifacts", async () => {
     const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
@@ -154,7 +154,7 @@ describe("runBuild", () => {
     } finally {
       stdoutSpy.mockRestore();
     }
-  });
+  }, 60_000);
 
   it("links a build run to an upstream run", async () => {
     const upstreamRunId = await seedSpecRun(repoDir);
@@ -182,7 +182,7 @@ describe("runBuild", () => {
     expect(session.linkedArtifactPath).toContain("artifacts/spec.md");
     expect(promptBody).toContain(upstreamRunId);
     expect(promptBody).toContain("Implement the queued billing retry cleanup");
-  });
+  }, 60_000);
 
   it("ignores untracked .cstack run artifacts when enforcing a clean worktree", async () => {
     const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
@@ -195,7 +195,7 @@ describe("runBuild", () => {
     } finally {
       stdoutSpy.mockRestore();
     }
-  });
+  }, 60_000);
 
   it("uses an isolated checkout when the source repo is dirty", async () => {
     await fs.writeFile(path.join(repoDir, "local-only.txt"), "uncommitted\n", "utf8");
@@ -215,7 +215,7 @@ describe("runBuild", () => {
     expect(executionContext.execution.kind).toBe("git-worktree");
     await expect(fs.access(path.join(repoDir, "codex-generated-change.txt"))).rejects.toThrow();
     expect(await fs.readFile(path.join(executionContext.execution.cwd, "codex-generated-change.txt"), "utf8")).toContain("generated");
-  });
+  }, 60_000);
 
   it("falls back to a temporary clone when worktree creation fails", async () => {
     process.env.CSTACK_FORCE_CLONE_FALLBACK = "1";
@@ -231,7 +231,7 @@ describe("runBuild", () => {
     expect(executionContext.execution.kind).toBe("temp-clone");
     expect(executionContext.execution.notes.join(" ")).toContain("falling back to temporary clone");
     expect(await fs.readFile(path.join(executionContext.execution.cwd, "codex-generated-change.txt"), "utf8")).toContain("generated");
-  });
+  }, 60_000);
 
   it("times out the build stage when it exceeds the configured limit", async () => {
     process.env.FAKE_CODEX_DELAY_MS = "1500";

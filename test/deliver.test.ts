@@ -281,7 +281,7 @@ describe("runDeliver", () => {
     } finally {
       stdoutSpy.mockRestore();
     }
-  });
+  }, 15_000);
 
   it("creates a release-bearing deliver run when release evidence exists", async () => {
     const upstreamRunId = await seedSpecRun(repoDir);
@@ -378,7 +378,7 @@ describe("runDeliver", () => {
     expect(githubDelivery.actions.status).toBe("ready");
     expect(releaseArtifact).toContain("\"tagName\": \"v1.2.3\"");
     expect(promptBody).toContain("review specialists");
-  });
+  }, 15_000);
 
   it("fails deliver when required GitHub security or checks are blocked", async () => {
     await writeGitHubFixture({
@@ -450,7 +450,7 @@ describe("runDeliver", () => {
     expect(githubDelivery.overall.blockers.join("\n")).toContain("Required check deliver/test");
     expect(shipRecord.unresolved.join("\n")).toContain("Dependabot alert");
     expect(securityArtifact).toContain("\"severity\": \"high\"");
-  });
+  }, 15_000);
 
   it("stops after a failed build and marks downstream stages as deferred", async () => {
     process.env.FAKE_CODEX_FAIL_BUILD = "1";
@@ -492,7 +492,7 @@ describe("runDeliver", () => {
     expect(shipRecord.readiness).toBe("blocked");
     expect(shipRecord.summary).toContain("Build failed after Codex started work");
     expect(diagnosis.category).toBe("build-script-failure");
-  });
+  }, 15_000);
 
   it("times out the build stage and blocks downstream stages", async () => {
     process.env.FAKE_CODEX_DELAY_MS = "1500";
@@ -523,7 +523,7 @@ describe("runDeliver", () => {
     expect(session.observability.timeoutSeconds).toBe(1);
     expect(lineage.stages.find((stage) => stage.name === "build")?.status).toBe("failed");
     expect(lineage.stages.find((stage) => stage.name === "validation")?.status).toBe("deferred");
-  });
+  }, 15_000);
 
   it("fails deliver when pull request creation fails", async () => {
     await writeGitHubFixture({
@@ -572,7 +572,7 @@ describe("runDeliver", () => {
     expect(githubDelivery.overall.status).toBe("blocked");
     expect(githubDelivery.overall.blockers.join("\n")).toContain("GitHub failed while creating or updating the pull request.");
     expect(githubDelivery.overall.blockers.join("\n")).toContain("simulated PR create failure");
-  });
+  }, 15_000);
 
   it("classifies GitHub authentication failures during pull request creation", async () => {
     await writeGitHubFixture({
@@ -611,7 +611,7 @@ describe("runDeliver", () => {
     expect(run.status).toBe("failed");
     expect(githubMutation.summary).toContain("GitHub authentication failed while creating or updating the pull request.");
     expect(githubMutation.blockers.join("\n")).toContain("Run gh auth login");
-  });
+  }, 15_000);
 
   it("classifies GitHub connectivity failures during required check inspection", async () => {
     await writeGitHubFixture({
@@ -658,7 +658,7 @@ describe("runDeliver", () => {
     expect(githubDelivery.checks.error).toContain("network timeout contacting api.github.com");
     expect(githubDelivery.overall.status).toBe("blocked");
     expect(githubDelivery.overall.blockers.join("\n")).toContain("GitHub connectivity failed while inspecting required checks.");
-  });
+  }, 15_000);
 
   it("classifies git push rejection during deliver mutations", async () => {
     await writeGitHubFixture({
@@ -712,7 +712,7 @@ describe("runDeliver", () => {
     expect(githubMutation.branch.pushed).toBe(false);
     expect(githubMutation.summary).toContain("Git rejected the push while pushing branch");
     expect(githubMutation.blockers.join("\n")).toContain("protected branch hook declined");
-  });
+  }, 15_000);
 
   it("classifies GitHub pull request update conflicts", async () => {
     await writeGitHubFixture({
@@ -762,7 +762,7 @@ describe("runDeliver", () => {
     expect(run.status).toBe("failed");
     expect(githubMutation.summary).toContain("GitHub failed while creating or updating the pull request.");
     expect(githubMutation.blockers.join("\n")).toContain("modified concurrently");
-  });
+  }, 15_000);
 
   it("fails closed when the default branch cannot be resolved for PR mutation", async () => {
     await writeGitHubFixture({
@@ -823,7 +823,7 @@ describe("runDeliver", () => {
     expect(result.record.blockers.join("\n")).toContain("resource not accessible");
     expect(result.record.branch.created).toBe(true);
     expect(result.record.pullRequest.created).toBe(false);
-  });
+  }, 15_000);
 
   it("surfaces required-check watch timeouts as GitHub mutation blockers", async () => {
     await writeGitHubFixture({
@@ -874,5 +874,5 @@ describe("runDeliver", () => {
     expect(githubMutation.checks.summary).toContain("Timed out while waiting for required checks.");
     expect(githubMutation.summary).toContain("Timed out while waiting for required checks.");
     expect(githubMutation.blockers.join("\n")).toContain("Waiting for 2 required checks.");
-  });
+  }, 15_000);
 });

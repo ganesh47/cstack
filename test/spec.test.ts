@@ -130,4 +130,22 @@ describe("runSpec", () => {
     expect(promptBody).toContain(discoverRunId);
     expect(promptBody).toContain("Billing cleanup findings");
   });
+
+  it("fails closed when the spec stage times out", async () => {
+    const configPath = path.join(repoDir, ".cstack", "config.toml");
+    const existing = await fs.readFile(configPath, "utf8");
+    await fs.writeFile(configPath, `${existing}\n[workflows.spec]\ntimeoutSeconds = 1\n`, "utf8");
+
+    process.env.FAKE_CODEX_DELAY_MS = "1500";
+    try {
+      await expect(runSpec(repoDir, "Draft the first vertical slice.")).rejects.toThrow(/code 124/);
+
+      const runs = await listRuns(repoDir);
+      const run = await readRun(repoDir, runs[0]!.id);
+      expect(run.status).toBe("failed");
+      expect(run.error).toContain("code 124");
+    } finally {
+      delete process.env.FAKE_CODEX_DELAY_MS;
+    }
+  });
 });

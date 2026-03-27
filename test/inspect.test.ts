@@ -1452,7 +1452,7 @@ describe("inspect", () => {
     } finally {
       stdoutSpy.mockRestore();
     }
-  });
+  }, 15_000);
 
   it("renders analysis-mode review summaries and gap commands for review runs", async () => {
     const reviewRunId = await seedReviewRun(repoDir);

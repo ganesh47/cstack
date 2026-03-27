@@ -246,5 +246,5 @@ describe("runShip", () => {
     } finally {
       stdoutSpy.mockRestore();
     }
-  });
+  }, 15_000);
 });

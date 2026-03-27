@@ -402,6 +402,19 @@ async function writeJson(filePath: string, value: unknown): Promise<void> {
   await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
+async function readBestEffortCodexOutput(paths: { finalPath: string; stdoutPath: string; stderrPath: string }): Promise<string> {
+  for (const filePath of [paths.finalPath, paths.stdoutPath, paths.stderrPath]) {
+    try {
+      const body = await fs.readFile(filePath, "utf8");
+      if (body.trim()) {
+        return body;
+      }
+    } catch {}
+  }
+
+  return "";
+}
+
 async function runTrack(options: {
   cwd: string;
   runId: string;
@@ -452,7 +465,7 @@ async function runTrack(options: {
     silentProgress: true
   });
 
-  const rawFinal = await fs.readFile(finalPath, "utf8");
+  const rawFinal = await readBestEffortCodexOutput({ finalPath, stdoutPath, stderrPath });
   const delegate = normalizeDelegateResult(options.track.name, rawFinal, result.code, result.sessionId);
   const finalized: DiscoverDelegateResult = {
     ...delegate,
@@ -525,7 +538,11 @@ export async function runDiscoverExecution(options: DiscoverExecutionOptions): P
     await recorder.emit("session", leadResult.sessionId);
   }
 
-  const rawLead = await fs.readFile(paths.finalPath, "utf8");
+  const rawLead = await readBestEffortCodexOutput({
+    finalPath: paths.finalPath,
+    stdoutPath: paths.stdoutPath,
+    stderrPath: paths.stderrPath
+  });
   const leadJson = normalizeLeadJson(input, delegates, plan, rawLead);
   const finalizedDelegates = applyLeadDisposition(delegates, leadJson);
 

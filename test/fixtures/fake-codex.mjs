@@ -349,5 +349,13 @@ if (!resolvedFinalPath) {
 
 await writeFile(resolvedFinalPath, `${body}\n`, "utf8");
 
+if (process.env.FAKE_CODEX_STALL_AFTER_OUTPUT_MS) {
+  await new Promise((resolve) => process.stdout.write(`${body}\n`, resolve));
+}
+
 await new Promise((resolve) => process.stdout.write("writing final output\n", resolve));
 process.stdout.write("completed\n");
+
+if (process.env.FAKE_CODEX_STALL_AFTER_OUTPUT_MS) {
+  await new Promise((resolve) => setTimeout(resolve, Number.parseInt(process.env.FAKE_CODEX_STALL_AFTER_OUTPUT_MS, 10)));
+}

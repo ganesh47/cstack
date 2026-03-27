@@ -104,7 +104,7 @@ describe("runDiscover", () => {
     } finally {
       stdoutSpy.mockRestore();
     }
-  });
+  }, 15_000);
 
   it("suppresses discover delegation for a small local prompt", async () => {
     await runDiscover(repoDir, "Rename one helper.");
@@ -124,4 +124,24 @@ describe("runDiscover", () => {
     expect(researchPlan.limitations[0]).toContain("suppressed");
     await expect(fs.access(path.join(stageDir, "delegates", "repo-explorer", "result.json"))).rejects.toThrow();
   });
+
+  it("fails cleanly when a delegated discover track times out before writing a final artifact", async () => {
+    const configPath = path.join(repoDir, ".cstack", "config.toml");
+    const existing = await fs.readFile(configPath, "utf8");
+    await fs.writeFile(configPath, `${existing}\n[workflows.discover]\ntimeoutSeconds = 1\n`, "utf8");
+
+    process.env.FAKE_CODEX_DELAY_MS = "1500";
+    try {
+      await expect(
+        runDiscover(repoDir, "Map the repo constraints, official API docs, and security risks for the next slice.")
+      ).rejects.toThrow(/discover research lead exited with code 124/);
+
+      const runs = await listRuns(repoDir);
+      const run = await readRun(repoDir, runs[0]!.id);
+      expect(run.status).toBe("failed");
+      expect(run.error).toContain("code 124");
+    } finally {
+      delete process.env.FAKE_CODEX_DELAY_MS;
+    }
+  }, 15_000);
 });

@@ -162,6 +162,8 @@ blockSeverities = ["medium", "high", "critical"]
     const { config, sources } = await loadConfig(repoDir);
 
     expect(sources).toHaveLength(0);
+    expect(config.workflows.spec.timeoutSeconds).toBe(600);
+    expect(config.workflows.discover.timeoutSeconds).toBe(600);
     expect(config.workflows.build.allowDirty).toBe(false);
     expect(config.workflows.build.timeoutSeconds).toBe(900);
     expect(config.workflows.review.mode).toBe("exec");

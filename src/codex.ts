@@ -5,6 +5,8 @@ import { buildEvent, ProgressReporter } from "./progress.js";
 import type { CstackConfig } from "./types.js";
 import type { RunEvent, WorkflowName } from "./types.js";
 
+const DEFAULT_COMPLETION_STALL_MS = 20_000;
+
 export interface CodexRunOptions {
   cwd: string;
   workflow: WorkflowName;
@@ -65,11 +67,20 @@ function summarizeCommandLine(line: string): string | null {
     return null;
   }
 
-  const command = toolMatch[1].replace(/^\/bin\/bash -lc\s+/, "").replace(/^exec\s+/i, "").trim();
+  const command = toolMatch[1].replace(/^exec\s+/i, "").replace(/^\/bin\/(?:ba|z)sh -lc\s+/, "").trim();
   return `Tool ${toolMatch[2]}: ${command}`;
 }
 
-function summarizeActivityLine(line: string): string | null {
+function looksLikeCodeLine(trimmed: string): boolean {
+  return (
+    /^(const|let|var|function|class|interface|type|import|export|return|await)\b/.test(trimmed) ||
+    /=>/.test(trimmed) ||
+    /[;{}]$/.test(trimmed) ||
+    (/[=]/.test(trimmed) && /[()]/.test(trimmed))
+  );
+}
+
+export function summarizeActivityLine(line: string): string | null {
   const trimmed = line.trim();
   if (!trimmed) {
     return null;
@@ -88,6 +99,10 @@ function summarizeActivityLine(line: string): string | null {
   }
 
   if (/^(#|##|###)\s/.test(trimmed)) {
+    return null;
+  }
+
+  if (looksLikeCodeLine(trimmed)) {
     return null;
   }
 
@@ -211,6 +226,24 @@ function stripCapturedControl(input: string): string {
     .replace(/\n{3,}/g, "\n\n");
 }
 
+function appendPreview(preview: string, chunk: string, limit = 16_384): string {
+  const combined = preview + chunk;
+  return combined.length <= limit ? combined : combined.slice(combined.length - limit);
+}
+
+function looksLikeCompletedPayload(input: string): boolean {
+  const cleaned = stripCapturedControl(input).trim();
+  if (!cleaned) {
+    return false;
+  }
+
+  return (
+    /^\{\s*"status"\s*:\s*"completed"/.test(cleaned) ||
+    /^\{\s*"summary"\s*:\s*"/.test(cleaned) ||
+    /^#\s+/.test(cleaned)
+  );
+}
+
 async function appendEvent(eventsPath: string, event: RunEvent): Promise<void> {
   await fs.appendFile(path.resolve(eventsPath), `${JSON.stringify(event)}\n`, "utf8");
 }
@@ -306,17 +339,28 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
 
     let sessionId: string | undefined;
     let lastActivity = "Codex process launched";
+    let lastMeaningfulActivityAt = startedAt;
     let stdoutBuffer = "";
     let stderrBuffer = "";
+    let stdoutPreview = "";
+    let stderrPreview = "";
     let lastHeartbeatAt = startedAt;
+    let lastRawOutputAt = startedAt;
     let timedOut = false;
+    let stalledAfterOutput = false;
     let forcedSignal: NodeJS.Signals | null = null;
     let killTimer: NodeJS.Timeout | undefined;
+    const completionStallMs = Number.parseInt(process.env.CSTACK_CODEX_COMPLETION_STALL_MS ?? "", 10);
+    const postOutputStallMs =
+      Number.isFinite(completionStallMs) && completionStallMs > 0 ? completionStallMs : DEFAULT_COMPLETION_STALL_MS;
 
     const emitEvent = (event: RunEvent) => {
       events.write(`${JSON.stringify(event)}\n`);
       reporter?.emit(event);
-      lastActivity = event.message;
+      if (event.type !== "heartbeat") {
+        lastActivity = event.message;
+        lastMeaningfulActivityAt = Date.now();
+      }
     };
 
     const emit = (type: RunEvent["type"], message: string, stream?: "stdout" | "stderr") => {
@@ -349,9 +393,27 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
 
     const heartbeat = setInterval(() => {
       const now = Date.now();
-      if (now - lastHeartbeatAt >= 5_000) {
+      if (now - lastHeartbeatAt >= 5_000 && now - lastMeaningfulActivityAt >= 5_000) {
         emit("heartbeat", `Last activity: ${lastActivity}`);
         lastHeartbeatAt = now;
+      }
+      if (
+        !timedOut &&
+        !stalledAfterOutput &&
+        now - lastRawOutputAt >= postOutputStallMs &&
+        (looksLikeCompletedPayload(stdoutPreview) || looksLikeCompletedPayload(stderrPreview))
+      ) {
+        stalledAfterOutput = true;
+        forcedSignal = "SIGTERM";
+        lastActivity = `Accepted completed output after ${Math.round(postOutputStallMs / 1000)}s of post-output silence`;
+        emit("activity", lastActivity);
+        child.kill("SIGTERM");
+        setTimeout(() => {
+          if (child.exitCode === null) {
+            forcedSignal = "SIGKILL";
+            child.kill("SIGKILL");
+          }
+        }, 2_000).unref?.();
       }
     }, 1_000);
 
@@ -372,27 +434,29 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
     child.stdout.on("data", (chunk: Buffer) => {
       stdout.write(chunk);
       const text = chunk.toString("utf8");
+      lastRawOutputAt = Date.now();
       stdoutBuffer += text;
+      stdoutPreview = appendPreview(stdoutPreview, text);
       flushLines("stdout");
       const match = text.match(/session id:\s*([^\s]+)/i);
       if (match?.[1]) {
         sessionId = match[1];
         emit("session", sessionId);
       }
-      lastHeartbeatAt = Date.now();
     });
 
     child.stderr.on("data", (chunk: Buffer) => {
       stderr.write(chunk);
       const text = chunk.toString("utf8");
+      lastRawOutputAt = Date.now();
       stderrBuffer += text;
+      stderrPreview = appendPreview(stderrPreview, text);
       flushLines("stderr");
       const match = text.match(/session id:\s*([^\s]+)/i);
       if (match?.[1]) {
         sessionId = match[1];
         emit("session", sessionId);
       }
-      lastHeartbeatAt = Date.now();
     });
 
     if (timeoutSeconds && timeoutSeconds > 0) {
@@ -404,7 +468,7 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
         stderr.write(`cstack: stage timed out after ${timeoutSeconds}s\n`);
         child.kill("SIGTERM");
         setTimeout(() => {
-          if (child.exitCode === null && !child.killed) {
+          if (child.exitCode === null) {
             forcedSignal = "SIGKILL";
             child.kill("SIGKILL");
           }
@@ -427,7 +491,7 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
        stopTimeouts();
       flushLines("stdout", true);
       flushLines("stderr", true);
-      const exitCode = timedOut ? 124 : (code ?? 1);
+      const exitCode = timedOut ? 124 : stalledAfterOutput ? 0 : (code ?? 1);
       const resolvedSignal = forcedSignal ?? signal;
       if (exitCode === 0) {
         emit("completed", `Exit code ${exitCode}`);

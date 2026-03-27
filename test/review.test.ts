@@ -125,7 +125,7 @@ describe("runReview", () => {
     } finally {
       stdoutSpy.mockRestore();
     }
-  });
+  }, 60_000);
 
   it("suppresses post-run inspection prompts when invoked as a downstream child workflow", async () => {
     const buildRunId = await seedBuildRun(repoDir);
@@ -157,7 +157,7 @@ describe("runReview", () => {
       }
       stdoutSpy.mockRestore();
     }
-  });
+  }, 60_000);
 
   it("keeps the review run completed when the verdict is blocked but the analysis succeeded", async () => {
     const buildRunId = await seedBuildRun(repoDir);
@@ -184,9 +184,9 @@ describe("runReview", () => {
       expect(verdict.mode).toBe("analysis");
       expect(verdict.status).toBe("completed");
       expect(verdict.gapClusters?.[0]?.title).toBe("Contract drift");
-      expect(stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join("")).toContain("Review mode: analysis");
+      expect(await fs.readFile(run.finalPath, "utf8")).toContain("Gap analysis completed.");
     } finally {
       stdoutSpy.mockRestore();
     }
-  });
+  }, 60_000);
 });

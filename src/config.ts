@@ -12,6 +12,7 @@ const DEFAULT_CONFIG: CstackConfig = {
   },
   workflows: {
     spec: {
+      timeoutSeconds: 600,
       delegation: {
         enabled: false,
         maxAgents: 0
@@ -25,7 +26,8 @@ const DEFAULT_CONFIG: CstackConfig = {
       research: {
         enabled: true,
         allowWeb: false
-      }
+      },
+      timeoutSeconds: 600
     },
     build: {
       mode: "interactive",

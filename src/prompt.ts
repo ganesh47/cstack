@@ -19,6 +19,76 @@ export function excerpt(input: string, lines = 24): string {
   return input.split("\n").slice(0, lines).join("\n");
 }
 
+interface PromptReferenceFile {
+  path: string;
+  label: string;
+  body: string;
+}
+
+const REPOSITORY_CONTEXT_CANDIDATES = [
+  "docs/specs/cstack-spec-v0.1.md",
+  "docs/research/gstack-codex-interaction-model.md",
+  "specs/001-plan-alignment/spec.md",
+  "specs/001-plan-alignment/research.md",
+  "sqlite-metadata-system.md",
+  "docs/project-readme.md",
+  "AGENTS.md",
+  "README.md"
+];
+
+async function readPromptReferenceFiles(cwd: string, limit = 4): Promise<PromptReferenceFile[]> {
+  const resolved: PromptReferenceFile[] = [];
+
+  for (const relativePath of REPOSITORY_CONTEXT_CANDIDATES) {
+    if (resolved.length >= limit) {
+      break;
+    }
+
+    const filePath = path.join(cwd, relativePath);
+    try {
+      const body = await fs.readFile(filePath, "utf8");
+      resolved.push({
+        path: filePath,
+        label: path.relative(cwd, filePath) || path.basename(filePath),
+        body
+      });
+    } catch {}
+  }
+
+  return resolved;
+}
+
+function buildReferenceContextLines(referenceFiles: PromptReferenceFile[]): string[] {
+  if (referenceFiles.length === 0) {
+    return ["Reference files: none"];
+  }
+
+  return [
+    `Reference files: ${referenceFiles.map((file) => file.label).join(", ")}`,
+    ...referenceFiles.map((file, index) => `Reference ${index + 1}: ${file.path}`)
+  ];
+}
+
+function buildReferencePromptLines(referenceFiles: PromptReferenceFile[], options: { includeExcerpts?: boolean } = {}): string[] {
+  const { includeExcerpts = false } = options;
+
+  if (referenceFiles.length === 0) {
+    return ["## Referenced files", "- none"];
+  }
+
+  const lines: string[] = [];
+
+  if (includeExcerpts) {
+    lines.push("## Repository context excerpts", "");
+    for (const file of referenceFiles) {
+      lines.push(`### ${file.label}`, excerpt(file.body) || "(empty)", "");
+    }
+  }
+
+  lines.push("## Referenced files", ...referenceFiles.map((file) => `- ${file.path}`));
+  return lines;
+}
+
 async function buildWorkflowPrompt(options: {
   cwd: string;
   input: string;
@@ -26,10 +96,9 @@ async function buildWorkflowPrompt(options: {
   config: CstackConfig;
 }): Promise<{ prompt: string; context: string }> {
   const { cwd, input, workflow, config } = options;
-  const specDoc = path.join(cwd, "docs", "specs", "cstack-spec-v0.1.md");
-  const researchDoc = path.join(cwd, "docs", "research", "gstack-codex-interaction-model.md");
   const promptAssetPath = path.join(cwd, ".cstack", "prompts", `${workflow}.md`);
   const workflowConfig = config.workflows[workflow];
+  const referenceFiles = await readPromptReferenceFiles(cwd);
   const context = [
     `Workflow: ${workflow}`,
     `Delegation enabled: ${workflowConfig.delegation?.enabled ? "yes" : "no"}`,
@@ -41,21 +110,12 @@ async function buildWorkflowPrompt(options: {
         ]
       : []),
     `Prompt asset: ${promptAssetPath}`,
-    `Spec source: ${specDoc}`,
-    `Research source: ${researchDoc}`
+    ...buildReferenceContextLines(referenceFiles)
   ].join("\n");
 
-  let specText = "";
-  let researchText = "";
   let promptAsset = "";
   try {
     promptAsset = await fs.readFile(promptAssetPath, "utf8");
-  } catch {}
-  try {
-    specText = await fs.readFile(specDoc, "utf8");
-  } catch {}
-  try {
-    researchText = await fs.readFile(researchDoc, "utf8");
   } catch {}
 
   const prompt = [
@@ -67,22 +127,26 @@ async function buildWorkflowPrompt(options: {
     "## User request",
     input,
     "",
-    "## Repository spec excerpt",
-    excerpt(specText) || "(missing)",
-    "",
-    "## Repository research excerpt",
-    excerpt(researchText) || "(missing)",
-    "",
-    "## Referenced files",
-    `- ${specDoc}`,
-    `- ${researchDoc}`
+    ...buildReferencePromptLines(referenceFiles, { includeExcerpts: true })
   ].join("\n");
 
   return { prompt, context };
 }
 
 export async function buildSpecPrompt(cwd: string, input: string, config: CstackConfig): Promise<{ prompt: string; context: string }> {
-  return buildWorkflowPrompt({ cwd, input, workflow: "spec", config });
+  const { prompt, context } = await buildWorkflowPrompt({ cwd, input, workflow: "spec", config });
+  return {
+    prompt: [
+      prompt,
+      "",
+      "## Spec execution contract",
+      "- produce an implementation-ready plan, not an exhaustive repo audit",
+      "- if the request is broad, choose the highest-leverage first remediation slice",
+      "- rely on provided discover findings and a representative sample of repo files instead of re-scanning everything",
+      "- if evidence is incomplete, record bounded open questions and stop"
+    ].join("\n"),
+    context
+  };
 }
 
 export async function buildDiscoverPrompt(cwd: string, input: string, config: CstackConfig): Promise<{ prompt: string; context: string }> {
@@ -241,17 +305,15 @@ export async function buildDiscoverTrackPrompt(options: {
   plan: DiscoverResearchPlan;
 }): Promise<{ prompt: string; context: string }> {
   const { cwd, input, track, reason, plan } = options;
-  const specDoc = path.join(cwd, "docs", "specs", "cstack-spec-v0.1.md");
-  const researchDoc = path.join(cwd, "docs", "research", "gstack-codex-interaction-model.md");
   const title = discoverTrackTitle(track);
+  const referenceFiles = await readPromptReferenceFiles(cwd);
 
   const context = [
     "Workflow: discover",
     `Track: ${track}`,
     `Reason: ${reason}`,
     `Web research allowed: ${plan.webResearchAllowed ? "yes" : "no"}`,
-    `Spec source: ${specDoc}`,
-    `Research source: ${researchDoc}`
+    ...buildReferenceContextLines(referenceFiles)
   ].join("\n");
 
   const prompt = [
@@ -288,9 +350,7 @@ export async function buildDiscoverTrackPrompt(options: {
     "## Discover research plan",
     JSON.stringify(plan, null, 2),
     "",
-    "## Referenced files",
-    `- ${specDoc}`,
-    `- ${researchDoc}`
+    ...buildReferencePromptLines(referenceFiles)
   ].join("\n");
 
   return { prompt, context };
@@ -303,16 +363,14 @@ export async function buildDiscoverLeadPrompt(options: {
   delegateResults: DiscoverDelegateResult[];
 }): Promise<{ prompt: string; context: string }> {
   const { cwd, input, plan, delegateResults } = options;
-  const specDoc = path.join(cwd, "docs", "specs", "cstack-spec-v0.1.md");
-  const researchDoc = path.join(cwd, "docs", "research", "gstack-codex-interaction-model.md");
+  const referenceFiles = await readPromptReferenceFiles(cwd);
 
   const context = [
     "Workflow: discover",
     "Role: Research Lead",
     `Delegated tracks: ${delegateResults.map((result) => result.track).join(", ") || "none"}`,
     `Web research allowed: ${plan.webResearchAllowed ? "yes" : "no"}`,
-    `Spec source: ${specDoc}`,
-    `Research source: ${researchDoc}`
+    ...buildReferenceContextLines(referenceFiles)
   ].join("\n");
 
   const prompt = [
@@ -348,9 +406,7 @@ export async function buildDiscoverLeadPrompt(options: {
     "## Delegate results",
     JSON.stringify(delegateResults, null, 2),
     "",
-    "## Referenced files",
-    `- ${specDoc}`,
-    `- ${researchDoc}`
+    ...buildReferencePromptLines(referenceFiles)
   ].join("\n");
 
   return { prompt, context };
@@ -391,16 +447,14 @@ export async function buildSpecialistPrompt(options: {
   specOutput?: string;
 }): Promise<{ prompt: string; context: string }> {
   const { cwd, intent, name, reason, routingPlan, discoverFindings, specOutput } = options;
-  const specDoc = path.join(cwd, "docs", "specs", "cstack-spec-v0.1.md");
-  const researchDoc = path.join(cwd, "docs", "research", "gstack-codex-interaction-model.md");
   const title = specialistTitle(name);
+  const referenceFiles = await readPromptReferenceFiles(cwd);
 
   const context = [
     `Workflow: intent`,
     `Specialist: ${name}`,
     `Reason: ${reason}`,
-    `Spec source: ${specDoc}`,
-    `Research source: ${researchDoc}`
+    ...buildReferenceContextLines(referenceFiles)
   ].join("\n");
 
   const prompt = [
@@ -429,9 +483,7 @@ export async function buildSpecialistPrompt(options: {
     "## Spec output excerpt",
     specOutput ? excerpt(specOutput, 40) : "(missing)",
     "",
-    "## Referenced files",
-    `- ${specDoc}`,
-    `- ${researchDoc}`
+    ...buildReferencePromptLines(referenceFiles)
   ].join("\n");
 
   return { prompt, context };
@@ -448,7 +500,7 @@ export async function buildDeliverReviewLeadPrompt(options: {
   specialistResults: Array<{ name: SpecialistName; reason: string; finalBody: string }>;
 }): Promise<{ prompt: string; context: string }> {
   const { cwd, input, mode, buildSummary, verificationRecord, validationPlan, validationLocalRecord, specialistResults } = options;
-  const specDoc = path.join(cwd, "docs", "specs", "cstack-spec-v0.1.md");
+  const referenceFiles = await readPromptReferenceFiles(cwd);
 
   return {
     prompt: [
@@ -517,15 +569,14 @@ export async function buildDeliverReviewLeadPrompt(options: {
       "## Specialist outputs",
       JSON.stringify(specialistResults, null, 2),
       "",
-      "## Referenced files",
-      `- ${specDoc}`
+      ...buildReferencePromptLines(referenceFiles)
     ].join("\n"),
     context: [
       `Workflow: ${mode === "analysis" ? "review" : "deliver"}`,
       "Role: Review Lead",
       `Review mode: ${mode}`,
       `Selected specialists: ${specialistResults.map((result) => result.name).join(", ") || "none"}`,
-      `Spec source: ${specDoc}`
+      ...buildReferenceContextLines(referenceFiles)
     ].join("\n")
   };
 }
@@ -539,8 +590,8 @@ export async function buildDeliverSpecialistPrompt(options: {
   verificationRecord: object;
 }): Promise<{ prompt: string; context: string }> {
   const { cwd, input, name, reason, buildSummary, verificationRecord } = options;
-  const specDoc = path.join(cwd, "docs", "specs", "cstack-spec-v0.1.md");
   const title = specialistTitle(name);
+  const referenceFiles = await readPromptReferenceFiles(cwd);
 
   return {
     prompt: [
@@ -566,14 +617,13 @@ export async function buildDeliverSpecialistPrompt(options: {
       "## Verification evidence",
       JSON.stringify(verificationRecord, null, 2),
       "",
-      "## Referenced files",
-      `- ${specDoc}`
+      ...buildReferencePromptLines(referenceFiles)
     ].join("\n"),
     context: [
       "Workflow: deliver",
       `Specialist: ${name}`,
       `Reason: ${reason}`,
-      `Spec source: ${specDoc}`
+      ...buildReferenceContextLines(referenceFiles)
     ].join("\n")
   };
 }
@@ -590,7 +640,7 @@ export async function buildDeliverShipPrompt(options: {
   githubDeliveryRecord: object;
 }): Promise<{ prompt: string; context: string }> {
   const { cwd, input, buildSummary, validationPlan, validationLocalRecord, reviewVerdict, verificationRecord, githubMutationRecord, githubDeliveryRecord } = options;
-  const specDoc = path.join(cwd, "docs", "specs", "cstack-spec-v0.1.md");
+  const referenceFiles = await readPromptReferenceFiles(cwd);
 
   return {
     prompt: [
@@ -638,14 +688,13 @@ export async function buildDeliverShipPrompt(options: {
       "## GitHub delivery evidence",
       JSON.stringify(githubDeliveryRecord, null, 2),
       "",
-      "## Referenced files",
-      `- ${specDoc}`
+      ...buildReferencePromptLines(referenceFiles)
     ].join("\n"),
     context: [
       "Workflow: deliver",
       "Role: Ship Lead",
       `Review status: ${reviewVerdict.status}`,
-      `Spec source: ${specDoc}`
+      ...buildReferenceContextLines(referenceFiles)
     ].join("\n")
   };
 }
@@ -661,8 +710,8 @@ export async function buildDeliverValidationSpecialistPrompt(options: {
   buildVerificationRecord: object;
 }): Promise<{ prompt: string; context: string }> {
   const { cwd, input, name, reason, repoProfile, toolResearch, buildSummary, buildVerificationRecord } = options;
-  const specDoc = path.join(cwd, "docs", "specs", "cstack-spec-v0.1.md");
   const title = specialistTitle(name);
+  const referenceFiles = await readPromptReferenceFiles(cwd);
 
   return {
     prompt: [
@@ -695,15 +744,14 @@ export async function buildDeliverValidationSpecialistPrompt(options: {
       "## Build verification",
       JSON.stringify(buildVerificationRecord, null, 2),
       "",
-      "## Referenced files",
-      `- ${specDoc}`
+      ...buildReferencePromptLines(referenceFiles)
     ].join("\n"),
     context: [
       "Workflow: deliver",
       "Role: Validation specialist",
       `Specialist: ${name}`,
       `Reason: ${reason}`,
-      `Spec source: ${specDoc}`
+      ...buildReferenceContextLines(referenceFiles)
     ].join("\n")
   };
 }
@@ -719,7 +767,7 @@ export async function buildDeliverValidationLeadPrompt(options: {
   specialistResults: Array<{ name: SpecialistName; reason: string; finalBody: string }>;
 }): Promise<{ prompt: string; context: string }> {
   const { cwd, input, repoProfile, toolResearch, initialPlan, buildSummary, buildVerificationRecord, specialistResults } = options;
-  const specDoc = path.join(cwd, "docs", "specs", "cstack-spec-v0.1.md");
+  const referenceFiles = await readPromptReferenceFiles(cwd);
 
   return {
     prompt: [
@@ -773,14 +821,13 @@ export async function buildDeliverValidationLeadPrompt(options: {
       "## Validation specialist outputs",
       JSON.stringify(specialistResults, null, 2),
       "",
-      "## Referenced files",
-      `- ${specDoc}`
+      ...buildReferencePromptLines(referenceFiles)
     ].join("\n"),
     context: [
       "Workflow: deliver",
       "Role: Validation Lead",
       `Selected validation specialists: ${specialistResults.map((result) => result.name).join(", ") || "none"}`,
-      `Spec source: ${specDoc}`
+      ...buildReferenceContextLines(referenceFiles)
     ].join("\n")
   };
 }

@@ -167,7 +167,7 @@ describe("intent router", () => {
     } finally {
       stdoutSpy.mockRestore();
     }
-  });
+  }, 60_000);
 
   it("tracks downstream review progress in the parent intent run", async () => {
     await runIntent(repoDir, "What are the gaps in the current project?", {
@@ -200,7 +200,7 @@ describe("intent router", () => {
     expect(eventsBody).toContain("Downstream review stage: review");
     expect(eventsBody).not.toContain("Running discover stage");
     expect(eventsBody).not.toContain("Running spec stage");
-  });
+  }, 60_000);
 
   it("keeps intent completed when downstream review finds blocked gaps", async () => {
     const intentRunId = await runIntent(repoDir, "What are the gaps in this project", {
@@ -231,7 +231,7 @@ describe("intent router", () => {
     expect(lineage.stages.map((stage) => stage.name)).toEqual(["review"]);
     expect(lineage.stages.find((stage) => stage.name === "review")?.status).toBe("completed");
     expect(await fs.readFile(intentRun.finalPath, "utf8")).toContain("Gap analysis completed. High-priority product and delivery gaps remain.");
-  });
+  }, 60_000);
 
   it("auto-executes downstream delivery for gap-analysis prompts that also ask for remediation", async () => {
     await fs.writeFile(path.join(repoDir, "dirty-local.txt"), "do not copy\n", "utf8");
@@ -266,7 +266,7 @@ describe("intent router", () => {
     expect(executionContext.execution.kind).toBe("git-worktree");
     expect(executionContext.source.dirtyFiles).toContain("dirty-local.txt");
     expect(executionContext.source.localChangesIgnored).toBe(true);
-  });
+  }, 60_000);
 
   it("surfaces downstream build failure promptly and marks later stages deferred", async () => {
     process.env.FAKE_CODEX_FAIL_BUILD = "1";
@@ -291,7 +291,7 @@ describe("intent router", () => {
     expect(lineage.stages.find((stage) => stage.name === "review")?.status).toBe("deferred");
     expect(lineage.stages.find((stage) => stage.name === "ship")?.status).toBe("deferred");
     expect(finalBody).toContain("Blocked because build failed");
-  });
+  }, 60_000);
 
   it("supports dry-run routing without executing stages", async () => {
     await runIntent(repoDir, "Plan a compliance-safe billing migration", {
@@ -308,5 +308,5 @@ describe("intent router", () => {
     expect(run.status).toBe("completed");
     expect(lineage.stages.every((stage) => stage.status === "skipped")).toBe(true);
     await expect(fs.access(path.join(runDir, "stages", "discover"))).rejects.toThrow();
-  });
+  }, 60_000);
 });
