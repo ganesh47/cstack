@@ -600,7 +600,10 @@ function parseJson<T>(raw: string, context: string): T {
   try {
     return JSON.parse(raw) as T;
   } catch (error) {
-    throw new Error(`${context} did not return valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+    const details = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      details.includes("did not write final output") ? `${context} did not write final output` : `${context} did not return valid JSON: ${details}`
+    );
   }
 }
 

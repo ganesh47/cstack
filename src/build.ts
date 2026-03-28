@@ -797,6 +797,7 @@ async function runCodexBuildAttempt(options: {
   let observedMode = options.requestedMode;
   let fallbackReason: string | undefined;
   const notes: string[] = [];
+  await fs.writeFile(options.paths.finalPath, "", "utf8");
 
   if (observedMode === "interactive" && !canUseInteractiveBuild()) {
     observedMode = "exec";
@@ -885,15 +886,18 @@ function shouldRetryCodexAttempt(outcome: CodexAttemptOutcome, attemptNumber: nu
   if (outcome.transcriptBody.trim()) {
     return false;
   }
-  const finalBody = outcome.finalBody.trim();
+  const finalBodyUsable = outcome.finalBody.trim() && !outcome.result.synthesizedFinalArtifact;
   const stderrTail = outcome.stderrTail.trim();
-  if (!finalBody && !stderrTail) {
+  if (!finalBodyUsable && !stderrTail) {
     return true;
   }
-  if (!finalBody && /interactive codex exited with code/i.test(stderrTail)) {
+  if (!finalBodyUsable && /interactive codex exited with code/i.test(stderrTail)) {
     return true;
   }
-  if (/interactive codex exited with code/i.test(stderrTail) && /no build transcript|no final markdown/i.test(finalBody)) {
+  if (
+    /interactive codex exited with code/i.test(stderrTail) &&
+    /no build transcript|no final markdown/i.test(outcome.finalBody)
+  ) {
     return true;
   }
   return false;
@@ -1022,7 +1026,7 @@ export async function runBuildExecution(options: BuildExecutionOptions): Promise
     observability: {
       sessionIdObserved: Boolean(codexOutcome.result.sessionId),
       transcriptObserved: Boolean(codexOutcome.transcriptBody.trim()),
-      finalArtifactObserved: Boolean(codexOutcome.finalBody.trim()),
+      finalArtifactObserved: !codexOutcome.result.synthesizedFinalArtifact && Boolean(codexOutcome.finalBody.trim()),
       ...(codexOutcome.result.stalled ? { stalled: true } : {}),
       ...(codexOutcome.result.stallReason ? { stallReason: codexOutcome.result.stallReason } : {}),
       ...(codexOutcome.result.timedOut ? { timedOut: true } : {}),

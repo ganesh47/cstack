@@ -355,9 +355,23 @@ export async function readCodexFinalOutput(options: {
   finalPath: string;
   stdoutPath: string;
   stderrPath: string;
-  result: Pick<CodexRunResult, "code" | "signal" | "timedOut" | "timeoutSeconds" | "stalled" | "stallReason" | "lastActivity">;
+  result: Pick<
+    CodexRunResult,
+    | "code"
+    | "signal"
+    | "timedOut"
+    | "timeoutSeconds"
+    | "stalled"
+    | "stallReason"
+    | "lastActivity"
+    | "synthesizedFinalArtifact"
+    | "synthesizedFinalReason"
+  >;
 }): Promise<string> {
   const finalBody = await readTextFromPath(options.finalPath);
+  if (options.result.synthesizedFinalArtifact || /synthesized a fallback artifact/i.test(finalBody)) {
+    throw new Error(`${options.context} did not write final output.`);
+  }
   if (finalBody.trim()) {
     return finalBody;
   }
@@ -707,6 +721,7 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
       flushLines("stderr", true);
       const exitCode = timedOut || stalledAfterSession || stalledAfterNoProgress ? 124 : stalledAfterOutput ? 0 : (code ?? 1);
       const resolvedSignal = forcedSignal ?? signal;
+      const priorLastActivity = lastActivity;
       const finalArtifact = await ensureFinalArtifact({
         finalPath: options.finalPath,
         stdoutPreview,
@@ -716,6 +731,9 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
       });
       if (finalArtifact.synthesized && finalArtifact.reason) {
         emit("activity", finalArtifact.reason);
+        if (timedOut && priorLastActivity) {
+          lastActivity = priorLastActivity;
+        }
       }
       if (exitCode === 0) {
         emit("completed", `Exit code ${exitCode}`);
