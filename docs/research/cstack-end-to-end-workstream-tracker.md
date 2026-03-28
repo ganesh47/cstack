@@ -19,7 +19,8 @@ Historical note:
 
 - issue: [#33](https://github.com/ganesh47/cstack/issues/33)
 - spec: `docs/specs/cstack-github-planning-lineage-slice.md`
-- status: kickoff mapped
+- status: implemented and verified
+- issue updates posted (comments on #33 and #32)
 - first implementation target:
   - add planning issue linkage to `spec`
   - write `artifacts/issue-draft.md`
@@ -30,7 +31,8 @@ Historical note:
 
 - issue: [#34](https://github.com/ganesh47/cstack/issues/34)
 - spec: `docs/specs/cstack-deliver-validation-intelligence-slice.md`
-- status: kickoff in progress
+- status: implemented and verified
+- issue updates posted (comments on #34 and #32)
 - first implementation target:
   - tighten repo profiling and validation artifact contracts
   - improve inspector support for validation evidence
@@ -39,7 +41,8 @@ Historical note:
 
 - issue: [#35](https://github.com/ganesh47/cstack/issues/35)
 - spec: `docs/specs/cstack-post-ship-feedback-slice.md`
-- status: kickoff in progress
+- status: implemented and verified
+- issue updates posted (comments on #35 and #32)
 - first implementation target:
   - add bounded post-ship artifact family and follow-up draft support
 
@@ -47,7 +50,8 @@ Historical note:
 
 - issue: [#36](https://github.com/ganesh47/cstack/issues/36)
 - spec: `docs/specs/cstack-initiative-graph-slice.md`
-- status: kickoff in progress
+- status: implemented and verified
+- issue updates posted (comments on #36 and #32)
 - first implementation target:
   - add initiative identifiers and grouped lineage artifacts
 
@@ -55,7 +59,8 @@ Historical note:
 
 - issue: [#37](https://github.com/ganesh47/cstack/issues/37)
 - spec: `docs/specs/cstack-delivery-checklist-deployment-evidence-slice.md`
-- status: kickoff in progress
+- status: implemented and verified
+- issue updates posted (comments on #37 and #32)
 - first implementation target:
   - add readiness-policy artifacts and deployment evidence references
 
@@ -63,7 +68,8 @@ Historical note:
 
 - issue: [#38](https://github.com/ganesh47/cstack/issues/38)
 - spec: `docs/specs/cstack-capability-pack-governance-slice.md`
-- status: kickoff in progress
+- status: implemented and verified
+- issue updates posted (comments on #38 and #32)
 - first implementation target:
   - add requested, allowed, available, and used capability recording
 
