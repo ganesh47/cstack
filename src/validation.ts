@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { classifyExecutionBlocker, uniqueBlockerCategories } from "./blockers.js";
-import { runCodexExec } from "./codex.js";
+import { readCodexFinalOutput, runCodexExec } from "./codex.js";
 import {
   buildDeliverValidationLeadPrompt,
   buildDeliverValidationSpecialistPrompt
@@ -1129,7 +1129,13 @@ async function runValidationSpecialist(options: {
       stderrPath,
       config: options.config
     });
-    const finalBody = await fs.readFile(finalPath, "utf8");
+    const finalBody = await readCodexFinalOutput({
+      context: `Validation specialist ${options.specialist.name}`,
+      finalPath,
+      stdoutPath,
+      stderrPath,
+      result
+    });
     await fs.writeFile(artifactPath, finalBody, "utf8");
     return {
       execution: {
@@ -1296,7 +1302,13 @@ export async function runDeliverValidationExecution(options: DeliverValidationEx
     config: options.config
   });
 
-  const finalBody = await fs.readFile(options.paths.finalPath, "utf8");
+  const finalBody = await readCodexFinalOutput({
+    context: "Validation lead",
+    finalPath: options.paths.finalPath,
+    stdoutPath: options.paths.stdoutPath,
+    stderrPath: options.paths.stderrPath,
+    result
+  });
   const validationPlan = parseJson<DeliverValidationPlan>(finalBody, "Validation lead");
   const acceptedByName = new Map(validationPlan.selectedSpecialists.map((entry) => [entry.name, entry]));
   for (let index = 0; index < specialistExecutions.length; index += 1) {

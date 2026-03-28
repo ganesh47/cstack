@@ -2,7 +2,7 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import { buildEvent, ProgressReporter } from "./progress.js";
 import { resolveLinkedBuildContext, runBuildExecution, type BuildExecutionResult, type LinkedBuildContext } from "./build.js";
-import { runCodexExec } from "./codex.js";
+import { readCodexFinalOutput, runCodexExec } from "./codex.js";
 import { collectGitHubDeliveryEvidence, performGitHubDeliverMutations } from "./github.js";
 import { buildPostShipArtifacts } from "./post-ship.js";
 import { buildDeploymentEvidenceRecord, buildReadinessPolicyRecord } from "./ship.js";
@@ -193,7 +193,13 @@ async function runDeliverSpecialist(options: {
       config: options.config
     });
 
-    const finalBody = await fs.readFile(finalPath, "utf8");
+    const finalBody = await readCodexFinalOutput({
+      context: `Deliver specialist ${options.specialist.name}`,
+      finalPath,
+      stdoutPath,
+      stderrPath,
+      result
+    });
     await fs.writeFile(artifactPath, finalBody, "utf8");
 
     return {
@@ -1236,7 +1242,13 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
       ...(typeof options.reviewTimeoutSeconds === "number" ? { timeoutSeconds: options.reviewTimeoutSeconds } : {})
     });
     reviewResultCode = reviewResult.code;
-    const reviewRaw = await fs.readFile(path.join(reviewStageDir, "final.md"), "utf8");
+    const reviewRaw = await readCodexFinalOutput({
+      context: "Review lead",
+      finalPath: path.join(reviewStageDir, "final.md"),
+      stdoutPath: path.join(reviewStageDir, "stdout.log"),
+      stderrPath: path.join(reviewStageDir, "stderr.log"),
+      result: reviewResult
+    });
     reviewVerdict = parseJson<DeliverReviewVerdict>(reviewRaw, "Review lead");
 
     const acceptedByName = new Map(reviewVerdict.acceptedSpecialists.map((entry) => [entry.name, entry]));
@@ -1354,7 +1366,13 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
       config: options.config,
       ...(typeof options.shipTimeoutSeconds === "number" ? { timeoutSeconds: options.shipTimeoutSeconds } : {})
     });
-    const shipRaw = await fs.readFile(path.join(shipStageDir, "final.md"), "utf8");
+    const shipRaw = await readCodexFinalOutput({
+      context: "Ship lead",
+      finalPath: path.join(shipStageDir, "final.md"),
+      stdoutPath: path.join(shipStageDir, "stdout.log"),
+      stderrPath: path.join(shipStageDir, "stderr.log"),
+      result: shipResult
+    });
     let parsedShipRecord = parseJson<DeliverShipRecord>(shipRaw, "Ship lead");
 
     if (githubDeliveryRecord.overall.status === "blocked") {

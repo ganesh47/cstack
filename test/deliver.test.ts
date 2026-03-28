@@ -171,6 +171,9 @@ describe("runDeliver", () => {
     delete process.env.FAKE_CODEX_DELAY_MS;
     delete process.env.FAKE_CODEX_VALIDATION_COMMAND;
     delete process.env.FAKE_CODEX_VALIDATION_STATUS;
+    delete process.env.FAKE_CODEX_NO_FINAL_VALIDATION;
+    delete process.env.FAKE_CODEX_NO_FINAL_DELIVER_REVIEW;
+    delete process.env.FAKE_CODEX_NO_FINAL_SHIP;
     delete process.env.CSTACK_FORCE_CLONE_FALLBACK;
     await fs.rm(repoDir, { recursive: true, force: true });
     await fs.rm(remoteDir, { recursive: true, force: true });
@@ -389,6 +392,161 @@ describe("runDeliver", () => {
     expect(validationPlan.status).toBe("partial");
     expect(validationPlan.outcomeCategory).toBe("partial");
     expect(lineage.stages.find((stage) => stage.name === "validation")?.status).toBe("deferred");
+  }, 20_000);
+
+  it("fails closed when the validation lead exits without writing final output", async () => {
+    process.env.FAKE_CODEX_NO_FINAL_VALIDATION = "1";
+    await writeGitHubFixture({
+      repoView: {
+        nameWithOwner: "ganesh47/cstack",
+        defaultBranchRef: { name: "main" }
+      },
+      createdPullRequest: {
+        reviewDecision: "APPROVED",
+        mergeStateStatus: "CLEAN"
+      },
+      issues: [],
+      prChecks: [
+        { name: "deliver/test", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/24" },
+        { name: "deliver/typecheck", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/25" }
+      ],
+      actions: [
+        { databaseId: 5, workflowName: "Release", status: "completed", conclusion: "success", url: "https://github.com/ganesh47/cstack/actions/runs/5" }
+      ],
+      security: {
+        dependabot: [],
+        codeScanning: []
+      }
+    });
+
+    await runDeliver(repoDir, ["Deliver a slice where validation exits without final output"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const validationPlan = JSON.parse(await fs.readFile(path.join(runDir, "stages", "validation", "validation-plan.json"), "utf8")) as {
+      status: string;
+      outcomeCategory: string;
+      summary: string;
+    };
+    const validationFinal = await fs.readFile(path.join(runDir, "stages", "validation", "final.md"), "utf8");
+    const deliverySummary = await fs.readFile(run.finalPath, "utf8");
+
+    expect(run.status).toBe("failed");
+    expect(validationPlan.status).toBe("blocked");
+    expect(validationPlan.outcomeCategory).toBe("blocked-by-validation");
+    expect(validationPlan.summary).toContain("Validation lead did not write final output");
+    expect(validationPlan.summary).not.toContain("ENOENT");
+    expect(validationFinal).toContain("Validation stage failed");
+    expect(deliverySummary).toContain("Validation lead did not write final output");
+    expect(deliverySummary).not.toContain("ENOENT");
+  }, 20_000);
+
+  it("fails closed when the ship lead exits without writing final output", async () => {
+    process.env.FAKE_CODEX_NO_FINAL_SHIP = "1";
+    await writeGitHubFixture({
+      repoView: {
+        nameWithOwner: "ganesh47/cstack",
+        defaultBranchRef: { name: "main" }
+      },
+      createdPullRequest: {
+        reviewDecision: "APPROVED",
+        mergeStateStatus: "CLEAN"
+      },
+      issues: [
+        {
+          number: 654,
+          title: "Ship fallback issue",
+          state: "CLOSED",
+          url: "https://github.com/ganesh47/cstack/issues/654",
+          closedAt: "2026-03-14T00:00:00.000Z"
+        }
+      ],
+      prChecks: [
+        { name: "deliver/test", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/26" },
+        { name: "deliver/typecheck", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/27" }
+      ],
+      actions: [
+        { databaseId: 6, workflowName: "Release", status: "completed", conclusion: "success", url: "https://github.com/ganesh47/cstack/actions/runs/6" }
+      ],
+      security: {
+        dependabot: [],
+        codeScanning: []
+      }
+    });
+
+    await runDeliver(repoDir, ["Deliver a slice where ship exits without final output for #654"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const shipRecord = JSON.parse(await fs.readFile(path.join(runDir, "stages", "ship", "artifacts", "ship-record.json"), "utf8")) as {
+      readiness: string;
+      summary: string;
+    };
+    const shipFinal = await fs.readFile(path.join(runDir, "stages", "ship", "final.md"), "utf8");
+    const githubMutation = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "github-mutation.json"), "utf8")) as {
+      summary: string;
+      blockers: string[];
+    };
+    const deliverySummary = await fs.readFile(run.finalPath, "utf8");
+
+    expect(run.status).toBe("failed");
+    expect(shipRecord.readiness).toBe("blocked");
+    expect(shipRecord.summary).toContain("Ship lead did not write final output");
+    expect(shipRecord.summary).not.toContain("ENOENT");
+    expect(shipFinal).toContain("Ship stage failed");
+    expect(githubMutation.summary).toContain("Ship stage failed");
+    expect(githubMutation.summary).not.toContain("ENOENT");
+    expect(githubMutation.blockers.join("\n")).toContain("Ship lead did not write final output");
+    expect(deliverySummary).toContain("Ship lead did not write final output");
+    expect(deliverySummary).not.toContain("ENOENT");
+  }, 20_000);
+
+  it("fails closed when the review lead exits without writing final output", async () => {
+    process.env.FAKE_CODEX_NO_FINAL_DELIVER_REVIEW = "1";
+    await writeGitHubFixture({
+      repoView: {
+        nameWithOwner: "ganesh47/cstack",
+        defaultBranchRef: { name: "main" }
+      },
+      createdPullRequest: {
+        reviewDecision: "APPROVED",
+        mergeStateStatus: "CLEAN"
+      },
+      issues: [],
+      prChecks: [
+        { name: "deliver/test", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/28" },
+        { name: "deliver/typecheck", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/29" }
+      ],
+      actions: [
+        { databaseId: 7, workflowName: "Release", status: "completed", conclusion: "success", url: "https://github.com/ganesh47/cstack/actions/runs/7" }
+      ],
+      security: {
+        dependabot: [],
+        codeScanning: []
+      }
+    });
+
+    await runDeliver(repoDir, ["Deliver a slice where review exits without final output"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const verdict = JSON.parse(await fs.readFile(path.join(runDir, "stages", "review", "artifacts", "verdict.json"), "utf8")) as {
+      status: string;
+      summary: string;
+    };
+    const reviewFinal = await fs.readFile(path.join(runDir, "stages", "review", "final.md"), "utf8");
+    const deliverySummary = await fs.readFile(run.finalPath, "utf8");
+
+    expect(run.status).toBe("failed");
+    expect(verdict.status).toBe("blocked");
+    expect(verdict.summary).toContain("Review lead did not write final output");
+    expect(verdict.summary).not.toContain("ENOENT");
+    expect(reviewFinal).toContain("Review stage failed");
+    expect(deliverySummary).toContain("Review lead did not write final output");
+    expect(deliverySummary).not.toContain("ENOENT");
   }, 20_000);
 
   it("classifies registry blockers from local validation commands", async () => {

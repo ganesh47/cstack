@@ -134,6 +134,10 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
       : "Linked context missing."
   ].join("\n");
 } else if (prompt.includes("You are the `Validation Lead` for a bounded `cstack deliver` workflow.")) {
+  if (process.env.FAKE_CODEX_NO_FINAL_VALIDATION === "1") {
+    process.stderr.write("synthetic validation failure without final output\n");
+    process.exit(1);
+  }
   const validationStatus = process.env.FAKE_CODEX_VALIDATION_STATUS ?? "ready";
   const validationCommand = process.env.FAKE_CODEX_VALIDATION_COMMAND ?? "node -e \"process.stdout.write('deliver verify ok')\"";
   const validationGap = validationStatus === "partial" ? ["Validation evidence intentionally missing from this fake fixture to force partial workflow handling."] : [];
@@ -297,6 +301,10 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
     2
   );
 } else if (prompt.includes("You are the `Review Lead` for a bounded `cstack deliver` workflow.")) {
+  if (process.env.FAKE_CODEX_NO_FINAL_DELIVER_REVIEW === "1") {
+    process.stderr.write("synthetic deliver review failure without final output\n");
+    process.exit(1);
+  }
   body = JSON.stringify(
     {
       mode: "readiness",
@@ -317,6 +325,10 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
     2
   );
 } else if (prompt.includes("You are the `Ship Lead` for a bounded `cstack deliver` workflow.")) {
+  if (process.env.FAKE_CODEX_NO_FINAL_SHIP === "1") {
+    process.stderr.write("synthetic ship failure without final output\n");
+    process.exit(1);
+  }
   body = JSON.stringify(
     {
       readiness: "ready",

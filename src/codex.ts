@@ -33,6 +33,8 @@ export interface CodexRunResult {
   timeoutSeconds?: number;
   stalled?: boolean;
   stallReason?: string;
+  synthesizedFinalArtifact?: boolean;
+  synthesizedFinalReason?: string;
 }
 
 export interface CodexInteractiveRunOptions {
@@ -251,6 +253,62 @@ function appendPreview(preview: string, chunk: string, limit = 16_384): string {
   return combined.length <= limit ? combined : combined.slice(combined.length - limit);
 }
 
+function extractFallbackArtifactBody(input: string): string {
+  const cleaned = stripCapturedControl(input).trim();
+  if (!cleaned) {
+    return "";
+  }
+
+  const markdownIndex = cleaned.search(/^#\s+/m);
+  if (markdownIndex >= 0) {
+    return `${cleaned.slice(markdownIndex).trimEnd()}\n`;
+  }
+
+  const jsonStart = cleaned.indexOf("{");
+  const jsonEnd = cleaned.lastIndexOf("}");
+  if (jsonStart >= 0 && jsonEnd > jsonStart) {
+    return `${cleaned.slice(jsonStart, jsonEnd + 1).trim()}\n`;
+  }
+
+  return `${cleaned}\n`;
+}
+
+async function ensureFinalArtifact(options: {
+  finalPath: string;
+  stdoutPreview: string;
+  stderrPreview: string;
+  exitCode: number;
+  lastActivity: string;
+}): Promise<{ synthesized: boolean; reason?: string }> {
+  try {
+    const existing = await fs.readFile(path.resolve(options.finalPath), "utf8");
+    if (existing.trim()) {
+      return { synthesized: false };
+    }
+  } catch {}
+
+  const recoveredBody =
+    extractFallbackArtifactBody(options.stdoutPreview) ||
+    extractFallbackArtifactBody(options.stderrPreview) ||
+    [
+      "# Codex Fallback Artifact",
+      "",
+      `Codex exited with code ${options.exitCode} before writing the expected final artifact.`,
+      "",
+      `Last activity: ${options.lastActivity}`
+    ].join("\n") + "\n";
+
+  await fs.mkdir(path.dirname(path.resolve(options.finalPath)), { recursive: true });
+  await fs.writeFile(path.resolve(options.finalPath), recoveredBody, "utf8");
+  return {
+    synthesized: true,
+    reason:
+      recoveredBody.startsWith("# Codex Fallback Artifact")
+        ? "Codex exited without writing a final artifact; cstack synthesized a fallback artifact from execution status."
+        : "Codex exited without writing a final artifact; cstack synthesized a fallback artifact from captured output."
+  };
+}
+
 function looksLikeCompletedPayload(input: string): boolean {
   const cleaned = stripCapturedControl(input).trim();
   if (!cleaned) {
@@ -262,6 +320,70 @@ function looksLikeCompletedPayload(input: string): boolean {
     /^\{\s*"summary"\s*:\s*"/.test(cleaned) ||
     /^#\s+/.test(cleaned)
   );
+}
+
+async function readTextFromPath(filePath: string): Promise<string> {
+  try {
+    return await fs.readFile(path.resolve(filePath), "utf8");
+  } catch {
+    return "";
+  }
+}
+
+async function tailTextFromPath(filePath: string, maxLines = 24): Promise<string> {
+  const body = await readTextFromPath(filePath);
+  if (!body.trim()) {
+    return "";
+  }
+  return body
+    .trim()
+    .split("\n")
+    .slice(-maxLines)
+    .join("\n");
+}
+
+function compactSnippet(input: string, limit = 320): string {
+  const normalized = input.replace(/\s+/g, " ").trim();
+  if (normalized.length <= limit) {
+    return normalized;
+  }
+  return `${normalized.slice(0, limit - 1)}...`;
+}
+
+export async function readCodexFinalOutput(options: {
+  context: string;
+  finalPath: string;
+  stdoutPath: string;
+  stderrPath: string;
+  result: Pick<CodexRunResult, "code" | "signal" | "timedOut" | "timeoutSeconds" | "stalled" | "stallReason" | "lastActivity">;
+}): Promise<string> {
+  const finalBody = await readTextFromPath(options.finalPath);
+  if (finalBody.trim()) {
+    return finalBody;
+  }
+
+  const details: string[] = [];
+  if (options.result.timedOut && options.result.timeoutSeconds) {
+    details.push(`timed out after ${options.result.timeoutSeconds}s`);
+  } else {
+    details.push(`exit code ${options.result.code}${options.result.signal ? ` (${options.result.signal})` : ""}`);
+  }
+  if (options.result.stalled && options.result.stallReason) {
+    details.push(options.result.stallReason);
+  }
+  if (options.result.lastActivity) {
+    details.push(`last activity: ${options.result.lastActivity}`);
+  }
+
+  const stderrTail = compactSnippet(await tailTextFromPath(options.stderrPath, 12));
+  const stdoutTail = compactSnippet(await tailTextFromPath(options.stdoutPath, 12));
+  if (stderrTail) {
+    details.push(`stderr tail: ${stderrTail}`);
+  } else if (stdoutTail) {
+    details.push(`stdout tail: ${stdoutTail}`);
+  }
+
+  throw new Error(`${options.context} did not write final output. ${details.join(". ")}`);
 }
 
 async function appendEvent(eventsPath: string, event: RunEvent): Promise<void> {
@@ -585,6 +707,16 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
       flushLines("stderr", true);
       const exitCode = timedOut || stalledAfterSession || stalledAfterNoProgress ? 124 : stalledAfterOutput ? 0 : (code ?? 1);
       const resolvedSignal = forcedSignal ?? signal;
+      const finalArtifact = await ensureFinalArtifact({
+        finalPath: options.finalPath,
+        stdoutPreview,
+        stderrPreview,
+        exitCode,
+        lastActivity
+      });
+      if (finalArtifact.synthesized && finalArtifact.reason) {
+        emit("activity", finalArtifact.reason);
+      }
       if (exitCode === 0) {
         emit("completed", `Exit code ${exitCode}`);
       } else if (!timedOut) {
@@ -610,6 +742,12 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
             : {}),
         ...(stallReason ? { stallReason } : {})
       };
+      if (finalArtifact.synthesized) {
+        result.synthesizedFinalArtifact = true;
+        if (finalArtifact.reason) {
+          result.synthesizedFinalReason = finalArtifact.reason;
+        }
+      }
       if (sessionId) {
         result.sessionId = sessionId;
       }

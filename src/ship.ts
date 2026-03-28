@@ -1,7 +1,7 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { resolveLinkedBuildContext } from "./build.js";
-import { runCodexExec } from "./codex.js";
+import { readCodexFinalOutput, runCodexExec } from "./codex.js";
 import { buildPostShipArtifacts } from "./post-ship.js";
 import { buildDeliverShipPrompt } from "./prompt.js";
 import { collectGitHubDeliveryEvidence, performGitHubDeliverMutations } from "./github.js";
@@ -601,7 +601,13 @@ export async function runShipExecution(options: ShipExecutionOptions): Promise<S
     stderrPath: options.paths.stderrPath,
     config: options.config
   });
-  const shipRaw = await fs.readFile(options.paths.finalPath, "utf8");
+  const shipRaw = await readCodexFinalOutput({
+    context: "Ship lead",
+    finalPath: options.paths.finalPath,
+    stdoutPath: options.paths.stdoutPath,
+    stderrPath: options.paths.stderrPath,
+    result: shipResult
+  });
   let shipRecord = parseJson<DeliverShipRecord>(shipRaw, "Ship lead");
 
   if (reviewVerdict.status !== "ready") {
