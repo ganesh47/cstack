@@ -4,12 +4,15 @@ import { loadConfig } from "../config.js";
 import { runCodexExec } from "../codex.js";
 import { maybeOfferInteractiveInspect } from "../inspector.js";
 import { buildSpecPrompt, excerpt } from "../prompt.js";
-import { detectCodexVersion, detectGitBranch, ensureRunDir, makeRunId, writeRunRecord } from "../run.js";
+import { detectCodexVersion, detectGitBranch, ensureRunDir, listRuns, makeRunId, writeRunRecord } from "../run.js";
 import { resolveLinkedBuildContext } from "../build.js";
-import type { RunRecord } from "../types.js";
+import type { InitiativeGraphRecord, PlanningIssueLineageRecord, RunRecord } from "../types.js";
 
 export interface SpecCliOptions {
   fromRunId?: string;
+  planningIssueNumber?: number;
+  initiativeId?: string;
+  initiativeTitle?: string;
 }
 
 function parseSpecArgs(args: string[]): { prompt: string; options: SpecCliOptions } {
@@ -24,6 +27,33 @@ function parseSpecArgs(args: string[]): { prompt: string; options: SpecCliOption
         throw new Error("`cstack spec --from-run` requires a run id.");
       }
       options.fromRunId = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--issue") {
+      const value = args[index + 1];
+      if (!value || !/^\d+$/.test(value)) {
+        throw new Error("`cstack spec --issue` requires a numeric issue id.");
+      }
+      options.planningIssueNumber = Number.parseInt(value, 10);
+      index += 1;
+      continue;
+    }
+    if (arg === "--initiative") {
+      const value = args[index + 1];
+      if (!value) {
+        throw new Error("`cstack spec --initiative` requires an initiative id.");
+      }
+      options.initiativeId = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--initiative-title") {
+      const value = args[index + 1];
+      if (!value) {
+        throw new Error("`cstack spec --initiative-title` requires a value.");
+      }
+      options.initiativeTitle = value;
       index += 1;
       continue;
     }
@@ -62,6 +92,38 @@ function deriveOpenQuestions(finalBody: string): string {
   return ["# Open Questions", "", ...(questions.length > 0 ? questions.map((line) => `- ${line}`) : ["- none"])].join("\n") + "\n";
 }
 
+function deriveIssueDraft(options: {
+  finalBody: string;
+  prompt: string;
+  planningIssueNumber: number;
+  linkedContext?: { run: { id: string; workflow: string } };
+}): string {
+  const plan = derivePlanArtifact(options.finalBody);
+  const steps = Array.isArray(plan.steps) ? plan.steps.map((step) => String(step)) : [];
+  const openQuestions = Array.isArray(plan.openQuestions) ? plan.openQuestions.map((item) => String(item)) : [];
+
+  return [
+    `# Planning Issue Draft: #${options.planningIssueNumber}`,
+    "",
+    `Related issue: #${options.planningIssueNumber}`,
+    "",
+    "## Summary",
+    typeof plan.summary === "string" && plan.summary.trim() ? plan.summary : options.prompt,
+    "",
+    "## Requested outcome",
+    options.prompt,
+    "",
+    "## Proposed implementation slice",
+    ...(steps.length > 0 ? steps.map((step) => `- ${step}`) : ["- refine the implementation slice from the saved spec output"]),
+    "",
+    "## Open questions",
+    ...(openQuestions.length > 0 ? openQuestions.map((question) => `- ${question}`) : ["- none recorded"]),
+    "",
+    "## Lineage",
+    options.linkedContext ? `- upstream run: ${options.linkedContext.run.id} (${options.linkedContext.run.workflow})` : "- upstream run: none"
+  ].join("\n") + "\n";
+}
+
 async function readPromptFromStdin(): Promise<string> {
   if (process.stdin.isTTY) {
     return "";
@@ -84,6 +146,10 @@ export async function runSpec(cwd: string, input: string | string[]): Promise<st
 
   const { config, sources } = await loadConfig(cwd);
   const linkedContext = parsed.options.fromRunId ? await resolveLinkedBuildContext(cwd, parsed.options.fromRunId) : undefined;
+  const resolvedPlanningIssueNumber =
+    typeof parsed.options.planningIssueNumber === "number"
+      ? parsed.options.planningIssueNumber
+      : linkedContext?.run.inputs.planningIssueNumber;
   const specInput =
     linkedContext && resolvedPrompt
       ? `${resolvedPrompt}\n\n## Linked upstream run\n- run: ${linkedContext.run.id}\n- workflow: ${linkedContext.run.workflow}\n\n## Linked artifact excerpt\n${excerpt(linkedContext.artifactBody, 40)}`
@@ -98,14 +164,31 @@ export async function runSpec(cwd: string, input: string | string[]): Promise<st
   const artifactPath = path.join(runDir, "artifacts", "spec.md");
   const planPath = path.join(runDir, "artifacts", "plan.json");
   const openQuestionsPath = path.join(runDir, "artifacts", "open-questions.md");
+  const issueDraftPath = path.join(runDir, "artifacts", "issue-draft.md");
+  const issueLineagePath = path.join(runDir, "artifacts", "issue-lineage.json");
+  const initiativeGraphPath = path.join(runDir, "artifacts", "initiative-graph.json");
   const eventsPath = path.join(runDir, "events.jsonl");
   const stdoutPath = path.join(runDir, "stdout.log");
   const stderrPath = path.join(runDir, "stderr.log");
+  const resolvedInitiativeId = parsed.options.initiativeId
+    ? parsed.options.initiativeId
+    : linkedContext?.run.inputs.initiativeId;
+  const resolvedInitiativeTitle = parsed.options.initiativeTitle
+    ? parsed.options.initiativeTitle
+    : linkedContext?.run.inputs.initiativeTitle;
+  const priorInitiativeRuns = resolvedInitiativeId ? await listRuns(cwd) : [];
   const [gitBranch, codexVersion] = await Promise.all([
     detectGitBranch(cwd),
     detectCodexVersion(cwd, config.codex.command)
   ]);
-  const { prompt, context } = await buildSpecPrompt(cwd, specInput, config);
+  const promptOptions = {
+    ...(typeof resolvedPlanningIssueNumber === "number"
+      ? { planningIssueNumber: resolvedPlanningIssueNumber }
+      : {}),
+    ...(typeof resolvedInitiativeId === "string" ? { initiativeId: resolvedInitiativeId } : {}),
+    ...(typeof resolvedInitiativeTitle === "string" ? { initiativeTitle: resolvedInitiativeTitle } : {})
+  };
+  const { prompt, context } = await buildSpecPrompt(cwd, specInput, config, promptOptions);
 
   await fs.writeFile(promptPath, prompt, "utf8");
   await fs.writeFile(contextPath, `${context}\n`, "utf8");
@@ -131,9 +214,11 @@ export async function runSpec(cwd: string, input: string | string[]): Promise<st
     currentStage: "spec",
     summary: resolvedPrompt,
     inputs: {
-      userPrompt: resolvedPrompt
-      ,
-      ...(linkedContext ? { linkedRunId: linkedContext.run.id } : {})
+      userPrompt: resolvedPrompt,
+      ...(linkedContext ? { linkedRunId: linkedContext.run.id } : {}),
+      ...(typeof resolvedPlanningIssueNumber === "number" ? { planningIssueNumber: resolvedPlanningIssueNumber } : {}),
+      ...(resolvedInitiativeId ? { initiativeId: resolvedInitiativeId } : {}),
+      ...(resolvedInitiativeTitle ? { initiativeTitle: resolvedInitiativeTitle } : {})
     }
   };
 
@@ -170,6 +255,77 @@ export async function runSpec(cwd: string, input: string | string[]): Promise<st
       await fs.writeFile(artifactPath, finalBody, "utf8");
       await fs.writeFile(planPath, `${JSON.stringify(derivePlanArtifact(finalBody), null, 2)}\n`, "utf8");
       await fs.writeFile(openQuestionsPath, deriveOpenQuestions(finalBody), "utf8");
+      if (resolvedInitiativeId) {
+        const relatedRuns = priorInitiativeRuns
+          .filter((run) => run.inputs?.initiativeId === resolvedInitiativeId)
+          .map((run) => ({
+            runId: run.id,
+            workflow: run.workflow,
+            status: run.status
+          }));
+        const initiativeGraph: InitiativeGraphRecord = {
+          initiativeId: resolvedInitiativeId,
+          ...(resolvedInitiativeTitle ? { initiativeTitle: resolvedInitiativeTitle } : {}),
+          ...(parsed.options.fromRunId
+            ? {
+                sourceRun: {
+                  runId: linkedContext!.run.id,
+                  workflow: linkedContext!.run.workflow
+                }
+              }
+            : relatedRuns.length > 0
+              ? {
+                  sourceRun: {
+                    runId: relatedRuns[0]!.runId,
+                    workflow: relatedRuns[0]!.workflow
+                  }
+                }
+              : {}),
+          currentRun: {
+            runId,
+            workflow: "spec"
+          },
+          relatedRuns: [
+            ...relatedRuns,
+            {
+              runId,
+              workflow: "spec",
+              status: runRecord.status
+            }
+          ]
+        };
+        await fs.writeFile(initiativeGraphPath, `${JSON.stringify(initiativeGraph, null, 2)}\n`, "utf8");
+      }
+      if (typeof resolvedPlanningIssueNumber === "number") {
+        const issueLineage: PlanningIssueLineageRecord = {
+          planningIssueNumber: resolvedPlanningIssueNumber,
+          currentRun: {
+            runId,
+            workflow: "spec"
+          },
+          ...(linkedContext
+            ? {
+                sourceRun: {
+                  runId: linkedContext.run.id,
+                  workflow: linkedContext.run.workflow
+                }
+              }
+            : {}),
+          downstreamPullRequests: [],
+          downstreamReleases: []
+        };
+        await fs.writeFile(
+          issueDraftPath,
+          deriveIssueDraft({
+            finalBody,
+            prompt: resolvedPrompt || specInput,
+            planningIssueNumber: resolvedPlanningIssueNumber,
+            ...(linkedContext ? { linkedContext } : {})
+          }),
+          "utf8"
+        );
+        await fs.writeFile(issueLineagePath, `${JSON.stringify(issueLineage, null, 2)}\n`, "utf8");
+      }
     }
     await writeRunRecord(runDir, runRecord);
 
@@ -187,6 +343,10 @@ export async function runSpec(cwd: string, input: string | string[]): Promise<st
         `  ${path.relative(cwd, artifactPath)}`,
         `  ${path.relative(cwd, planPath)}`,
         `  ${path.relative(cwd, openQuestionsPath)}`,
+        ...(typeof resolvedPlanningIssueNumber === "number"
+          ? [`  ${path.relative(cwd, issueDraftPath)}`, `  ${path.relative(cwd, issueLineagePath)}`]
+          : []),
+        ...(resolvedInitiativeId ? [`  ${path.relative(cwd, initiativeGraphPath)}`] : []),
         `  ${path.relative(cwd, eventsPath)}`,
         `  ${path.relative(cwd, path.join(runDir, "run.json"))}`
       ].join("\n") + "\n"

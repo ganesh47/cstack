@@ -20,6 +20,8 @@ import type {
 export interface LinkedReviewContext {
   runId: string;
   workflow: WorkflowName;
+  initiativeId?: string | undefined;
+  initiativeTitle?: string | undefined;
   artifactPath: string | null;
   artifactBody: string;
   buildSummary: string;
@@ -269,7 +271,9 @@ export async function resolveLinkedReviewContext(cwd: string, runId: string): Pr
   if (linked.run.workflow === "build") {
     return {
       runId: linked.run.id,
-      workflow: linked.run.workflow,
+  workflow: linked.run.workflow,
+  initiativeId: linked.run.inputs.initiativeId,
+  initiativeTitle: linked.run.inputs.initiativeTitle,
       artifactPath: linked.artifactPath,
       artifactBody: linked.artifactBody,
       buildSummary: linked.artifactBody,
@@ -288,6 +292,8 @@ export async function resolveLinkedReviewContext(cwd: string, runId: string): Pr
     return {
       runId: linked.run.id,
       workflow: linked.run.workflow,
+      initiativeId: linked.run.inputs.initiativeId,
+      initiativeTitle: linked.run.inputs.initiativeTitle,
       artifactPath: buildSummaryPath,
       artifactBody: buildSummary,
       buildSummary,
@@ -300,6 +306,8 @@ export async function resolveLinkedReviewContext(cwd: string, runId: string): Pr
   return {
     runId: linked.run.id,
     workflow: linked.run.workflow,
+    initiativeId: linked.run.inputs.initiativeId,
+    initiativeTitle: linked.run.inputs.initiativeTitle,
     artifactPath: linked.artifactPath,
     artifactBody: linked.artifactBody,
     buildSummary: linked.artifactBody,

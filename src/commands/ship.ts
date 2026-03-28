@@ -10,6 +10,8 @@ export interface ShipCliOptions {
   fromRunId?: string;
   deliveryMode?: DeliverTargetMode;
   issueNumbers?: number[];
+  initiativeId?: string;
+  initiativeTitle?: string;
   allowDirty?: boolean;
 }
 
@@ -42,6 +44,24 @@ export function parseShipArgs(args: string[]): { prompt: string; options: ShipCl
         throw new Error("`cstack ship --from-run` requires a run id.");
       }
       options.fromRunId = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--initiative") {
+      const value = args[index + 1];
+      if (!value) {
+        throw new Error("`cstack ship --initiative` requires an initiative id.");
+      }
+      options.initiativeId = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--initiative-title") {
+      const value = args[index + 1];
+      if (!value) {
+        throw new Error("`cstack ship --initiative-title` requires a value.");
+      }
+      options.initiativeTitle = value;
       index += 1;
       continue;
     }
@@ -91,6 +111,8 @@ export async function runShip(cwd: string, args: string[] = [], hooks: ShipRunHo
   await ensureCleanWorktreeForWorkflow(cwd, "ship", allowDirty);
 
   const linkedContext = parsed.options.fromRunId ? await resolveLinkedShipContext(cwd, parsed.options.fromRunId) : undefined;
+  const resolvedInitiativeId = parsed.options.initiativeId ?? linkedContext?.initiativeId;
+  const resolvedInitiativeTitle = parsed.options.initiativeTitle ?? linkedContext?.initiativeTitle;
   const runId = makeRunId("ship", resolvedPrompt);
   const runDir = await ensureRunDir(cwd, runId);
   const promptPath = path.join(runDir, "prompt.md");
@@ -103,6 +125,12 @@ export async function runShip(cwd: string, args: string[] = [], hooks: ShipRunHo
   const checklistPath = path.join(runDir, "artifacts", "release-checklist.md");
   const unresolvedPath = path.join(runDir, "artifacts", "unresolved.md");
   const shipRecordPath = path.join(runDir, "artifacts", "ship-record.json");
+  const readinessPolicyPath = path.join(runDir, "artifacts", "readiness-policy.json");
+  const deploymentEvidencePath = path.join(runDir, "artifacts", "deployment-evidence.json");
+  const postShipSummaryPath = path.join(runDir, "artifacts", "post-ship-summary.md");
+  const postShipEvidencePath = path.join(runDir, "artifacts", "post-ship-evidence.json");
+  const followUpDraftPath = path.join(runDir, "artifacts", "follow-up-draft.md");
+  const followUpLineagePath = path.join(runDir, "artifacts", "follow-up-lineage.json");
   const githubMutationPath = path.join(runDir, "artifacts", "github-mutation.json");
   const githubDeliveryPath = path.join(runDir, "artifacts", "github-delivery.json");
   const stageLineagePath = path.join(runDir, "stage-lineage.json");
@@ -138,6 +166,8 @@ export async function runShip(cwd: string, args: string[] = [], hooks: ShipRunHo
       userPrompt: resolvedPrompt,
       entrypoint: "workflow",
       ...(linkedContext ? { linkedRunId: linkedContext.runId } : {}),
+      ...(resolvedInitiativeId ? { initiativeId: resolvedInitiativeId } : {}),
+      ...(resolvedInitiativeTitle ? { initiativeTitle: resolvedInitiativeTitle } : {}),
       deliveryMode,
       issueNumbers,
       allowDirty
@@ -165,6 +195,12 @@ export async function runShip(cwd: string, args: string[] = [], hooks: ShipRunHo
         checklistPath,
         unresolvedPath,
         shipRecordPath,
+        readinessPolicyPath,
+        deploymentEvidencePath,
+        postShipSummaryPath,
+        postShipEvidencePath,
+        followUpDraftPath,
+        followUpLineagePath,
         githubMutationPath,
         githubDeliveryPath,
         stageLineagePath,
@@ -203,6 +239,12 @@ export async function runShip(cwd: string, args: string[] = [], hooks: ShipRunHo
         `  ${path.relative(cwd, shipSummaryPath)}`,
         `  ${path.relative(cwd, checklistPath)}`,
         `  ${path.relative(cwd, unresolvedPath)}`,
+        `  ${path.relative(cwd, postShipSummaryPath)}`,
+        `  ${path.relative(cwd, postShipEvidencePath)}`,
+        `  ${path.relative(cwd, followUpDraftPath)}`,
+        `  ${path.relative(cwd, followUpLineagePath)}`,
+        `  ${path.relative(cwd, readinessPolicyPath)}`,
+        `  ${path.relative(cwd, deploymentEvidencePath)}`,
         `  ${path.relative(cwd, githubMutationPath)}`,
         `  ${path.relative(cwd, githubDeliveryPath)}`,
         `  ${path.relative(cwd, stageLineagePath)}`,

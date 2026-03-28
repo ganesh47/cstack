@@ -19,9 +19,11 @@ async function initGitRepo(repoDir: string): Promise<string> {
   await execFileAsync("git", ["init", "-b", "main"], { cwd: repoDir });
   await execFileAsync("git", ["config", "user.name", "cstack test"], { cwd: repoDir });
   await execFileAsync("git", ["config", "user.email", "cstack-test@example.com"], { cwd: repoDir });
+  await execFileAsync("git", ["config", "commit.gpgSign", "false"], { cwd: repoDir });
+  await execFileAsync("git", ["config", "tag.gpgSign", "false"], { cwd: repoDir });
   await execFileAsync("git", ["remote", "add", "origin", remoteDir], { cwd: repoDir });
   await execFileAsync("git", ["add", "."], { cwd: repoDir });
-  await execFileAsync("git", ["commit", "-m", "fixture"], { cwd: repoDir });
+  await execFileAsync("git", ["-c", "commit.gpgSign=false", "commit", "-m", "fixture"], { cwd: repoDir });
   await execFileAsync("git", ["push", "-u", "origin", "main"], { cwd: repoDir });
   return remoteDir;
 }
@@ -124,7 +126,9 @@ describe("session support commands", () => {
 
   afterEach(async () => {
     await fs.rm(repoDir, { recursive: true, force: true });
-    await fs.rm(remoteDir, { recursive: true, force: true });
+    if (remoteDir) {
+      await fs.rm(remoteDir, { recursive: true, force: true });
+    }
   });
 
   it("resolves a run id to codex resume", async () => {

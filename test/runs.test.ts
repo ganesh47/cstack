@@ -68,6 +68,30 @@ describe("runRuns", () => {
       }
     });
 
+    await writeRun(repoDir, {
+      id: "2026-03-13T18-20-00-spec-initiative",
+      workflow: "spec",
+      createdAt: "2026-03-13T18:20:00.000Z",
+      updatedAt: "2026-03-13T18:20:05.000Z",
+      status: "completed",
+      cwd: repoDir,
+      gitBranch: "main",
+      codexVersion: "fake",
+      codexCommand: ["codex", "exec"],
+      promptPath: path.join(repoDir, ".cstack", "runs", "2026-03-13T18-20-00-spec-initiative", "prompt.md"),
+      finalPath: path.join(repoDir, ".cstack", "runs", "2026-03-13T18-20-00-spec-initiative", "final.md"),
+      contextPath: path.join(repoDir, ".cstack", "runs", "2026-03-13T18-20-00-spec-initiative", "context.md"),
+      stdoutPath: path.join(repoDir, ".cstack", "runs", "2026-03-13T18-20-00-spec-initiative", "stdout.log"),
+      stderrPath: path.join(repoDir, ".cstack", "runs", "2026-03-13T18-20-00-spec-initiative", "stderr.log"),
+      configSources: [],
+      summary: "Group initiative-scoped runs",
+      inputs: {
+        userPrompt: "Group initiative-scoped runs",
+        initiativeId: "initiative-cache",
+        initiativeTitle: "Cache rollout"
+      }
+    });
+
     await writeRun(
       repoDir,
       {
@@ -128,6 +152,7 @@ describe("runRuns", () => {
       expect(output).toContain("audit-review");
       expect(output).toContain("Plan a compliance-safe billing migration");
       expect(output).toContain("failed");
+      expect(output).toContain("initiative-cache (Cache rollout)");
     } finally {
       stdoutSpy.mockRestore();
     }
@@ -144,6 +169,20 @@ describe("runRuns", () => {
       expect(entries[0]?.id).toContain("intent-broad-task");
       expect(entries[0]?.currentStage).toBe("spec");
       expect(entries[0]?.activeSpecialists).toEqual(["audit-review"]);
+    } finally {
+      stdoutSpy.mockRestore();
+    }
+  });
+
+  it("filters runs by initiative in json output", async () => {
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      await runRuns(repoDir, ["--initiative", "initiative-cache", "--json"]);
+      const output = stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join("");
+      const entries = JSON.parse(output) as Array<{ id: string; initiativeId?: string }>;
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.initiativeId).toBe("initiative-cache");
     } finally {
       stdoutSpy.mockRestore();
     }

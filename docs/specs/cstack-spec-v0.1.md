@@ -23,8 +23,8 @@ Current top-level commands:
 
 - `cstack <intent>`
 - `cstack run <intent> [--dry-run]`
-- `cstack discover <prompt>`
-- `cstack spec <prompt> [--from-run <run-id>]`
+- `cstack discover <prompt> [--issue <n>]`
+- `cstack spec <prompt> [--from-run <run-id>] [--issue <n>]`
 - `cstack build <prompt> [--from-run <run-id>] [--exec] [--allow-dirty]`
 - `cstack review <prompt> [--from-run <run-id>]`
 - `cstack ship <prompt> [--from-run <run-id>] [--release] [--issue <n>] [--allow-dirty]`
@@ -68,6 +68,7 @@ Execution model:
 Key artifacts:
 
 - `artifacts/findings.md`
+- optional `artifacts/issue-lineage.json`
 - `stages/discover/research-plan.json`
 - `stages/discover/artifacts/discovery-report.md`
 - optional `stages/discover/delegates/<track>/request.md`
@@ -89,12 +90,15 @@ Inputs:
 
 - direct prompt, or
 - `--from-run <run-id>` to link to an upstream artifact
+- optional `--issue <n>` to bind or override the planning issue for downstream lineage
 
 Key artifacts:
 
 - `artifacts/spec.md`
 - `artifacts/plan.json`
 - `artifacts/open-questions.md`
+- optional `artifacts/issue-draft.md`
+- optional `artifacts/issue-lineage.json`
 - `final.md`
 
 ### `build`

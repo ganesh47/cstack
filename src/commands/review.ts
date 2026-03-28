@@ -7,6 +7,8 @@ import type { RunRecord } from "../types.js";
 
 export interface ReviewCliOptions {
   fromRunId?: string;
+  initiativeId?: string;
+  initiativeTitle?: string;
 }
 
 export interface ReviewRunHooks {
@@ -41,6 +43,24 @@ export function parseReviewArgs(args: string[]): { prompt: string; options: Revi
       index += 1;
       continue;
     }
+    if (arg === "--initiative") {
+      const value = args[index + 1];
+      if (!value) {
+        throw new Error("`cstack review --initiative` requires an initiative id.");
+      }
+      options.initiativeId = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--initiative-title") {
+      const value = args[index + 1];
+      if (!value) {
+        throw new Error("`cstack review --initiative-title` requires a value.");
+      }
+      options.initiativeTitle = value;
+      index += 1;
+      continue;
+    }
     if (arg.startsWith("-")) {
       throw new Error(`Unknown review option: ${arg}`);
     }
@@ -67,6 +87,8 @@ export async function runReview(cwd: string, args: string[] = [], hooks: ReviewR
 
   const { config, sources } = await loadConfig(cwd);
   const linkedContext = parsed.options.fromRunId ? await resolveLinkedReviewContext(cwd, parsed.options.fromRunId) : undefined;
+  const resolvedInitiativeId = parsed.options.initiativeId ?? linkedContext?.initiativeId;
+  const resolvedInitiativeTitle = parsed.options.initiativeTitle ?? linkedContext?.initiativeTitle;
   const runId = makeRunId("review", resolvedPrompt);
   const runDir = await ensureRunDir(cwd, runId);
   const promptPath = path.join(runDir, "prompt.md");
@@ -107,6 +129,8 @@ export async function runReview(cwd: string, args: string[] = [], hooks: ReviewR
     inputs: {
       userPrompt: resolvedPrompt,
       entrypoint: "workflow",
+      ...(resolvedInitiativeId ? { initiativeId: resolvedInitiativeId } : {}),
+      ...(resolvedInitiativeTitle ? { initiativeTitle: resolvedInitiativeTitle } : {}),
       ...(linkedContext ? { linkedRunId: linkedContext.runId } : {})
     }
   };

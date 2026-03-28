@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { runCodexExec, runCodexInteractive } from "./codex.js";
 import type { CodexRunResult } from "./codex.js";
+import { classifyExecutionBlocker, uniqueBlockerCategories } from "./blockers.js";
 import { buildBuildPrompt } from "./prompt.js";
 import { readRun } from "./run.js";
 import type {
@@ -14,6 +15,7 @@ import type {
   BuildVerificationCommandRecord,
   BuildVerificationRecord,
   CstackConfig,
+  EnvironmentBlockerCategory,
   RunRecord,
   WorkflowMode
 } from "./types.js";
@@ -32,6 +34,7 @@ const TRANSIENT_FAILURE_PATTERNS = [
   /service unavailable/i,
   /\b5\d\d\b/
 ] as const;
+const BUILD_NO_PROGRESS_TIMEOUT_SECONDS = 120;
 
 function isInternalRunArtifactPath(filePath: string): boolean {
   const normalized = filePath.replace(/\\/g, "/").replace(/^\.?\//, "");
@@ -177,7 +180,9 @@ function renderRecoverySummary(diagnosis: BuildFailureDiagnosisRecord | null, at
   return [
     "# Build Recovery Summary",
     "",
-    diagnosis ? `## Diagnosis\n- category: ${diagnosis.category}\n- summary: ${diagnosis.summary}` : "## Diagnosis\n- Build completed without recovery blockers.",
+    diagnosis
+      ? `## Diagnosis\n- category: ${diagnosis.category}\n${diagnosis.blockerCategory ? `- blocker: ${diagnosis.blockerCategory}\n` : ""}- summary: ${diagnosis.summary}`
+      : "## Diagnosis\n- Build completed without recovery blockers.",
     ...(diagnosis?.recommendedActions?.length
       ? ["", "## Recommended actions", ...diagnosis.recommendedActions.map((action) => `- ${action}`)]
       : []),
@@ -490,7 +495,8 @@ function renderVerificationSummary(record: BuildVerificationRecord): string {
   if (record.status === "failed") {
     const failed = record.results.find((result) => result.status === "failed");
     if (failed) {
-      return `${failed.command} failed with exit ${failed.exitCode}.`;
+      const blockerPrefix = failed.blockerCategory ? `${failed.blockerCategory}: ` : "";
+      return `${blockerPrefix}${failed.command} failed with exit ${failed.exitCode}.`;
     }
   }
   return "Verification passed.";
@@ -518,35 +524,60 @@ function classifyBuildFailure(options: {
   ]);
   const recommendedActions: string[] = [];
   let category: BuildFailureCategory = "unknown";
+  let blockerCategory: EnvironmentBlockerCategory | undefined;
   let summary = "Build failed for an unspecified reason.";
   let detail = "cstack could not recover a higher-confidence cause from the build artifacts.";
+  const failedVerification = options.verificationRecord.results.find((result) => result.status === "failed");
+  const inferredBlocker =
+    failedVerification?.blockerCategory
+      ? { category: failedVerification.blockerCategory, detail: failedVerification.blockerDetail ?? renderVerificationSummary(options.verificationRecord) }
+      : classifyExecutionBlocker("codex build", [options.stderrTail, options.finalBody, ...options.assessment.notes].join("\n"));
+  const missingRequiredTool = options.assessment.notes.find((note) => /Required tool not currently available/i.test(note));
 
   const failedBootstrap = [...options.recoveryAttempts].reverse().find((attempt) => attempt.kind === "bootstrap" && attempt.status === "failed");
-  if (options.result.timedOut && options.result.timeoutSeconds) {
+  if ((options.result.timedOut || options.result.stalled) && options.result.timeoutSeconds) {
     category = "timeout";
-    summary = `Build timed out after ${options.result.timeoutSeconds}s before the implementation stage completed.`;
+    blockerCategory = "orchestration-timeout";
+    summary = options.result.stalled
+      ? `Build stalled for ${options.result.timeoutSeconds}s before the implementation stage completed.`
+      : `Build timed out after ${options.result.timeoutSeconds}s before the implementation stage completed.`;
     detail = "The Codex-backed build exceeded the configured stage timeout, so downstream deliver stages were blocked.";
     recommendedActions.push("Increase the build timeout or narrow the requested implementation scope before rerunning.");
   } else if (failedBootstrap) {
     const combinedEvidence = (failedBootstrap.evidence ?? []).join("\n");
     category = isTransientFailure(combinedEvidence) ? "transient-external" : "bootstrap-failure";
+    blockerCategory = classifyExecutionBlocker(failedBootstrap.command ?? failedBootstrap.label, combinedEvidence)?.category;
     summary = failedBootstrap.summary;
     detail = `cstack attempted ${failedBootstrap.label} before rerunning build, but bootstrap did not complete successfully.`;
     recommendedActions.push("Inspect the recovery attempts artifact to see which bootstrap command failed.");
     if (category === "transient-external") {
       recommendedActions.push("Retry once network or registry access is stable.");
     }
+  } else if (missingRequiredTool) {
+    category = "missing-tool";
+    blockerCategory = "host-tool-missing";
+    summary = "Build failed because a required host tool was missing from the execution environment.";
+    detail = missingRequiredTool;
+    recommendedActions.push("Install or expose the missing tool in the execution environment, then rerun build.");
   } else if (options.verificationRecord.status === "failed") {
     category = "verification-failure";
+    blockerCategory = failedVerification?.blockerCategory;
     summary = `Build completed, but verification failed: ${renderVerificationSummary(options.verificationRecord)}`;
-    detail = "The implementation stage produced output, but the requested verification commands did not all pass.";
-    recommendedActions.push("Fix the failing verification command and rerun build.");
+    detail =
+      failedVerification?.blockerDetail ??
+      "The implementation stage produced output, but the requested verification commands did not all pass.";
+    recommendedActions.push(
+      blockerCategory && blockerCategory !== "repo-test-failure"
+        ? "Resolve the execution environment blocker, then rerun build."
+        : "Fix the failing verification command and rerun build."
+    );
   } else if (
     !options.sessionRecord.observability.sessionIdObserved &&
     !options.sessionRecord.observability.transcriptObserved &&
     !options.sessionRecord.observability.finalArtifactObserved
   ) {
     category = "codex-process-failure";
+    blockerCategory = inferredBlocker?.category;
     summary =
       options.assessment.bootstrapActions.length > 0
         ? `Build failed before Codex produced a usable session, even after ${options.assessment.bootstrapActions.length} bounded environment preparation step${options.assessment.bootstrapActions.length > 1 ? "s" : ""}.`
@@ -557,12 +588,14 @@ function classifyBuildFailure(options: {
     recommendedActions.push("Retry with a narrower remediation prompt if the repo scope is very large.");
   } else if (/command not found|not found/i.test(options.stderrTail)) {
     category = "missing-tool";
+    blockerCategory = "host-tool-missing";
     summary = "Build failed because a required tool was missing during execution.";
     detail = `The captured build stderr suggests a missing command while operating on a repo that requires: ${options.assessment.requiredTools.join(", ") || "unknown tools"}.`;
     recommendedActions.push("Install or expose the missing tool in the execution environment, then rerun build.");
   } else {
     const firstErrorLine = firstMeaningfulErrorLine(options.stderrTail);
     category = "build-script-failure";
+    blockerCategory = inferredBlocker?.category;
     summary = firstErrorLine
       ? `Build failed after Codex started work: ${truncateLine(firstErrorLine)}`
       : `Build failed with exit code ${options.result.code}${options.result.signal ? ` (${options.result.signal})` : ""}.`;
@@ -576,6 +609,7 @@ function classifyBuildFailure(options: {
 
   return {
     category,
+    ...(blockerCategory ? { blockerCategory } : {}),
     summary,
     detail,
     evidence,
@@ -637,7 +671,12 @@ function buildFallbackFinalBody(options: {
     "",
     "## Diagnosis",
     ...(options.diagnosis
-      ? [`- category: ${options.diagnosis.category}`, `- summary: ${options.diagnosis.summary}`, `- detail: ${options.diagnosis.detail}`]
+      ? [
+          `- category: ${options.diagnosis.category}`,
+          ...(options.diagnosis.blockerCategory ? [`- blocker: ${options.diagnosis.blockerCategory}`] : []),
+          `- summary: ${options.diagnosis.summary}`,
+          `- detail: ${options.diagnosis.detail}`
+        ]
       : ["- Build completed without a classified failure diagnosis."]),
     "",
     "## Notes",
@@ -702,13 +741,16 @@ async function runVerificationCommands(
       await fs.writeFile(stdoutPath, execError.stdout ?? "", "utf8");
       await fs.writeFile(stderrPath, execError.stderr ?? execError.message, "utf8");
       const exitCode = typeof execError.code === "number" ? execError.code : 1;
+      const blocker = classifyExecutionBlocker(command, `${execError.stderr ?? ""}\n${execError.stdout ?? ""}\n${execError.message ?? ""}`);
       results.push({
         command,
         exitCode,
         status: "failed",
         durationMs: Date.now() - Date.parse(startedAt),
         stdoutPath,
-        stderrPath
+        stderrPath,
+        ...(blocker?.category ? { blockerCategory: blocker.category } : {}),
+        ...(blocker?.detail ? { blockerDetail: blocker.detail } : {})
       });
       attempts.push(
         buildAttemptRecord({
@@ -730,7 +772,8 @@ async function runVerificationCommands(
     record: {
       status: results.every((result) => result.status === "passed") ? "passed" : "failed",
       requestedCommands: commands,
-      results
+      results,
+      blockerCategories: uniqueBlockerCategories(results.map((result) => result.blockerCategory))
     },
     attempts
   };
@@ -749,6 +792,7 @@ async function runCodexBuildAttempt(options: {
   config: CstackConfig;
   runId: string;
   timeoutSeconds?: number;
+  noProgressTimeoutSeconds?: number;
 }): Promise<CodexAttemptOutcome> {
   let observedMode = options.requestedMode;
   let fallbackReason: string | undefined;
@@ -800,22 +844,24 @@ async function runCodexBuildAttempt(options: {
         stdoutPath: options.paths.stdoutPath,
         stderrPath: options.paths.stderrPath,
         config: options.config,
-        ...(typeof options.timeoutSeconds === "number" ? { timeoutSeconds: options.timeoutSeconds } : {})
+        ...(typeof options.timeoutSeconds === "number" ? { timeoutSeconds: options.timeoutSeconds } : {}),
+        ...(typeof options.noProgressTimeoutSeconds === "number" ? { noProgressTimeoutSeconds: options.noProgressTimeoutSeconds } : {})
       });
     }
   } else {
-    result = await runCodexExec({
-      cwd: options.executionCwd,
-      workflow: "build",
-      runId: options.runId,
-      prompt,
+      result = await runCodexExec({
+        cwd: options.executionCwd,
+        workflow: "build",
+        runId: options.runId,
+        prompt,
       finalPath: options.paths.finalPath,
       eventsPath: options.paths.eventsPath,
-      stdoutPath: options.paths.stdoutPath,
-      stderrPath: options.paths.stderrPath,
-      config: options.config,
-      ...(typeof options.timeoutSeconds === "number" ? { timeoutSeconds: options.timeoutSeconds } : {})
-    });
+        stdoutPath: options.paths.stdoutPath,
+        stderrPath: options.paths.stderrPath,
+        config: options.config,
+        ...(typeof options.timeoutSeconds === "number" ? { timeoutSeconds: options.timeoutSeconds } : {}),
+        ...(typeof options.noProgressTimeoutSeconds === "number" ? { noProgressTimeoutSeconds: options.noProgressTimeoutSeconds } : {})
+      });
   }
 
   return {
@@ -896,6 +942,11 @@ export async function runBuildExecution(options: BuildExecutionOptions): Promise
       ...(options.linkedContext?.run.workflow ? { linkedWorkflow: options.linkedContext.run.workflow } : {})
     });
 
+  const noProgressTimeoutSeconds = Math.min(
+    typeof options.timeoutSeconds === "number" && options.timeoutSeconds > 0 ? options.timeoutSeconds : BUILD_NO_PROGRESS_TIMEOUT_SECONDS,
+    BUILD_NO_PROGRESS_TIMEOUT_SECONDS
+  );
+
   let attemptNumber = 0;
   let codexOutcome: CodexAttemptOutcome | null = null;
   do {
@@ -908,7 +959,8 @@ export async function runBuildExecution(options: BuildExecutionOptions): Promise
       paths: options.paths,
       config: options.config,
       runId: options.runId,
-      ...(typeof options.timeoutSeconds === "number" ? { timeoutSeconds: options.timeoutSeconds } : {})
+      ...(typeof options.timeoutSeconds === "number" ? { timeoutSeconds: options.timeoutSeconds } : {}),
+      ...(typeof noProgressTimeoutSeconds === "number" ? { noProgressTimeoutSeconds } : {})
     });
     const retrying = shouldRetryCodexAttempt(codexOutcome, attemptNumber);
     recoveryAttempts.push(
@@ -971,6 +1023,8 @@ export async function runBuildExecution(options: BuildExecutionOptions): Promise
       sessionIdObserved: Boolean(codexOutcome.result.sessionId),
       transcriptObserved: Boolean(codexOutcome.transcriptBody.trim()),
       finalArtifactObserved: Boolean(codexOutcome.finalBody.trim()),
+      ...(codexOutcome.result.stalled ? { stalled: true } : {}),
+      ...(codexOutcome.result.stallReason ? { stallReason: codexOutcome.result.stallReason } : {}),
       ...(codexOutcome.result.timedOut ? { timedOut: true } : {}),
       ...(codexOutcome.result.timeoutSeconds ? { timeoutSeconds: codexOutcome.result.timeoutSeconds } : {}),
       ...(codexOutcome.fallbackReason ? { fallbackReason: codexOutcome.fallbackReason } : {})

@@ -112,6 +112,55 @@ async function seedReviewRun(repoDir: string, buildRunId: string): Promise<strin
   return runId;
 }
 
+async function seedInitiativeReviewRun(repoDir: string, buildRunId: string): Promise<string> {
+  const runId = "2026-03-14T12-00-00-review-initiative-cleanup";
+  const runDir = path.join(repoDir, ".cstack", "runs", runId);
+  await fs.mkdir(path.join(runDir, "artifacts"), { recursive: true });
+
+  const run: RunRecord = {
+    id: runId,
+    workflow: "review",
+    createdAt: "2026-03-14T12:00:00.000Z",
+    updatedAt: "2026-03-14T12:00:10.000Z",
+    status: "completed",
+    cwd: repoDir,
+    gitBranch: "main",
+    codexVersion: "fake",
+    codexCommand: ["codex", "exec"],
+    promptPath: path.join(runDir, "prompt.md"),
+    finalPath: path.join(runDir, "final.md"),
+    contextPath: path.join(runDir, "context.md"),
+    stdoutPath: path.join(runDir, "stdout.log"),
+    stderrPath: path.join(runDir, "stderr.log"),
+    configSources: [],
+    summary: "Review initiative cleanup",
+    inputs: {
+      userPrompt: "Review initiative cleanup",
+      linkedRunId: buildRunId,
+      initiativeId: "initiative-ship",
+      initiativeTitle: "Platform initiative"
+    }
+  };
+
+  const verdict: DeliverReviewVerdict = {
+    mode: "readiness",
+    status: "ready",
+    summary: "Review passed.",
+    findings: [],
+    recommendedActions: [],
+    acceptedSpecialists: [],
+    reportMarkdown: "# Review Findings\n\nReview passed.\n"
+  };
+
+  await fs.writeFile(path.join(runDir, "run.json"), `${JSON.stringify(run, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(runDir, "final.md"), "# Review Run Summary\n\nReady.\n", "utf8");
+  await fs.writeFile(path.join(runDir, "artifacts", "findings.md"), verdict.reportMarkdown, "utf8");
+  await fs.writeFile(path.join(runDir, "artifacts", "findings.json"), `${JSON.stringify({ findings: [], recommendedActions: [], acceptedSpecialists: [] }, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(runDir, "artifacts", "verdict.json"), `${JSON.stringify(verdict, null, 2)}\n`, "utf8");
+
+  return runId;
+}
+
 describe("runShip", () => {
   let repoDir: string;
   let remoteDir: string;
@@ -228,6 +277,24 @@ describe("runShip", () => {
       const shipRecord = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "ship-record.json"), "utf8")) as {
         readiness: string;
       };
+      const readinessPolicy = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "readiness-policy.json"), "utf8")) as {
+        summary: string;
+        requirements: Array<{ name: string; status: string }>;
+        classifiedBlockers: Array<{ category: string }>;
+        postReadinessSummary: { headline: string; blockers: string[] };
+      };
+      const deploymentEvidence = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "deployment-evidence.json"), "utf8")) as {
+        status: string;
+        references: Array<{ kind: string; label: string }>;
+      };
+      const postShipEvidence = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "post-ship-evidence.json"), "utf8")) as {
+        status: string;
+        followUpRequired: boolean;
+      };
+      const followUpLineage = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "follow-up-lineage.json"), "utf8")) as {
+        status: string;
+        recommendedDrafts: Array<{ title: string }>;
+      };
       const githubMutation = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "github-mutation.json"), "utf8")) as {
         branch: { current: string };
         pullRequest: { created: boolean };
@@ -239,12 +306,86 @@ describe("runShip", () => {
       expect(run.status).toBe("completed");
       expect(run.inputs.linkedRunId).toBe(reviewRunId);
       expect(shipRecord.readiness).toBe("ready");
+      expect(readinessPolicy.summary).toContain("satisfied");
+      expect(readinessPolicy.requirements.find((entry) => entry.name === "github-delivery")?.status).toBe("satisfied");
+      expect(readinessPolicy.classifiedBlockers).toEqual([]);
+      expect(readinessPolicy.postReadinessSummary.headline).toContain("satisfied");
+      expect(readinessPolicy.postReadinessSummary.blockers).toEqual([]);
+      expect(deploymentEvidence.status).toBe("recorded");
+      expect(deploymentEvidence.references.some((entry) => entry.kind === "pull-request")).toBe(true);
+      expect(postShipEvidence.status).toBe("stable");
+      expect(postShipEvidence.followUpRequired).toBe(false);
+      expect(followUpLineage.status).toBe("none");
+      expect(followUpLineage.recommendedDrafts).toHaveLength(0);
       expect(githubMutation.branch.current).toContain("cstack/");
       expect(githubMutation.pullRequest.created).toBe(true);
       expect(githubDelivery.overall.status).toBe("ready");
-      expect(stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join("")).toContain("Workflow: ship");
+    expect(stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join("")).toContain("Workflow: ship");
     } finally {
       stdoutSpy.mockRestore();
     }
+  }, 15_000);
+
+  it("inherits and overrides initiative metadata", async () => {
+    const buildRunId = await seedBuildRun(repoDir);
+    const reviewRunId = await seedInitiativeReviewRun(repoDir, buildRunId);
+    await writeGitHubFixture({
+      createdPullRequest: {
+        reviewDecision: "APPROVED",
+        mergeStateStatus: "CLEAN"
+      },
+      issues: [
+        {
+          number: 333,
+          title: "Ship initiative",
+          state: "CLOSED",
+          url: "https://github.com/ganesh47/cstack/issues/333",
+          closedAt: "2026-03-14T00:00:00.000Z"
+        }
+      ],
+      prChecks: [
+        { name: "deliver/test", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/20" },
+        { name: "deliver/typecheck", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/21" }
+      ],
+      actions: [
+        { databaseId: 4, workflowName: "Release", status: "completed", conclusion: "success", url: "https://github.com/ganesh47/cstack/actions/runs/4" }
+      ],
+      security: {
+        dependabot: [],
+        codeScanning: []
+      }
+    });
+
+    await runShip(repoDir, [
+      "--from-run",
+      reviewRunId,
+      "Ship initiative cleanup"
+    ]);
+
+    const inheritedRun = await readRun(
+      repoDir,
+      (await listRuns(repoDir)).filter((entry) => entry.workflow === "ship")[0]!.id
+    );
+    expect(inheritedRun.inputs.initiativeId).toBe("initiative-ship");
+    expect(inheritedRun.inputs.initiativeTitle).toBe("Platform initiative");
+
+    await runShip(repoDir, [
+      "--from-run",
+      reviewRunId,
+      "--initiative",
+      "initiative-ship-override",
+      "--initiative-title",
+      "Override ship initiative",
+      "Ship initiative cleanup"
+    ]);
+
+    const overrideRun = await readRun(
+      repoDir,
+      (await listRuns(repoDir)).filter((entry) => entry.workflow === "ship")[0]!.id
+    );
+
+    expect(overrideRun.inputs.initiativeId).toBe("initiative-ship-override");
+    expect(overrideRun.inputs.initiativeTitle).toBe("Override ship initiative");
+    expect(inheritedRun.id).not.toBe(overrideRun.id);
   }, 15_000);
 });

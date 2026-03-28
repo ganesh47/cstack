@@ -11,6 +11,8 @@ export interface DeliverCliOptions {
   requestedMode?: WorkflowMode;
   deliveryMode?: DeliverTargetMode;
   issueNumbers?: number[];
+  initiativeId?: string;
+  initiativeTitle?: string;
   allowDirty?: boolean;
 }
 
@@ -43,6 +45,24 @@ export function parseDeliverArgs(args: string[]): { prompt: string; options: Del
         throw new Error("`cstack deliver --from-run` requires a run id.");
       }
       options.fromRunId = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--initiative") {
+      const value = args[index + 1];
+      if (!value) {
+        throw new Error("`cstack deliver --initiative` requires an initiative id.");
+      }
+      options.initiativeId = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--initiative-title") {
+      const value = args[index + 1];
+      if (!value) {
+        throw new Error("`cstack deliver --initiative-title` requires a value.");
+      }
+      options.initiativeTitle = value;
       index += 1;
       continue;
     }
@@ -94,6 +114,11 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
   const { config, sources } = await loadConfig(cwd);
   const allowDirty = parsed.options.allowDirty ?? config.workflows.deliver.allowDirty ?? false;
   const linkedContext = parsed.options.fromRunId ? await resolveLinkedBuildContext(cwd, parsed.options.fromRunId) : undefined;
+  const resolvedInitiativeId = parsed.options.initiativeId ?? linkedContext?.run.inputs.initiativeId;
+  const resolvedInitiativeTitle = parsed.options.initiativeTitle ?? linkedContext?.run.inputs.initiativeTitle;
+  const resolvedIssueNumbers = parsed.options.issueNumbers?.length
+    ? parsed.options.issueNumbers
+    : linkedContext?.run.inputs.issueNumbers;
   const runId = makeRunId("deliver", resolvedPrompt);
   const runDir = await ensureRunDir(cwd, runId);
   const promptPath = path.join(runDir, "prompt.md");
@@ -116,7 +141,7 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
   ];
   const requestedMode = parsed.options.requestedMode ?? config.workflows.deliver.mode ?? config.workflows.build.mode ?? "interactive";
   const deliveryMode = parsed.options.deliveryMode ?? config.workflows.deliver.github?.mode ?? "merge-ready";
-  const issueNumbers = parsed.options.issueNumbers ?? [];
+  const issueNumbers = resolvedIssueNumbers ?? [];
   const buildTimeoutSeconds = config.workflows.deliver.stageTimeoutSeconds?.build ?? config.workflows.build.timeoutSeconds;
   const reviewTimeoutSeconds = config.workflows.deliver.stageTimeoutSeconds?.review ?? config.workflows.review.timeoutSeconds;
   const shipTimeoutSeconds = config.workflows.deliver.stageTimeoutSeconds?.ship ?? config.workflows.ship.timeoutSeconds;
@@ -149,6 +174,8 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
       verificationCommands,
       deliveryMode,
       allowDirty,
+      ...(resolvedInitiativeId ? { initiativeId: resolvedInitiativeId } : {}),
+      ...(resolvedInitiativeTitle ? { initiativeTitle: resolvedInitiativeTitle } : {}),
       ...(buildTimeoutSeconds ? { timeoutSeconds: buildTimeoutSeconds } : {}),
       ...(issueNumbers.length > 0 ? { issueNumbers } : {})
     }
@@ -192,15 +219,15 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
       ...(linkedContext ? { linkedContext } : {})
     });
 
-    const buildSession = execution.buildExecution.sessionRecord;
-    runRecord.status =
+    const isDeliverCompleted =
       execution.buildExecution.result.code === 0 &&
-      execution.validationExecution.validationPlan.status !== "blocked" &&
+      execution.validationExecution.validationPlan.status === "ready" &&
       execution.reviewVerdict.status === "ready" &&
       execution.shipRecord.readiness === "ready" &&
-      execution.githubDeliveryRecord.overall.status === "ready"
-        ? "completed"
-        : "failed";
+      execution.githubDeliveryRecord.overall.status === "ready";
+
+    const buildSession = execution.buildExecution.sessionRecord;
+    runRecord.status = isDeliverCompleted ? "completed" : "failed";
     runRecord.updatedAt = new Date().toISOString();
     delete runRecord.currentStage;
     runRecord.gitBranch = execution.githubMutationRecord.branch.current || gitBranch;
@@ -211,7 +238,7 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
     runRecord.lastActivity =
       execution.buildExecution.result.code !== 0
         ? `${execution.buildExecution.failureDiagnosis?.summary ?? (execution.buildExecution.result.timedOut ? `Build timed out after ${execution.buildExecution.result.timeoutSeconds}s` : `Build failed with exit code ${execution.buildExecution.result.code}`)}; downstream stages blocked`
-        : `Validation: ${execution.validationExecution.validationPlan.status}; Ship readiness: ${execution.shipRecord.readiness}; GitHub delivery: ${execution.githubDeliveryRecord.overall.status}`;
+        : `Validation: ${execution.validationExecution.validationPlan.status} (${execution.validationExecution.validationPlan.outcomeCategory}); Ship readiness: ${execution.shipRecord.readiness}; GitHub delivery: ${execution.githubDeliveryRecord.overall.status}`;
     runRecord.inputs.observedMode = execution.buildExecution.observedMode;
     runRecord.inputs.selectedSpecialists = execution.selectedSpecialists.map((specialist) => specialist.name);
     runRecord.inputs.deliveryMode = deliveryMode;
@@ -230,7 +257,10 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
             ].join("; ")
           : [
               execution.validationExecution.validationPlan.status === "blocked"
-                ? `validation status: ${execution.validationExecution.validationPlan.status}`
+                ? `validation blocked via ${execution.validationExecution.validationPlan.outcomeCategory}`
+                : null,
+              execution.validationExecution.validationPlan.status === "partial"
+                ? `validation partial: ${execution.validationExecution.validationPlan.summary}`
                 : null,
               execution.reviewVerdict.status !== "ready" ? `review status: ${execution.reviewVerdict.status}` : null,
               execution.shipRecord.readiness === "blocked" ? "ship stage blocked release readiness" : null,
@@ -255,7 +285,7 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
         executionCheckout.record.source.dirtyFiles.length > 0 && !allowDirty
           ? "Local dirty changes were ignored; execution used committed HEAD."
           : undefined,
-        `Validation: ${execution.validationExecution.validationPlan.status}`,
+        `Validation: ${execution.validationExecution.validationPlan.status} (${execution.validationExecution.validationPlan.outcomeCategory})`,
         `Review verdict: ${execution.reviewVerdict.status}`,
         `Ship readiness: ${execution.shipRecord.readiness}`,
         `GitHub mutation: ${execution.githubMutationRecord.summary}`,
@@ -266,12 +296,20 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
         `  ${path.relative(cwd, deliveryReportPath)}`,
         `  ${path.relative(cwd, path.join(runDir, "artifacts", "github-mutation.json"))}`,
         `  ${path.relative(cwd, path.join(runDir, "artifacts", "github-delivery.json"))}`,
+        `  ${path.relative(cwd, path.join(runDir, "artifacts", "readiness-policy.json"))}`,
+        `  ${path.relative(cwd, path.join(runDir, "artifacts", "deployment-evidence.json"))}`,
         `  ${path.relative(cwd, stageLineagePath)}`,
         `  ${path.relative(cwd, path.join(runDir, "stages", "build", "artifacts", "change-summary.md"))}`,
         `  ${path.relative(cwd, path.join(runDir, "stages", "validation", "validation-plan.json"))}`,
         `  ${path.relative(cwd, path.join(runDir, "stages", "validation", "artifacts", "test-pyramid.md"))}`,
         `  ${path.relative(cwd, path.join(runDir, "stages", "review", "artifacts", "verdict.json"))}`,
         `  ${path.relative(cwd, path.join(runDir, "stages", "ship", "artifacts", "ship-summary.md"))}`,
+        `  ${path.relative(cwd, path.join(runDir, "stages", "ship", "artifacts", "readiness-policy.json"))}`,
+        `  ${path.relative(cwd, path.join(runDir, "stages", "ship", "artifacts", "deployment-evidence.json"))}`,
+        `  ${path.relative(cwd, path.join(runDir, "artifacts", "post-ship-summary.md"))}`,
+        `  ${path.relative(cwd, path.join(runDir, "artifacts", "post-ship-evidence.json"))}`,
+        `  ${path.relative(cwd, path.join(runDir, "artifacts", "follow-up-draft.md"))}`,
+        `  ${path.relative(cwd, path.join(runDir, "artifacts", "follow-up-lineage.json"))}`,
         `  ${path.relative(cwd, path.join(runDir, "run.json"))}`
       ].join("\n") + "\n"
     );

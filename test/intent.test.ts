@@ -17,9 +17,11 @@ async function initGitRepo(repoDir: string): Promise<string> {
   await execFileAsync("git", ["init", "-b", "main"], { cwd: repoDir });
   await execFileAsync("git", ["config", "user.name", "cstack test"], { cwd: repoDir });
   await execFileAsync("git", ["config", "user.email", "cstack-test@example.com"], { cwd: repoDir });
+  await execFileAsync("git", ["config", "commit.gpgSign", "false"], { cwd: repoDir });
+  await execFileAsync("git", ["config", "tag.gpgSign", "false"], { cwd: repoDir });
   await execFileAsync("git", ["remote", "add", "origin", remoteDir], { cwd: repoDir });
   await execFileAsync("git", ["add", "."], { cwd: repoDir });
-  await execFileAsync("git", ["commit", "-m", "fixture"], { cwd: repoDir });
+  await execFileAsync("git", ["-c", "commit.gpgSign=false", "commit", "-m", "fixture"], { cwd: repoDir });
   await execFileAsync("git", ["push", "-u", "origin", "main"], { cwd: repoDir });
   return remoteDir;
 }
@@ -75,7 +77,9 @@ describe("intent router", () => {
     delete process.env.FAKE_CODEX_FAIL_BUILD;
     delete process.env.FAKE_CODEX_DELAY_MS;
     await fs.rm(repoDir, { recursive: true, force: true });
-    await fs.rm(remoteDir, { recursive: true, force: true });
+    if (remoteDir) {
+      await fs.rm(remoteDir, { recursive: true, force: true });
+    }
   });
 
   it("infers staged execution and specialists from intent", () => {
@@ -266,6 +270,34 @@ describe("intent router", () => {
     expect(executionContext.execution.kind).toBe("git-worktree");
     expect(executionContext.source.dirtyFiles).toContain("dirty-local.txt");
     expect(executionContext.source.localChangesIgnored).toBe(true);
+  }, 60_000);
+
+  it("marks discover failed in stage lineage when the direct discover stage times out", async () => {
+    const configPath = path.join(repoDir, ".cstack", "config.toml");
+    const existingConfig = await fs.readFile(configPath, "utf8");
+    await fs.writeFile(configPath, `${existingConfig}\n[workflows.discover]\ntimeoutSeconds = 1\n`, "utf8");
+    process.env.FAKE_CODEX_DELAY_MS = "1500";
+
+    await expect(
+      runIntent(repoDir, "What are the gaps in this project? Can you work on closing the gaps?", {
+        entrypoint: "bare",
+        dryRun: false
+      })
+    ).rejects.toThrow(/code 124|timed out/i);
+
+    const runs = await listRuns(repoDir);
+    const intentRun = await readRun(
+      repoDir,
+      runs.find((entry) => entry.workflow === "intent")!.id
+    );
+    const intentRunDir = path.dirname(intentRun.finalPath);
+    const lineage = JSON.parse(await fs.readFile(path.join(intentRunDir, "stage-lineage.json"), "utf8")) as StageLineage;
+
+    expect(intentRun.status).toBe("failed");
+    expect(intentRun.error).toMatch(/code 124|timed out/i);
+    expect(lineage.stages.find((stage) => stage.name === "discover")?.status).toBe("failed");
+    expect(lineage.stages.find((stage) => stage.name === "discover")?.executed).toBe(true);
+    expect(lineage.stages.find((stage) => stage.name === "discover")?.notes).toMatch(/code 124|timed out/i);
   }, 60_000);
 
   it("surfaces downstream build failure promptly and marks later stages deferred", async () => {

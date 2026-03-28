@@ -7,16 +7,23 @@ import type {
   ChildRunInspection,
   BuildSessionRecord,
   BuildVerificationRecord,
+  CapabilityUsageRecord,
+  DeliveryReadinessPolicyRecord,
+  DeploymentEvidenceRecord,
   DeliverValidationLocalRecord,
   DeliverValidationPlan,
   DeliverReviewVerdict,
   DeliverShipRecord,
   DiscoverDelegateResult,
   DiscoverResearchPlan,
+  InitiativeGraphRecord,
   ExecutionContextRecord,
   GitHubGateEvaluation,
   GitHubDeliveryRecord,
   GitHubMutationRecord,
+  PostShipEvidenceRecord,
+  PostShipFollowUpRecord,
+  PlanningIssueLineageRecord,
   RoutingPlan,
   RunEvent,
   RunInspection,
@@ -93,6 +100,53 @@ async function tailTextFile(filePath?: string, maxLines = 20): Promise<string> {
     .split("\n")
     .slice(-maxLines)
     .join("\n");
+}
+
+function formatInitiativeLabel(initiativeId?: string, initiativeTitle?: string): string {
+  if (initiativeId && initiativeTitle) {
+    return `${initiativeId} (${initiativeTitle})`;
+  }
+  return initiativeId ?? initiativeTitle ?? "-";
+}
+
+async function deriveInitiativeGraph(cwd: string, run: RunInspection["run"]): Promise<InitiativeGraphRecord | null> {
+  const initiativeId = run.inputs.initiativeId;
+  if (!initiativeId) {
+    return null;
+  }
+
+  const initiativeRuns = (await listRuns(cwd))
+    .filter((entry) => entry.inputs?.initiativeId === initiativeId)
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+
+  const sourceRun = initiativeRuns[0];
+  const relatedRuns = initiativeRuns
+    .filter((entry) => entry.id !== run.id)
+    .map((entry) => ({
+      runId: entry.id,
+      workflow: entry.workflow,
+      status: entry.status
+    }));
+
+  return {
+    initiativeId,
+    ...(run.inputs.initiativeTitle ? { initiativeTitle: run.inputs.initiativeTitle } : {}),
+    ...(sourceRun
+      ? {
+          sourceRun: {
+            runId: sourceRun.id,
+            workflow: sourceRun.workflow,
+            ...(sourceRun.summary ? { summary: sourceRun.summary } : {})
+          }
+        }
+      : {}),
+    currentRun: {
+      runId: run.id,
+      workflow: run.workflow,
+      ...(run.summary ? { summary: run.summary } : {})
+    },
+    relatedRuns
+  };
 }
 
 function childBuildStageDir(child: ChildRunInspection): string | null {
@@ -495,6 +549,12 @@ function renderSuggestedActions(inspection: RunInspection): string[] {
       lines.push("- inspect CI validation with `show ci-validation`");
       lines.push("- inspect the review verdict with `show review`");
       lines.push("- inspect ship readiness with `show ship`");
+      if (inspection.postShipEvidenceRecord) {
+        lines.push("- inspect post-ship evidence with `show post-ship`");
+      }
+      if (inspection.postShipFollowUpRecord) {
+        lines.push("- inspect follow-up lineage with `show follow-up`");
+      }
       if (inspection.githubMutationRecord) {
         lines.push("- inspect GitHub mutation state with `show mutation`");
       }
@@ -520,6 +580,12 @@ function renderSuggestedActions(inspection: RunInspection): string[] {
   }
   if (inspection.run.workflow === "ship") {
     lines.push("- inspect ship readiness with `show ship`");
+    if (inspection.postShipEvidenceRecord) {
+      lines.push("- inspect post-ship evidence with `show post-ship`");
+    }
+    if (inspection.postShipFollowUpRecord) {
+      lines.push("- inspect follow-up lineage with `show follow-up`");
+    }
     if (inspection.githubMutationRecord) {
       lines.push("- inspect GitHub mutation state with `show mutation`");
     }
@@ -896,11 +962,21 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
   const deliverValidationLocalPath = path.join(runDir, "stages", "validation", "artifacts", "local-validation.json");
   const deliverReviewVerdictPath = path.join(runDir, "stages", "review", "artifacts", "verdict.json");
   const deliverShipRecordPath = path.join(runDir, "stages", "ship", "artifacts", "ship-record.json");
+  const deliverReadinessPolicyPath = path.join(runDir, "stages", "ship", "artifacts", "readiness-policy.json");
+  const deliverDeploymentEvidencePath = path.join(runDir, "stages", "ship", "artifacts", "deployment-evidence.json");
   const reviewVerdictPath = path.join(runDir, "artifacts", "verdict.json");
   const shipRecordPath = path.join(runDir, "artifacts", "ship-record.json");
+  const readinessPolicyPath = path.join(runDir, "artifacts", "readiness-policy.json");
+  const deploymentEvidencePath = path.join(runDir, "artifacts", "deployment-evidence.json");
   const executionContextPath = path.join(runDir, "execution-context.json");
   const githubDeliveryPath = path.join(runDir, "artifacts", "github-delivery.json");
   const githubMutationPath = path.join(runDir, "artifacts", "github-mutation.json");
+  const postShipEvidencePath = path.join(runDir, "artifacts", "post-ship-evidence.json");
+  const postShipFollowUpPath = path.join(runDir, "artifacts", "follow-up-lineage.json");
+  const planningIssueLineagePath = path.join(runDir, "artifacts", "issue-lineage.json");
+  const initiativeGraphPath = path.join(runDir, "artifacts", "initiative-graph.json");
+  const discoverCapabilitiesPath = path.join(runDir, "artifacts", "capabilities.json");
+  const validationCapabilitiesPath = path.join(runDir, "stages", "validation", "artifacts", "capabilities.json");
   const buildFailureDiagnosisPath =
     run.workflow === "deliver"
       ? path.join(runDir, "stages", "build", "artifacts", "failure-diagnosis.json")
@@ -911,6 +987,9 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     recentEvents,
     routingPlan,
     stageLineage,
+    planningIssueLineage,
+    discoverCapabilitiesRecord,
+    validationCapabilitiesRecord,
     discoverResearchPlan,
     discoverDelegates,
     sessionRecord,
@@ -921,8 +1000,13 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     validationLocalRecord,
     deliverReviewVerdict,
     deliverShipRecord,
+    readinessPolicyRecord,
+    deploymentEvidenceRecord,
     githubDeliveryRecord,
     githubMutationRecord,
+    postShipEvidenceRecord,
+    postShipFollowUpRecord,
+    initiativeGraphRecord,
     executionContext,
     buildFailureDiagnosis,
     artifacts
@@ -930,6 +1014,9 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     readRecentEvents(run.eventsPath),
     readJsonFile<RoutingPlan>(path.join(runDir, "routing-plan.json")),
     readJsonFile<StageLineage>(path.join(runDir, "stage-lineage.json")),
+    readJsonFile<PlanningIssueLineageRecord>(planningIssueLineagePath),
+    readJsonFile<CapabilityUsageRecord>(discoverCapabilitiesPath),
+    readJsonFile<CapabilityUsageRecord>(validationCapabilitiesPath),
     readJsonFile<DiscoverResearchPlan>(path.join(runDir, "stages", "discover", "research-plan.json")),
     loadDiscoverDelegates(runDir),
     readJsonFile<BuildSessionRecord>(run.workflow === "deliver" ? deliverBuildSessionPath : run.workflow === "build" ? sessionPath : ""),
@@ -940,8 +1027,17 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     readJsonFile<DeliverValidationLocalRecord>(deliverValidationLocalPath),
     readJsonFile<DeliverReviewVerdict>(run.workflow === "deliver" ? deliverReviewVerdictPath : run.workflow === "review" ? reviewVerdictPath : ""),
     readJsonFile<DeliverShipRecord>(run.workflow === "deliver" ? deliverShipRecordPath : run.workflow === "ship" ? shipRecordPath : ""),
+    readJsonFile<DeliveryReadinessPolicyRecord>(
+      run.workflow === "deliver" ? deliverReadinessPolicyPath : run.workflow === "ship" ? readinessPolicyPath : ""
+    ),
+    readJsonFile<DeploymentEvidenceRecord>(
+      run.workflow === "deliver" ? deliverDeploymentEvidencePath : run.workflow === "ship" ? deploymentEvidencePath : ""
+    ),
     readJsonFile<GitHubDeliveryRecord>(githubDeliveryPath),
     readJsonFile<GitHubMutationRecord>(githubMutationPath),
+    readJsonFile<PostShipEvidenceRecord>(postShipEvidencePath),
+    readJsonFile<PostShipFollowUpRecord>(postShipFollowUpPath),
+    readJsonFile<InitiativeGraphRecord>(initiativeGraphPath),
     readJsonFile<ExecutionContextRecord>(executionContextPath),
     readJsonFile<BuildFailureDiagnosisRecord>(buildFailureDiagnosisPath),
     walkArtifacts(runDir)
@@ -960,6 +1056,9 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     runDir,
     routingPlan,
     stageLineage,
+    planningIssueLineage,
+    discoverCapabilitiesRecord,
+    validationCapabilitiesRecord,
     discoverResearchPlan,
     discoverDelegates,
     sessionRecord,
@@ -970,9 +1069,14 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
     validationLocalRecord,
     deliverReviewVerdict,
     deliverShipRecord,
+    readinessPolicyRecord,
+    deploymentEvidenceRecord,
     githubDeliveryRecord,
     githubMutationRecord,
+    postShipEvidenceRecord,
+    postShipFollowUpRecord,
     executionContext,
+    initiativeGraph: initiativeGraphRecord ?? (await deriveInitiativeGraph(cwd, run)),
     recentEvents,
     finalBody,
     buildFinalBody,
@@ -997,6 +1101,8 @@ function renderResearchSection(inspection: RunInspection): string[] {
     "Research",
     `- mode: ${discoverResearchPlan.mode}`,
     `- web research allowed: ${discoverResearchPlan.webResearchAllowed ? "yes" : "no"}`,
+    `- requested capabilities: ${discoverResearchPlan.requestedCapabilities.join(", ") || "none"}`,
+    `- available capabilities: ${discoverResearchPlan.availableCapabilities.join(", ") || "none"}`,
     `- selected tracks: ${
       discoverResearchPlan.tracks.filter((track) => track.selected).map((track) => track.name).join(", ") || "none"
     }`,
@@ -1116,16 +1222,39 @@ export function renderInspectionSummary(cwd: string, inspection: RunInspection):
         : undefined,
       inspection.sessionRecord ? `- mode: requested ${inspection.sessionRecord.requestedMode}, observed ${inspection.sessionRecord.mode}` : undefined,
       inspection.sessionRecord?.linkedRunId ? `- linked run: ${inspection.sessionRecord.linkedRunId}` : undefined,
+      run.inputs.planningIssueNumber ? `- planning issue: #${run.inputs.planningIssueNumber}` : undefined,
+      inspection.artifacts.some((artifact) => artifact.path === "artifacts/issue-draft.md") ? "- issue draft: artifacts/issue-draft.md" : undefined,
+      inspection.planningIssueLineage ? "- issue lineage: artifacts/issue-lineage.json" : undefined,
+      run.inputs.initiativeId || run.inputs.initiativeTitle
+        ? `- initiative: ${formatInitiativeLabel(run.inputs.initiativeId, run.inputs.initiativeTitle)}`
+        : undefined,
+      inspection.initiativeGraph
+        ? `- initiative runs: ${inspection.initiativeGraph.relatedRuns.length + 1}`
+        : undefined,
+      inspection.artifacts.some((artifact) => artifact.path === "artifacts/initiative-graph.json")
+        ? "- initiative graph: artifacts/initiative-graph.json"
+        : inspection.initiativeGraph
+          ? "- initiative graph: derived from run metadata"
+          : undefined,
+      inspection.discoverCapabilitiesRecord
+        ? `- capabilities: discover requested=${inspection.discoverCapabilitiesRecord.requested.join(", ") || "none"}`
+        : inspection.validationCapabilitiesRecord
+          ? `- capabilities: validation requested=${inspection.validationCapabilitiesRecord.requested.join(", ") || "none"}`
+          : undefined,
       inspection.verificationRecord ? `- verification: ${renderVerificationSummary(inspection.verificationRecord)}` : undefined,
-      inspection.validationPlan ? `- validation: ${inspection.validationPlan.status}` : undefined,
+      inspection.validationPlan ? `- validation: ${inspection.validationPlan.status} (${inspection.validationPlan.outcomeCategory})` : undefined,
       inspection.validationLocalRecord ? `- local validation: ${inspection.validationLocalRecord.status}` : undefined,
       directBuildFailure ? `- root cause: build failed: ${directBuildFailure}` : undefined,
       ...(directBuildFailure ? renderInspectionBuildFailureEvidence(inspection, cwd) : []),
       renderReviewHeadline(inspection.deliverReviewVerdict),
       ...reviewDetails,
-      inspection.deliverShipRecord ? `- ship readiness: ${inspection.deliverShipRecord.readiness}` : undefined,
-      inspection.githubMutationRecord ? `- github mutation: ${inspection.githubMutationRecord.summary}` : undefined,
-      inspection.githubDeliveryRecord ? `- github delivery: ${renderGitHubSummary(inspection.githubDeliveryRecord)}` : undefined,
+    inspection.deliverShipRecord ? `- ship readiness: ${inspection.deliverShipRecord.readiness}` : undefined,
+    inspection.readinessPolicyRecord ? `- readiness policy: ${inspection.readinessPolicyRecord.summary}` : undefined,
+    inspection.deploymentEvidenceRecord ? `- deployment evidence: ${inspection.deploymentEvidenceRecord.summary}` : undefined,
+    inspection.postShipEvidenceRecord ? `- post-ship: ${inspection.postShipEvidenceRecord.status}` : undefined,
+    inspection.postShipFollowUpRecord ? `- post-ship follow-up: ${inspection.postShipFollowUpRecord.status}` : undefined,
+    inspection.githubMutationRecord ? `- github mutation: ${inspection.githubMutationRecord.summary}` : undefined,
+    inspection.githubDeliveryRecord ? `- github delivery: ${renderGitHubSummary(inspection.githubDeliveryRecord)}` : undefined,
       ...failedChildRuns.flatMap((child) => {
         const rootStage = childRootFailedStage(child);
         return [
@@ -1202,6 +1331,105 @@ function renderVerification(inspection: RunInspection): string {
   return `${JSON.stringify(inspection.verificationRecord, null, 2)}\n`;
 }
 
+function renderCapabilities(inspection: RunInspection): string {
+  const records = [
+    inspection.discoverCapabilitiesRecord
+      ? { label: "discover", path: "artifacts/capabilities.json", record: inspection.discoverCapabilitiesRecord }
+      : null,
+    inspection.validationCapabilitiesRecord
+      ? { label: "validation", path: "stages/validation/artifacts/capabilities.json", record: inspection.validationCapabilitiesRecord }
+      : null
+  ].filter((value): value is { label: string; path: string; record: CapabilityUsageRecord } => value !== null);
+
+  if (records.length === 0) {
+    return "No capability artifacts were recorded for this run.";
+  }
+
+  return records
+    .map(({ label, path, record }) =>
+      [
+        `${label} capabilities`,
+        `- artifact: ${path}`,
+        `- allowed: ${record.allowed.join(", ") || "none"}`,
+        `- requested: ${record.requested.join(", ") || "none"}`,
+        `- available: ${record.available.join(", ") || "none"}`,
+        `- used: ${record.used.join(", ") || "none"}`,
+        ...(record.downgraded.length > 0
+          ? record.downgraded.map((entry) => `- downgraded: ${entry.name} (${entry.reason})`)
+          : ["- downgraded: none"]),
+        ...(record.notes?.length ? record.notes.map((note) => `- note: ${note}`) : [])
+      ].join("\n")
+    )
+    .join("\n\n");
+}
+
+function renderPlanningIssue(inspection: RunInspection): string {
+  const draftPath = "artifacts/issue-draft.md";
+  const hasDraft = inspection.artifacts.some((artifact) => artifact.path === draftPath);
+  if (!inspection.run.inputs.planningIssueNumber && !inspection.planningIssueLineage && !hasDraft) {
+    return "No planning issue artifacts were recorded for this run.";
+  }
+
+  return [
+    `Planning issue: ${inspection.run.inputs.planningIssueNumber ? `#${inspection.run.inputs.planningIssueNumber}` : "not recorded"}`,
+    inspection.run.inputs.planningIssueUrl ? `Issue URL: ${inspection.run.inputs.planningIssueUrl}` : undefined,
+    hasDraft ? `Issue draft: ${draftPath}` : "Issue draft: not recorded",
+    inspection.planningIssueLineage ? "Issue lineage: artifacts/issue-lineage.json" : "Issue lineage: not recorded",
+    inspection.planningIssueLineage
+      ? `Current run: ${inspection.planningIssueLineage.currentRun.runId} (${inspection.planningIssueLineage.currentRun.workflow})`
+      : undefined,
+    inspection.planningIssueLineage?.sourceRun
+      ? `Upstream run: ${inspection.planningIssueLineage.sourceRun.runId} (${inspection.planningIssueLineage.sourceRun.workflow ?? "unknown"})`
+      : undefined,
+    inspection.planningIssueLineage
+      ? `Downstream PRs: ${inspection.planningIssueLineage.downstreamPullRequests.length}`
+      : undefined,
+    ...(inspection.planningIssueLineage?.downstreamPullRequests.length
+      ? inspection.planningIssueLineage.downstreamPullRequests.map(
+          (pr) => `- PR #${pr.number}${pr.state ? ` (${pr.state})` : ""}${pr.url ? ` ${pr.url}` : ""}`
+        )
+      : []),
+    inspection.planningIssueLineage
+      ? `Downstream releases: ${inspection.planningIssueLineage.downstreamReleases.length}`
+      : undefined,
+    ...(inspection.planningIssueLineage?.downstreamReleases.length
+      ? inspection.planningIssueLineage.downstreamReleases.map(
+          (release) => `- release ${release.tag}${release.state ? ` (${release.state})` : ""}${release.url ? ` ${release.url}` : ""}`
+        )
+      : [])
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function renderInitiative(inspection: RunInspection): string {
+  const initiativeArtifactPath = "artifacts/initiative-graph.json";
+  const hasArtifact = inspection.artifacts.some((artifact) => artifact.path === initiativeArtifactPath);
+  if (!inspection.run.inputs.initiativeId && !hasArtifact && !inspection.initiativeGraph) {
+    return "No initiative artifacts were recorded for this run.";
+  }
+
+  return [
+    `Initiative: ${formatInitiativeLabel(inspection.run.inputs.initiativeId, inspection.run.inputs.initiativeTitle)}`,
+    hasArtifact ? `Artifact: ${initiativeArtifactPath}` : "Artifact: derived from run metadata",
+    inspection.initiativeGraph ? `Source run: ${inspection.initiativeGraph.sourceRun?.runId ?? "not recorded"}` : undefined,
+    inspection.initiativeGraph ? `Related runs: ${inspection.initiativeGraph.relatedRuns.length}` : undefined,
+    inspection.initiativeGraph
+      ? `Current run: ${inspection.initiativeGraph.currentRun.runId} (${inspection.initiativeGraph.currentRun.workflow})`
+      : undefined,
+    ...(inspection.initiativeGraph && inspection.initiativeGraph.relatedRuns.length > 0
+      ? [
+          "Run group:",
+          ...inspection.initiativeGraph.relatedRuns.map(
+            (related) => `- ${related.runId} (${related.workflow}, ${related.status})`
+          )
+        ]
+      : [])
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 function renderValidation(inspection: RunInspection): string {
   if (!inspection.validationPlan) {
     return "No validation plan was recorded for this run.";
@@ -1211,6 +1439,7 @@ function renderValidation(inspection: RunInspection): string {
     inspection.validationRepoProfile
       ? [
           `Validation status: ${inspection.validationPlan.status}`,
+          `Outcome category: ${inspection.validationPlan.outcomeCategory}`,
           `Profile surfaces: ${inspection.validationRepoProfile.surfaces.join(", ") || "unknown"}`,
           `Workspace targets: ${inspection.validationRepoProfile.workspaceTargets.length}`,
           ...inspection.validationRepoProfile.workspaceTargets.map(
@@ -1236,7 +1465,19 @@ async function renderValidationPyramid(inspection: RunInspection): Promise<strin
 }
 
 async function renderValidationCoverage(inspection: RunInspection): Promise<string> {
-  return readRelativeArtifact(inspection, "stages/validation/artifacts/coverage-summary.json");
+  if (!inspection.validationPlan) {
+    return "No validation plan was recorded for this run.";
+  }
+  const raw = await readRelativeArtifact(inspection, "stages/validation/artifacts/coverage-summary.json");
+  if (raw.startsWith("Artifact `")) {
+    return raw;
+  }
+  return [
+    `Validation status: ${inspection.validationPlan.status}`,
+    `Outcome category: ${inspection.validationPlan.outcomeCategory}`,
+    "",
+    raw
+  ].join("\n");
 }
 
 async function renderValidationCi(inspection: RunInspection): Promise<string> {
@@ -1292,6 +1533,105 @@ function renderDeliverShip(inspection: RunInspection): string {
   }
 
   return `${JSON.stringify(inspection.deliverShipRecord, null, 2)}\n`;
+}
+
+function renderReadinessPolicy(inspection: RunInspection): string {
+  if (!inspection.readinessPolicyRecord) {
+    return "No readiness policy record was recorded for this run.";
+  }
+
+  const record = inspection.readinessPolicyRecord;
+  return [
+    "Readiness policy:",
+    `- mode: ${record.mode}`,
+    `- readiness: ${record.readiness}`,
+    `- summary: ${record.summary}`,
+    `- headline: ${record.postReadinessSummary.headline}`,
+    "",
+    "Requirements:",
+    ...record.requirements.map(
+      (requirement) => `- ${requirement.name}: ${requirement.status}${requirement.summary ? ` (${requirement.summary})` : ""}`
+    ),
+    "",
+    "Classified blockers:",
+    ...(record.classifiedBlockers.length > 0
+      ? record.classifiedBlockers.map(
+          (blocker) => `- ${blocker.category}: ${blocker.summary}${blocker.status ? ` [${blocker.status}]` : ""}`
+        )
+      : ["- none"]),
+    "",
+    "Post-readiness next actions:",
+    ...(record.postReadinessSummary.nextActions.length > 0
+      ? record.postReadinessSummary.nextActions.map((action) => `- ${action}`)
+      : ["- none"])
+  ].join("\n");
+}
+
+function renderDeploymentEvidence(inspection: RunInspection): string {
+  if (!inspection.deploymentEvidenceRecord) {
+    return "No deployment evidence record was recorded for this run.";
+  }
+
+  const record = inspection.deploymentEvidenceRecord;
+  return [
+    "Deployment evidence:",
+    `- status: ${record.status}`,
+    `- mode: ${record.mode}`,
+    `- summary: ${record.summary}`,
+    "",
+    "References:",
+    ...(record.references.length > 0
+      ? record.references.map((reference) => `- ${reference.kind}: ${reference.label} (${reference.status})${reference.url ? ` ${reference.url}` : ""}`)
+      : ["- none"]),
+    "",
+    "Blockers:",
+    ...(record.blockers.length > 0 ? record.blockers.map((blocker) => `- ${blocker}`) : ["- none"])
+  ].join("\n");
+}
+
+function renderPostShipEvidence(inspection: RunInspection): string {
+  if (!inspection.postShipEvidenceRecord) {
+    return "No post-ship evidence was recorded for this run.";
+  }
+
+  return [
+    "Post-ship evidence:",
+    `- status: ${inspection.postShipEvidenceRecord.status}`,
+    `- summary: ${inspection.postShipEvidenceRecord.summary}`,
+    `- observed at: ${inspection.postShipEvidenceRecord.observedAt}`,
+    `- follow-up required: ${inspection.postShipEvidenceRecord.followUpRequired ? "yes" : "no"}`,
+    `- source artifacts: ${inspection.postShipEvidenceRecord.sourceArtifacts.join(", ") || "none"}`,
+    "",
+    "Observed signals:",
+    ...inspection.postShipEvidenceRecord.observedSignals.map((signal) => `- ${signal.kind}: ${signal.status} (${signal.summary})`),
+    ...(inspection.postShipEvidenceRecord.inferredRecommendations.length > 0
+      ? [
+          "Inferred recommendations:",
+          ...inspection.postShipEvidenceRecord.inferredRecommendations.map((entry) => `- ${entry}`)
+        ]
+      : ["No inferred recommendations."]),
+    "",
+    `${JSON.stringify(inspection.postShipEvidenceRecord, null, 2)}`
+  ].join("\n");
+}
+
+function renderPostShipFollowUp(inspection: RunInspection): string {
+  if (!inspection.postShipFollowUpRecord) {
+    return "No post-ship follow-up record was recorded for this run.";
+  }
+
+  return [
+    "Post-ship follow-up:",
+    `- status: ${inspection.postShipFollowUpRecord.status}`,
+    `- source run: ${inspection.postShipFollowUpRecord.sourceRun.runId} (${inspection.postShipFollowUpRecord.sourceRun.workflow})`,
+    `- linked issues: ${inspection.postShipFollowUpRecord.linkedIssueNumbers.join(", ") || "none"}`,
+    "",
+    ...inspection.postShipFollowUpRecord.recommendedDrafts.length > 0
+      ? ["Recommended drafts:", ...inspection.postShipFollowUpRecord.recommendedDrafts.map((draft) => `- ${draft.priority} ${draft.title}: ${draft.reason}`)]
+      : ["No recommended follow-up drafts."],
+    "",
+    `${JSON.stringify(inspection.postShipFollowUpRecord, null, 2)}`
+  ].join("\n");
 }
 
 function renderGitHub(inspection: RunInspection): string {
@@ -1493,6 +1833,16 @@ function renderWhatRemains(inspection: RunInspection): string {
 
   if (outstandingStages.length === 0 && skippedSpecialists.length === 0) {
     appendGitHubBlockers();
+    if (inspection.postShipEvidenceRecord?.followUpRequired) {
+      lines.push(...inspection.postShipEvidenceRecord.inferredRecommendations.map((entry) => `- post-ship follow-up: ${entry}`));
+    }
+    if (inspection.postShipFollowUpRecord?.recommendedDrafts.length) {
+      lines.push(
+        ...inspection.postShipFollowUpRecord.recommendedDrafts.map(
+          (draft) => `- follow-up draft: ${draft.title} [${draft.priority}]`
+        )
+      );
+    }
     if (lines.length > 1) {
       return lines.join("\n");
     }
@@ -1521,6 +1871,16 @@ function renderWhatRemains(inspection: RunInspection): string {
     lines.push(`- specialist ${specialist.name}: planned but not executed`);
   }
   appendGitHubBlockers();
+  if (inspection.postShipEvidenceRecord?.followUpRequired) {
+    lines.push(...inspection.postShipEvidenceRecord.inferredRecommendations.map((entry) => `- post-ship follow-up: ${entry}`));
+  }
+  if (inspection.postShipFollowUpRecord?.recommendedDrafts.length) {
+    lines.push(
+      ...inspection.postShipFollowUpRecord.recommendedDrafts.map(
+        (draft) => `- follow-up draft: ${draft.title} [${draft.priority}]`
+      )
+    );
+  }
   return lines.join("\n");
 }
 
@@ -1584,6 +1944,9 @@ function buildInspectorCompletionContext(inspection: RunInspection): InspectorCo
     "show research",
     "show session",
     "show verification",
+    "show issue",
+    "show capabilities",
+    "show initiative",
     "show validation",
     "show pyramid",
     "show coverage",
@@ -1592,6 +1955,10 @@ function buildInspectorCompletionContext(inspection: RunInspection): InspectorCo
     "show review",
     "show mitigations",
     "show ship",
+    "show readiness",
+    "show deployment",
+    "show post-ship",
+    "show follow-up",
     "show mutation",
     "show github",
     "show branch",
@@ -1622,6 +1989,9 @@ function buildInspectorCompletionContext(inspection: RunInspection): InspectorCo
     "research",
     "session",
     "verification",
+    "issue",
+    "capabilities",
+    "initiative",
     "validation",
     "pyramid",
     "coverage",
@@ -1630,6 +2000,10 @@ function buildInspectorCompletionContext(inspection: RunInspection): InspectorCo
     "review",
     "mitigations",
     "ship",
+    "readiness",
+    "deployment",
+    "post-ship",
+    "follow-up",
     "mutation",
     "github",
     "branch",
@@ -1768,6 +2142,9 @@ function helpText(): string {
     "- show research",
     "- show session",
     "- show verification",
+    "- show issue",
+    "- show capabilities",
+    "- show initiative",
     "- show validation",
     "- show pyramid",
     "- show coverage",
@@ -1776,6 +2153,10 @@ function helpText(): string {
     "- show review",
     "- show mitigations",
     "- show ship",
+    "- show readiness",
+    "- show deployment",
+    "- show post-ship",
+    "- show follow-up",
     "- show mutation",
     "- show github",
     "- show branch",
@@ -1847,6 +2228,15 @@ export async function executeInspectorCommand(cwd: string, inspection: RunInspec
   if (trimmed === "show verification") {
     return { output: renderVerification(inspection) };
   }
+  if (trimmed === "show issue") {
+    return { output: renderPlanningIssue(inspection) };
+  }
+  if (trimmed === "show capabilities") {
+    return { output: renderCapabilities(inspection) };
+  }
+  if (trimmed === "show initiative") {
+    return { output: renderInitiative(inspection) };
+  }
   if (trimmed === "show validation") {
     return { output: renderValidation(inspection) };
   }
@@ -1870,6 +2260,18 @@ export async function executeInspectorCommand(cwd: string, inspection: RunInspec
   }
   if (trimmed === "show ship") {
     return { output: renderDeliverShip(inspection) };
+  }
+  if (trimmed === "show readiness") {
+    return { output: renderReadinessPolicy(inspection) };
+  }
+  if (trimmed === "show deployment") {
+    return { output: renderDeploymentEvidence(inspection) };
+  }
+  if (trimmed === "show post-ship") {
+    return { output: renderPostShipEvidence(inspection) };
+  }
+  if (trimmed === "show follow-up") {
+    return { output: renderPostShipFollowUp(inspection) };
   }
   if (trimmed === "show mutation") {
     return { output: renderGitHubMutation(inspection) };
@@ -2148,11 +2550,13 @@ export function renderRunLedger(entries: RunLedgerEntry[]): string {
     return "No cstack runs found.\n";
   }
 
-  const headers = ["run_id", "workflow", "status", "stage", "updated_at", "specialists", "summary"];
+  const headers = ["run_id", "workflow", "status", "issue", "initiative", "stage", "updated_at", "specialists", "summary"];
   const rows = entries.map((entry) => [
     entry.id,
     entry.workflow,
     entry.status,
+    entry.planningIssueNumber ? `#${entry.planningIssueNumber}` : "-",
+    formatInitiativeLabel(entry.initiativeId, entry.initiativeTitle),
     entry.currentStage ?? "-",
     formatLedgerTimestamp(entry.updatedAt),
     entry.activeSpecialists.join(",") || "-",
@@ -2174,12 +2578,16 @@ export async function loadRunLedger(cwd: string, options: {
   activeOnly?: boolean;
   workflow?: RunLedgerEntry["workflow"];
   status?: RunLedgerEntry["status"];
+  planningIssueNumber?: number;
+  initiativeId?: string;
   recent?: number;
 }): Promise<RunLedgerEntry[]> {
   const query: {
     activeOnly?: boolean;
     workflow?: RunLedgerEntry["workflow"];
     status?: RunLedgerEntry["status"];
+    planningIssueNumber?: number;
+    initiativeId?: string;
     recent?: number;
   } = {};
 
@@ -2191,6 +2599,12 @@ export async function loadRunLedger(cwd: string, options: {
   }
   if (options.status) {
     query.status = options.status;
+  }
+  if (typeof options.planningIssueNumber === "number") {
+    query.planningIssueNumber = options.planningIssueNumber;
+  }
+  if (typeof options.initiativeId === "string") {
+    query.initiativeId = options.initiativeId;
   }
   if (typeof options.recent === "number") {
     query.recent = options.recent;

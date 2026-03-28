@@ -4,6 +4,7 @@ import { buildEvent, ProgressReporter } from "./progress.js";
 import { runCodexExec, type CodexRunResult } from "./codex.js";
 import { buildDiscoverLeadPrompt, buildDiscoverTrackPrompt } from "./prompt.js";
 import type {
+  CapabilityUsageRecord,
   CstackConfig,
   DiscoverDelegateResult,
   DiscoverResearchPlan,
@@ -14,6 +15,8 @@ import type {
 } from "./types.js";
 
 const TRACK_ORDER: DiscoverTrackName[] = ["repo-explorer", "risk-researcher", "external-researcher"];
+const DISCOVER_LEAD_RESERVE_SECONDS = 15;
+const DISCOVER_STALE_SESSION_TIMEOUT_SECONDS = 60;
 
 interface DiscoverPaths {
   runDir: string;
@@ -32,6 +35,7 @@ export interface DiscoverExecutionOptions {
   runId: string;
   input: string;
   config: CstackConfig;
+  planningIssueNumber?: number;
   paths: DiscoverPaths;
 }
 
@@ -40,6 +44,8 @@ export interface DiscoverExecutionResult {
   delegates: DiscoverDelegateResult[];
   leadResult: CodexRunResult;
   finalBody: string;
+  status: "completed" | "partial" | "failed";
+  notes: string[];
 }
 
 interface DiscoverLeadJson {
@@ -60,7 +66,60 @@ function compact(input: string): string {
   return input.replace(/\s+/g, " ").trim();
 }
 
-function inferTrackSelections(input: string, config: CstackConfig): DiscoverResearchPlan {
+function unique(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))];
+}
+
+function buildDiscoverCapabilityRecord(options: {
+  config: CstackConfig;
+  requested: string[];
+  selectedTracks: DiscoverTrackSelection[];
+  webResearchAllowed: boolean;
+}): CapabilityUsageRecord {
+  const workflowPolicy = options.config.workflows.discover.capabilities ?? {};
+  const allowed = unique(workflowPolicy.allowed ?? []);
+  const requested = unique([...(workflowPolicy.defaultRequested ?? []), ...options.requested]);
+  const downgraded: CapabilityUsageRecord["downgraded"] = [];
+  const available: string[] = [];
+
+  for (const capability of requested) {
+    if (allowed.length > 0 && !allowed.includes(capability)) {
+      downgraded.push({
+        name: capability,
+        reason: "not allowed by workflow capability policy"
+      });
+      continue;
+    }
+    if (capability === "web" && !options.webResearchAllowed) {
+      downgraded.push({
+        name: capability,
+        reason: "disabled by discover research policy"
+      });
+      continue;
+    }
+    available.push(capability);
+  }
+
+  const used = unique([
+    "shell",
+    ...(options.selectedTracks.some((track) => track.name === "external-researcher" && track.selected) && available.includes("web") ? ["web"] : [])
+  ]).filter((capability) => available.includes(capability));
+
+  return {
+    workflow: "discover",
+    allowed,
+    requested,
+    available,
+    used,
+    downgraded,
+    notes: [
+      `web research allowed: ${options.webResearchAllowed ? "yes" : "no"}`,
+      `selected tracks: ${options.selectedTracks.filter((track) => track.selected).map((track) => track.name).join(", ") || "none"}`
+    ]
+  };
+}
+
+function inferTrackSelections(input: string, config: CstackConfig, planningIssueNumber?: number): DiscoverResearchPlan {
   const lower = input.toLowerCase();
   const words = input.trim().split(/\s+/).filter(Boolean).length;
   const researchEnabled = config.workflows.discover.research?.enabled !== false;
@@ -91,6 +150,11 @@ function inferTrackSelections(input: string, config: CstackConfig): DiscoverRese
     if (allowWeb && externalSignal && selected.size < maxTracks) {
       selected.add("external-researcher");
     }
+  }
+
+  const repoOnlyDelegation = selected.size === 1 && selected.has("repo-explorer");
+  if (repoOnlyDelegation) {
+    selected.clear();
   }
 
   const tracks: DiscoverTrackSelection[] = TRACK_ORDER.map((track) => {
@@ -128,13 +192,16 @@ function inferTrackSelections(input: string, config: CstackConfig): DiscoverRese
   });
 
   const requestedCapabilities = ["shell"];
-  if (selected.has("external-researcher")) {
+  if (selected.has("external-researcher") || externalSignal) {
     requestedCapabilities.push("web");
   }
 
   const limitations: string[] = [];
   if (!shouldDelegate) {
     limitations.push("Delegated research was suppressed because the prompt appears small, local, or not broad enough to justify fan-out.");
+  }
+  if (repoOnlyDelegation) {
+    limitations.push("Delegated research was suppressed because only the repo-explorer track qualified; a single-agent discover pass is faster and more reliable for repo-only prompts.");
   }
   if (externalSignal && !allowWeb) {
     limitations.push("Web-backed external research was requested by the prompt signal but disabled by discover policy.");
@@ -144,6 +211,7 @@ function inferTrackSelections(input: string, config: CstackConfig): DiscoverRese
     prompt: input,
     decidedAt: new Date().toISOString(),
     mode: shouldDelegate && selected.size > 0 ? "research-team" : "single-agent",
+    ...(typeof planningIssueNumber === "number" ? { planningIssueNumber } : {}),
     delegationEnabled,
     maxTracks,
     webResearchAllowed: allowWeb,
@@ -229,6 +297,33 @@ function urlsFromText(input: string): DiscoverSourceRecord[] {
   }));
 }
 
+function hasMeaningfulDelegateEvidence(delegate: Pick<DiscoverDelegateResult, "findings" | "sources" | "filesInspected" | "commandsRun" | "unresolved">): boolean {
+  return (
+    delegate.findings.length > 0 ||
+    delegate.sources.length > 0 ||
+    delegate.filesInspected.length > 0 ||
+    delegate.commandsRun.length > 0 ||
+    delegate.unresolved.length > 0
+  );
+}
+
+function hasUsableLeadArtifact(lead: DiscoverLeadJson): boolean {
+  return (
+    (lead.localFindings?.length ?? 0) > 0 ||
+    (lead.externalFindings?.length ?? 0) > 0 ||
+    (lead.risks?.length ?? 0) > 0 ||
+    (lead.openQuestions?.length ?? 0) > 0
+  );
+}
+
+function remainingBudgetSeconds(startedAt: number, totalSeconds: number | undefined, reserveSeconds = 0): number | undefined {
+  if (typeof totalSeconds !== "number" || totalSeconds <= 0) {
+    return undefined;
+  }
+  const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+  return Math.max(0, totalSeconds - elapsedSeconds - reserveSeconds);
+}
+
 function normalizeDelegateResult(
   track: DiscoverTrackName,
   rawText: string,
@@ -236,7 +331,7 @@ function normalizeDelegateResult(
   sessionId?: string
 ): Omit<DiscoverDelegateResult, "delegateDir" | "artifactPath" | "resultPath" | "sourcesPath"> {
   const parsed = parseJson<Record<string, unknown>>(rawText);
-  const summary = typeof parsed?.summary === "string" ? compact(parsed.summary) : compact(rawText.split("\n")[0] ?? "");
+  const summary = typeof parsed?.summary === "string" ? compact(parsed.summary) : "";
   const status = parsed?.status;
   const findings = Array.isArray(parsed?.findings) ? parsed!.findings.filter((value): value is string => typeof value === "string").map(compact) : [];
   const unresolved = Array.isArray(parsed?.unresolved)
@@ -252,6 +347,8 @@ function normalizeDelegateResult(
     ? parsed!.sources.map(normalizeSource).filter((value): value is DiscoverSourceRecord => value !== null)
     : [];
   const confidence = parsed?.confidence;
+  const completedWithStructuredEvidence =
+    status === "completed" && (findings.length > 0 || unresolved.length > 0 || filesInspected.length > 0 || commandsRun.length > 0 || rawSources.length > 0);
 
   return {
     track,
@@ -261,15 +358,15 @@ function normalizeDelegateResult(
         : code === 0
           ? "completed"
           : "failed",
-    summary: summary || `${track} completed without a structured summary.`,
+    summary: summary || (completedWithStructuredEvidence ? `${track} returned structured findings.` : `${track} did not produce structured findings.`),
     filesInspected,
     commandsRun,
-    sources: rawSources.length > 0 ? rawSources : urlsFromText(rawText),
-    findings: findings.length > 0 ? findings : [summary || `${track} completed.`],
+    sources: rawSources.length > 0 ? rawSources : code === 0 ? urlsFromText(rawText) : [],
+    findings: findings,
     confidence: confidence === "low" || confidence === "medium" || confidence === "high" ? confidence : "medium",
     unresolved,
-    leaderDisposition: code === 0 ? "accepted" : "discarded",
-    ...(code !== 0 ? { notes: `${track} exited unsuccessfully and was discarded by default.` } : {}),
+    leaderDisposition: completedWithStructuredEvidence ? "partial" : code === 0 ? "accepted" : "discarded",
+    ...(code !== 0 ? { notes: completedWithStructuredEvidence ? `${track} exited non-zero after producing structured findings.` : `${track} exited unsuccessfully before producing structured findings.` } : {}),
     ...(sessionId ? { sessionId } : {})
   };
 }
@@ -328,7 +425,21 @@ function synthesizeFallbackReport(input: string, delegates: DiscoverDelegateResu
 function normalizeLeadJson(input: string, delegates: DiscoverDelegateResult[], plan: DiscoverResearchPlan, rawText: string): DiscoverLeadJson {
   const parsed = parseJson<DiscoverLeadJson>(rawText);
   if (!parsed) {
-    return synthesizeFallbackReport(input, delegates, plan);
+    return delegates.some((delegate) => hasMeaningfulDelegateEvidence(delegate))
+      ? synthesizeFallbackReport(input, delegates, plan)
+      : {
+          summary: plan.summary,
+          localFindings: [],
+          externalFindings: [],
+          risks: [],
+          openQuestions: [],
+          delegateDisposition: delegates.map((delegate) => ({
+            track: delegate.track,
+            leaderDisposition: delegate.leaderDisposition,
+            reason: delegate.summary
+          })),
+          reportMarkdown: ""
+        };
   }
   return {
     summary: typeof parsed.summary === "string" ? compact(parsed.summary) : plan.summary,
@@ -424,6 +535,7 @@ async function runTrack(options: {
   plan: DiscoverResearchPlan;
   track: DiscoverTrackSelection;
   recorder: ReturnType<typeof createDiscoverRecorder>;
+  timeoutSeconds?: number;
 }): Promise<{ delegate: DiscoverDelegateResult; result: CodexRunResult }> {
   const delegateDir = path.join(options.stageDir, "delegates", options.track.name);
   await fs.mkdir(delegateDir, { recursive: true });
@@ -462,7 +574,9 @@ async function runTrack(options: {
     stdoutPath,
     stderrPath,
     config: options.config,
-    silentProgress: true
+    silentProgress: true,
+    staleSessionTimeoutSeconds: DISCOVER_STALE_SESSION_TIMEOUT_SECONDS,
+    ...(typeof options.timeoutSeconds === "number" ? { timeoutSeconds: options.timeoutSeconds } : {})
   });
 
   const rawFinal = await readBestEffortCodexOutput({ finalPath, stdoutPath, stderrPath });
@@ -477,28 +591,70 @@ async function runTrack(options: {
 
   await writeJson(resultPath, finalized);
   await writeJson(sourcesPath, finalized.sources);
-  options.recorder.markTrack(options.track.name, result.code === 0 ? "completed" : "failed");
+  options.recorder.markTrack(
+    options.track.name,
+    finalized.leaderDisposition === "discarded" ? "failed" : "completed"
+  );
   return { delegate: finalized, result };
 }
 
 export async function runDiscoverExecution(options: DiscoverExecutionOptions): Promise<DiscoverExecutionResult> {
-  const { cwd, runId, input, config, paths } = options;
+  const { cwd, runId, input, config, planningIssueNumber, paths } = options;
   await fs.mkdir(path.join(paths.stageDir, "artifacts"), { recursive: true });
   await fs.mkdir(path.join(paths.stageDir, "delegates"), { recursive: true });
   await fs.writeFile(paths.eventsPath, "", "utf8");
 
-  const plan = inferTrackSelections(input, config);
+  const plan = inferTrackSelections(input, config, planningIssueNumber);
+  const capabilityRecord = buildDiscoverCapabilityRecord({
+    config,
+    requested: plan.requestedCapabilities,
+    selectedTracks: plan.tracks,
+    webResearchAllowed: plan.webResearchAllowed
+  });
+  plan.requestedCapabilities = capabilityRecord.requested;
+  plan.availableCapabilities = capabilityRecord.available;
   const researchPlanPath = path.join(paths.stageDir, "research-plan.json");
+  const capabilityArtifactPath = path.join(paths.runDir, "artifacts", "capabilities.json");
   const discoveryReportPath = path.join(paths.stageDir, "artifacts", "discovery-report.md");
   await writeJson(researchPlanPath, plan);
+  await writeJson(capabilityArtifactPath, capabilityRecord);
 
   const selectedTracks = plan.tracks.filter((track) => track.selected);
   const recorder = createDiscoverRecorder(runId, paths.eventsPath);
+  const startedAt = Date.now();
+  const discoverTimeoutSeconds = config.workflows.discover.timeoutSeconds;
+  const leadReserveSeconds =
+    typeof discoverTimeoutSeconds === "number" && discoverTimeoutSeconds > 0
+      ? Math.min(DISCOVER_LEAD_RESERVE_SECONDS, Math.max(1, Math.floor(discoverTimeoutSeconds / 3)))
+      : DISCOVER_LEAD_RESERVE_SECONDS;
+  const notes: string[] = [];
   recorder.setTracks(selectedTracks.map((track) => track.name));
   await recorder.emit("starting", `Discover research plan: ${plan.summary}`);
 
   const delegates: DiscoverDelegateResult[] = [];
   for (const track of selectedTracks) {
+    const trackBudget = remainingBudgetSeconds(startedAt, discoverTimeoutSeconds, leadReserveSeconds);
+    if (typeof trackBudget === "number" && trackBudget <= 0) {
+      const skippedDelegate: DiscoverDelegateResult = {
+        track: track.name,
+        status: "stalled",
+        summary: `${track.name} was skipped because the shared discover budget was exhausted before the track started.`,
+        filesInspected: [],
+        commandsRun: [],
+        sources: [],
+        findings: [],
+        confidence: "low",
+        unresolved: [],
+        leaderDisposition: "discarded",
+        notes: "Shared discover budget exhausted before this delegated track began."
+      };
+      delegates.push(skippedDelegate);
+      recorder.markTrack(track.name, "failed");
+      await recorder.emit("failed", skippedDelegate.summary);
+      notes.push(skippedDelegate.summary);
+      continue;
+    }
+
     const { delegate } = await runTrack({
       cwd,
       runId,
@@ -507,9 +663,13 @@ export async function runDiscoverExecution(options: DiscoverExecutionOptions): P
       stageDir: paths.stageDir,
       plan,
       track,
-      recorder
+      recorder,
+      ...(typeof trackBudget === "number" ? { timeoutSeconds: trackBudget } : {})
     });
     delegates.push(delegate);
+    if (delegate.notes) {
+      notes.push(delegate.notes);
+    }
   }
 
   const { prompt, context } = await buildDiscoverLeadPrompt({
@@ -522,20 +682,38 @@ export async function runDiscoverExecution(options: DiscoverExecutionOptions): P
   await fs.writeFile(paths.contextPath, `${context}\n`, "utf8");
   await recorder.emit("activity", "Running Research Lead synthesis");
 
-  const leadResult = await runCodexExec({
-    cwd,
-    workflow: "discover",
-    runId: `${runId}-research-lead`,
-    prompt,
-    finalPath: paths.finalPath,
-    eventsPath: path.join(paths.stageDir, "lead-events.jsonl"),
-    stdoutPath: paths.stdoutPath,
-    stderrPath: paths.stderrPath,
-    config,
-    silentProgress: true
-  });
+  const leadBudget = remainingBudgetSeconds(startedAt, discoverTimeoutSeconds);
+  const leadResult: CodexRunResult =
+    typeof leadBudget === "number" && leadBudget <= 0
+      ? {
+          code: 124,
+          signal: null,
+          command: [],
+          timedOut: true,
+          ...(typeof discoverTimeoutSeconds === "number" ? { timeoutSeconds: discoverTimeoutSeconds } : {}),
+          lastActivity: "Shared discover budget was exhausted before Research Lead synthesis started."
+        }
+      : await runCodexExec({
+          cwd,
+          workflow: "discover",
+          runId: `${runId}-research-lead`,
+          prompt,
+          finalPath: paths.finalPath,
+          eventsPath: path.join(paths.stageDir, "lead-events.jsonl"),
+          stdoutPath: paths.stdoutPath,
+          stderrPath: paths.stderrPath,
+          config,
+          silentProgress: true,
+          staleSessionTimeoutSeconds: DISCOVER_STALE_SESSION_TIMEOUT_SECONDS,
+          ...(typeof leadBudget === "number" ? { timeoutSeconds: leadBudget } : {})
+        });
   if (leadResult.sessionId) {
     await recorder.emit("session", leadResult.sessionId);
+  }
+  if (leadResult.stallReason) {
+    notes.push(leadResult.stallReason);
+  } else if (leadResult.lastActivity && leadResult.code !== 0) {
+    notes.push(leadResult.lastActivity);
   }
 
   const rawLead = await readBestEffortCodexOutput({
@@ -545,6 +723,26 @@ export async function runDiscoverExecution(options: DiscoverExecutionOptions): P
   });
   const leadJson = normalizeLeadJson(input, delegates, plan, rawLead);
   const finalizedDelegates = applyLeadDisposition(delegates, leadJson);
+  const usableArtifact = hasUsableLeadArtifact(leadJson);
+  const finalBody =
+    usableArtifact && leadJson.reportMarkdown && leadJson.reportMarkdown.trim()
+      ? leadJson.reportMarkdown
+      : [
+          "# Discovery Report",
+          "",
+          "## Request",
+          input,
+          "",
+          "## Status",
+          usableArtifact ? "partial" : "failed",
+          "",
+          "## Findings",
+          "- none recovered",
+          "",
+          "## Blockers",
+          ...(notes.length > 0 ? notes.map((note) => `- ${note}`) : ["- Discover did not recover usable findings before the stage ended."])
+        ].join("\n") + "\n";
+  const status: DiscoverExecutionResult["status"] = usableArtifact ? (leadResult.code === 0 ? "completed" : "partial") : "failed";
 
   for (const delegate of finalizedDelegates) {
     if (delegate.resultPath) {
@@ -555,12 +753,12 @@ export async function runDiscoverExecution(options: DiscoverExecutionOptions): P
     }
   }
 
-  await fs.writeFile(paths.finalPath, leadJson.reportMarkdown ?? rawLead, "utf8");
-  await fs.writeFile(paths.artifactPath, leadJson.reportMarkdown ?? rawLead, "utf8");
-  await fs.writeFile(discoveryReportPath, leadJson.reportMarkdown ?? rawLead, "utf8");
+  await fs.writeFile(paths.finalPath, finalBody, "utf8");
+  await fs.writeFile(paths.artifactPath, finalBody, "utf8");
+  await fs.writeFile(discoveryReportPath, finalBody, "utf8");
   await recorder.emit(
-    leadResult.code === 0 ? "completed" : "failed",
-    leadResult.code === 0 ? "Discover run completed" : `Discover run failed with code ${leadResult.code}`
+    status === "failed" ? "failed" : "completed",
+    status === "completed" ? "Discover run completed" : status === "partial" ? `Discover run completed with recovered partial output (exit ${leadResult.code})` : `Discover run failed with code ${leadResult.code}`
   );
   recorder.close();
 
@@ -568,6 +766,8 @@ export async function runDiscoverExecution(options: DiscoverExecutionOptions): P
     researchPlan: plan,
     delegates: finalizedDelegates,
     leadResult,
-    finalBody: leadJson.reportMarkdown ?? rawLead
+    finalBody,
+    status,
+    notes
   };
 }

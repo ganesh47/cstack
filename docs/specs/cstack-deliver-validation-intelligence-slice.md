@@ -44,6 +44,23 @@ It is a bounded multi-agent stage that:
 - runs the validation pyramid
 - records coverage, gaps, and CI portability
 
+## Independent Team Contract
+
+The validation intelligence team is responsible for:
+
+- repo and product-surface profiling for validation
+- validation-plan generation
+- test pyramid intent and coverage reporting
+- local and GitHub Actions validation linkage
+- validation-aware artifact and inspector contracts
+
+The team is explicitly not responsible for:
+
+- issue lineage design
+- deployment evidence collection
+- post-ship feedback capture
+- initiative-level grouping
+
 ## Scope
 
 This slice should cover:
@@ -405,6 +422,19 @@ Recommended artifact meanings:
 - `local-validation.json`
   - developer-local commands and prerequisites
 
+## Inspector And Ledger Expectations
+
+`inspect` should be able to show:
+
+- repo profile summary
+- selected validation layers
+- tool research and selected tool families
+- local and CI validation plans
+- coverage summary and residual gaps
+- whether the stage concluded `ready`, `partial`, or `blocked`
+
+`runs` does not need a new top-level workflow for this slice, but deliver summaries should surface validation disposition clearly enough to distinguish build failure from validation failure.
+
 ## Validation Record Shape
 
 Recommended `validation-plan.json` shape:
@@ -511,6 +541,29 @@ In every non-ready case, artifacts must explain:
 - what ran successfully
 - what remains
 - what manual follow-up is required
+
+## Acceptance Criteria
+
+This slice is complete when:
+
+- `deliver` can infer a validation strategy appropriate to the repo shape
+- validation artifacts explain what was run, what coverage was intended, and what remains uncovered
+- local and GitHub Actions validation evidence are linked in one run
+- failure summaries distinguish implementation failure from validation failure
+
+## Release Boundary
+
+First release for this slice should include:
+
+- an expanded internal `validation` stage in `deliver`
+- richer `stages/validation/...` artifacts
+- validation-aware inspector views
+
+It should not require:
+
+- issue lineage support
+- deployment evidence support
+- post-ship feedback support
 
 ## Config Contract
 

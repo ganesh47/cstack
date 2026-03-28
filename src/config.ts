@@ -13,12 +13,20 @@ const DEFAULT_CONFIG: CstackConfig = {
   workflows: {
     spec: {
       timeoutSeconds: 600,
+      capabilities: {
+        allowed: ["shell", "github"],
+        defaultRequested: ["shell"]
+      },
       delegation: {
         enabled: false,
         maxAgents: 0
       }
     },
     discover: {
+      capabilities: {
+        allowed: ["shell", "web", "github", "browser"],
+        defaultRequested: ["shell"]
+      },
       delegation: {
         enabled: true,
         maxAgents: 2
@@ -34,6 +42,10 @@ const DEFAULT_CONFIG: CstackConfig = {
       verificationCommands: [],
       allowDirty: false,
       timeoutSeconds: 900,
+      capabilities: {
+        allowed: ["shell", "github"],
+        defaultRequested: ["shell"]
+      },
       delegation: {
         enabled: false,
         maxAgents: 0
@@ -44,6 +56,10 @@ const DEFAULT_CONFIG: CstackConfig = {
       verificationCommands: [],
       allowDirty: true,
       timeoutSeconds: 600,
+      capabilities: {
+        allowed: ["shell", "github"],
+        defaultRequested: ["shell"]
+      },
       delegation: {
         enabled: true,
         maxAgents: 3
@@ -54,6 +70,10 @@ const DEFAULT_CONFIG: CstackConfig = {
       verificationCommands: [],
       allowDirty: false,
       timeoutSeconds: 600,
+      capabilities: {
+        allowed: ["shell", "github"],
+        defaultRequested: ["shell", "github"]
+      },
       delegation: {
         enabled: false,
         maxAgents: 0
@@ -64,6 +84,10 @@ const DEFAULT_CONFIG: CstackConfig = {
       verificationCommands: [],
       allowDirty: false,
       timeoutSeconds: 900,
+      capabilities: {
+        allowed: ["shell", "github", "browser"],
+        defaultRequested: ["shell", "github"]
+      },
       stageTimeoutSeconds: {
         build: 900,
         validation: 300,
@@ -245,6 +269,16 @@ function validateResearchConfig(source: string, configPath: string, value: unkno
   }
 }
 
+function validateCapabilitiesConfig(source: string, configPath: string, value: unknown): void {
+  const objectValue = expectObject(source, configPath, value);
+  if ("allowed" in objectValue) {
+    validateStringArray(source, `${configPath}.allowed`, objectValue.allowed);
+  }
+  if ("defaultRequested" in objectValue) {
+    validateStringArray(source, `${configPath}.defaultRequested`, objectValue.defaultRequested);
+  }
+}
+
 function validateDeliverValidationConfig(source: string, configPath: string, value: unknown): void {
   const objectValue = expectObject(source, configPath, value);
   if ("enabled" in objectValue) {
@@ -416,6 +450,9 @@ function validateWorkflowConfig(source: string, workflowName: string, value: unk
   }
   if ("research" in objectValue) {
     validateResearchConfig(source, `${configPath}.research`, objectValue.research);
+  }
+  if ("capabilities" in objectValue) {
+    validateCapabilitiesConfig(source, `${configPath}.capabilities`, objectValue.capabilities);
   }
   if ("validation" in objectValue) {
     validateDeliverValidationConfig(source, `${configPath}.validation`, objectValue.validation);

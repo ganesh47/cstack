@@ -2,16 +2,23 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import { resolveLinkedBuildContext } from "./build.js";
 import { runCodexExec } from "./codex.js";
+import { buildPostShipArtifacts } from "./post-ship.js";
 import { buildDeliverShipPrompt } from "./prompt.js";
 import { collectGitHubDeliveryEvidence, performGitHubDeliverMutations } from "./github.js";
 import type {
   BuildVerificationRecord,
   CstackConfig,
+  DeliveryReadinessBlocker,
+  DeliveryReadinessBlockerCategory,
+  DeliveryReadinessPolicyRecord,
+  DeploymentEvidenceRecord,
   DeliverReviewVerdict,
   DeliverShipRecord,
   DeliverTargetMode,
   GitHubDeliveryRecord,
   GitHubMutationRecord,
+  PostShipEvidenceRecord,
+  PostShipFollowUpRecord,
   StageLineage,
   WorkflowName
 } from "./types.js";
@@ -19,6 +26,8 @@ import type {
 export interface LinkedShipContext {
   runId: string;
   workflow: WorkflowName;
+  initiativeId?: string | undefined;
+  initiativeTitle?: string | undefined;
   artifactPath: string | null;
   artifactBody: string;
   buildSummary: string;
@@ -38,6 +47,12 @@ export interface ShipPaths {
   checklistPath: string;
   unresolvedPath: string;
   shipRecordPath: string;
+  readinessPolicyPath: string;
+  deploymentEvidencePath: string;
+  postShipSummaryPath: string;
+  postShipEvidencePath: string;
+  followUpDraftPath: string;
+  followUpLineagePath: string;
   githubMutationPath: string;
   githubDeliveryPath: string;
   stageLineagePath: string;
@@ -60,6 +75,8 @@ export interface ShipExecutionResult {
   shipRecord: DeliverShipRecord;
   githubMutationRecord: GitHubMutationRecord;
   githubDeliveryRecord: GitHubDeliveryRecord;
+  postShipEvidenceRecord: PostShipEvidenceRecord;
+  postShipFollowUpRecord: PostShipFollowUpRecord;
   stageLineage: StageLineage;
   finalBody: string;
 }
@@ -98,6 +115,252 @@ function renderUnresolvedMarkdown(record: DeliverShipRecord): string {
 
 function mergeUniqueLines(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
+}
+
+function deliverRequirementStatus(options: {
+  required: boolean;
+  blocked: boolean;
+  satisfied: boolean;
+}): DeliveryReadinessPolicyRecord["requirements"][number]["status"] {
+  if (!options.required) {
+    return "not-applicable";
+  }
+  if (options.blocked) {
+    return "blocked";
+  }
+  return options.satisfied ? "satisfied" : "missing";
+}
+
+function blockerCategoryForRequirement(
+  name: DeliveryReadinessPolicyRecord["requirements"][number]["name"]
+): DeliveryReadinessBlockerCategory {
+  switch (name) {
+    case "review-verdict":
+      return "review-evidence";
+    case "ship-readiness":
+      return "ship-output";
+    case "github-delivery":
+      return "github-delivery";
+    case "linked-issues":
+      return "linked-issues";
+    case "release-evidence":
+      return "release-evidence";
+    case "deployment-evidence":
+      return "deployment-evidence";
+  }
+}
+
+function classifyReadinessBlockers(
+  requirements: DeliveryReadinessPolicyRecord["requirements"]
+): DeliveryReadinessBlocker[] {
+  return requirements
+    .filter(
+      (requirement): requirement is typeof requirement & { status: Exclude<typeof requirement.status, "satisfied" | "not-applicable"> } =>
+        requirement.status === "blocked" || requirement.status === "missing"
+    )
+    .map((requirement) => ({
+      category: blockerCategoryForRequirement(requirement.name),
+      requirement: requirement.name,
+      status: requirement.status,
+      summary: requirement.summary,
+      evidence: requirement.evidence
+    }));
+}
+
+function buildPostReadinessSummary(options: {
+  shipRecord: DeliverShipRecord;
+  classifiedBlockers: DeliveryReadinessBlocker[];
+}): DeliveryReadinessPolicyRecord["postReadinessSummary"] {
+  const blockerLabels = options.classifiedBlockers.map((blocker) => `${blocker.category}: ${blocker.summary}`);
+  return {
+    status: options.shipRecord.readiness,
+    headline:
+      blockerLabels.length > 0
+        ? `Final delivery is blocked by ${blockerLabels.length} readiness categor${blockerLabels.length === 1 ? "y" : "ies"}.`
+        : "Final delivery readiness is satisfied.",
+    highlights: [
+      `Ship readiness: ${options.shipRecord.readiness}`,
+      ...options.shipRecord.checklist
+        .filter((item) => item.status === "complete")
+        .slice(0, 3)
+        .map((item) => `${item.item}${item.notes ? ` (${item.notes})` : ""}`)
+    ],
+    blockers: blockerLabels,
+    nextActions: mergeUniqueLines(options.shipRecord.nextActions).slice(0, 8)
+  };
+}
+
+export function buildDeploymentEvidenceRecord(options: {
+  deliveryMode: DeliverTargetMode;
+  githubDeliveryRecord: GitHubDeliveryRecord;
+}): DeploymentEvidenceRecord {
+  const { deliveryMode, githubDeliveryRecord } = options;
+  const references = [
+    ...(githubDeliveryRecord.pullRequest.observed?.url
+      ? [
+          {
+            kind: "pull-request" as const,
+            label: `PR #${githubDeliveryRecord.pullRequest.observed.number}`,
+            status: githubDeliveryRecord.pullRequest.status,
+            url: githubDeliveryRecord.pullRequest.observed.url
+          }
+        ]
+      : []),
+    ...githubDeliveryRecord.issues.observed.map((issue) => ({
+      kind: "issue" as const,
+      label: `Issue #${issue.number}`,
+      status: issue.state.toLowerCase(),
+      ...(issue.url ? { url: issue.url } : {})
+    })),
+    ...githubDeliveryRecord.checks.observed.map((check) => ({
+      kind: "check" as const,
+      label: check.name,
+      status: check.conclusion ?? check.status,
+      ...(check.detailsUrl ? { url: check.detailsUrl } : {})
+    })),
+    ...githubDeliveryRecord.actions.observed.map((action) => ({
+      kind: "action" as const,
+      label: action.workflowName,
+      status: action.conclusion ?? action.status,
+      ...(action.url ? { url: action.url } : {})
+    })),
+    ...(githubDeliveryRecord.release.observed?.url
+      ? [
+          {
+            kind: "release" as const,
+            label: githubDeliveryRecord.release.observed.tagName,
+            status: githubDeliveryRecord.release.status,
+            url: githubDeliveryRecord.release.observed.url
+          }
+        ]
+      : [])
+  ];
+
+  const blockers = [
+    ...githubDeliveryRecord.pullRequest.blockers,
+    ...githubDeliveryRecord.checks.blockers,
+    ...githubDeliveryRecord.actions.blockers,
+    ...githubDeliveryRecord.release.blockers
+  ];
+
+  return {
+    mode: deliveryMode,
+    generatedAt: new Date().toISOString(),
+    summary:
+      references.length > 0
+        ? `Recorded ${references.length} deployment-adjacent evidence reference${references.length === 1 ? "" : "s"}.`
+        : "No deployment-adjacent evidence references were observed.",
+    blockers,
+    references,
+    status: references.length > 0 ? "recorded" : "missing"
+  };
+}
+
+export function buildReadinessPolicyRecord(options: {
+  deliveryMode: DeliverTargetMode;
+  reviewVerdict: DeliverReviewVerdict;
+  shipRecord: DeliverShipRecord;
+  githubDeliveryRecord: GitHubDeliveryRecord;
+  deploymentEvidenceRecord: DeploymentEvidenceRecord;
+}): DeliveryReadinessPolicyRecord {
+  const { deliveryMode, reviewVerdict, shipRecord, githubDeliveryRecord, deploymentEvidenceRecord } = options;
+  const releaseRequired = githubDeliveryRecord.release.required || deliveryMode === "release";
+  const linkedIssuesRequired = githubDeliveryRecord.issues.required;
+  const deploymentEvidenceRequired = deliveryMode === "release";
+  const deploymentEvidenceSatisfied =
+    deploymentEvidenceRecord.references.some((reference) => reference.kind === "release" || reference.kind === "action");
+
+  const requirements: DeliveryReadinessPolicyRecord["requirements"] = [
+    {
+      name: "review-verdict",
+      required: true,
+      status: deliverRequirementStatus({
+        required: true,
+        blocked: reviewVerdict.status !== "ready",
+        satisfied: reviewVerdict.status === "ready"
+      }),
+      summary: reviewVerdict.summary,
+      evidence: [reviewVerdict.summary]
+    },
+    {
+      name: "ship-readiness",
+      required: true,
+      status: deliverRequirementStatus({
+        required: true,
+        blocked: shipRecord.readiness !== "ready",
+        satisfied: shipRecord.readiness === "ready"
+      }),
+      summary: shipRecord.summary,
+      evidence: [shipRecord.summary]
+    },
+    {
+      name: "github-delivery",
+      required: true,
+      status: deliverRequirementStatus({
+        required: true,
+        blocked: githubDeliveryRecord.overall.status !== "ready",
+        satisfied: githubDeliveryRecord.overall.status === "ready"
+      }),
+      summary: githubDeliveryRecord.overall.summary,
+      evidence: [...githubDeliveryRecord.overall.blockers]
+    },
+    {
+      name: "linked-issues",
+      required: linkedIssuesRequired,
+      status: deliverRequirementStatus({
+        required: linkedIssuesRequired,
+        blocked: linkedIssuesRequired && githubDeliveryRecord.issues.status === "blocked",
+        satisfied: githubDeliveryRecord.issues.status === "ready"
+      }),
+      summary: githubDeliveryRecord.issues.summary,
+      evidence: githubDeliveryRecord.issues.observed.map((issue) => `#${issue.number} ${issue.state}`)
+    },
+    {
+      name: "release-evidence",
+      required: releaseRequired,
+      status: deliverRequirementStatus({
+        required: releaseRequired,
+        blocked: releaseRequired && githubDeliveryRecord.release.status === "blocked",
+        satisfied: githubDeliveryRecord.release.status === "ready"
+      }),
+      summary: githubDeliveryRecord.release.summary,
+      evidence: githubDeliveryRecord.release.observed ? [githubDeliveryRecord.release.observed.tagName] : []
+    },
+    {
+      name: "deployment-evidence",
+      required: deploymentEvidenceRequired,
+      status: deliverRequirementStatus({
+        required: deploymentEvidenceRequired,
+        blocked: deploymentEvidenceRequired && !deploymentEvidenceSatisfied && deploymentEvidenceRecord.blockers.length > 0,
+        satisfied: deploymentEvidenceSatisfied
+      }),
+      summary: deploymentEvidenceRecord.summary,
+      evidence: deploymentEvidenceRecord.references.map((reference) => `${reference.kind}:${reference.label}`)
+    }
+  ];
+
+  const blockers = requirements
+    .filter((requirement) => requirement.status === "blocked" || requirement.status === "missing")
+    .map((requirement) => `${requirement.name}: ${requirement.summary}`);
+  const classifiedBlockers = classifyReadinessBlockers(requirements);
+  const postReadinessSummary = buildPostReadinessSummary({
+    shipRecord,
+    classifiedBlockers
+  });
+
+  return {
+    mode: deliveryMode,
+    readiness: shipRecord.readiness,
+    generatedAt: new Date().toISOString(),
+    summary:
+      blockers.length > 0
+        ? `Readiness policy has ${blockers.length} unmet requirement${blockers.length === 1 ? "" : "s"}.`
+        : "Readiness policy requirements are satisfied.",
+    blockers,
+    requirements,
+    classifiedBlockers,
+    postReadinessSummary
+  };
 }
 
 function notRunVerificationRecord(): BuildVerificationRecord {
@@ -161,6 +424,8 @@ export async function resolveLinkedShipContext(cwd: string, runId: string): Prom
     return {
       runId: linked.run.id,
       workflow: linked.run.workflow,
+      initiativeId: linked.run.inputs.initiativeId,
+      initiativeTitle: linked.run.inputs.initiativeTitle,
       artifactPath: linked.artifactPath,
       artifactBody: linked.artifactBody,
       buildSummary: (await fs.readFile(path.join(runDir, "stages", "build", "artifacts", "change-summary.md"), "utf8").catch(() => linked.artifactBody)) || linked.artifactBody,
@@ -181,6 +446,8 @@ export async function resolveLinkedShipContext(cwd: string, runId: string): Prom
     return {
       runId: linked.run.id,
       workflow: linked.run.workflow,
+      initiativeId: linked.run.inputs.initiativeId,
+      initiativeTitle: linked.run.inputs.initiativeTitle,
       artifactPath: linked.artifactPath,
       artifactBody: linked.artifactBody,
       buildSummary: upstream.buildSummary,
@@ -193,6 +460,8 @@ export async function resolveLinkedShipContext(cwd: string, runId: string): Prom
     return {
       runId: linked.run.id,
       workflow: linked.run.workflow,
+      initiativeId: linked.run.inputs.initiativeId,
+      initiativeTitle: linked.run.inputs.initiativeTitle,
       artifactPath: linked.artifactPath,
       artifactBody: linked.artifactBody,
       buildSummary: linked.artifactBody,
@@ -204,6 +473,8 @@ export async function resolveLinkedShipContext(cwd: string, runId: string): Prom
   return {
     runId: linked.run.id,
     workflow: linked.run.workflow,
+    initiativeId: linked.run.inputs.initiativeId,
+    initiativeTitle: linked.run.inputs.initiativeTitle,
     artifactPath: linked.artifactPath,
     artifactBody: linked.artifactBody,
     buildSummary: linked.artifactBody,
@@ -219,6 +490,7 @@ function buildFinalSummary(options: {
   shipRecord: DeliverShipRecord;
   githubMutationRecord: GitHubMutationRecord;
   githubDeliveryRecord: GitHubDeliveryRecord;
+  readinessPolicyRecord: DeliveryReadinessPolicyRecord;
 }): string {
   return [
     "# Ship Run Summary",
@@ -236,6 +508,13 @@ function buildFinalSummary(options: {
     `- readiness: ${options.shipRecord.readiness}`,
     `- summary: ${options.shipRecord.summary}`,
     ...options.shipRecord.nextActions.map((action) => `- next: ${action}`),
+    "",
+    "## Post-readiness summary",
+    `- headline: ${options.readinessPolicyRecord.postReadinessSummary.headline}`,
+    ...options.readinessPolicyRecord.postReadinessSummary.highlights.map((highlight) => `- highlight: ${highlight}`),
+    ...(options.readinessPolicyRecord.postReadinessSummary.blockers.length > 0
+      ? options.readinessPolicyRecord.postReadinessSummary.blockers.map((blocker) => `- blocker class: ${blocker}`)
+      : ["- blocker class: none"]),
     "",
     "## GitHub mutations",
     `- summary: ${options.githubMutationRecord.summary}`,
@@ -294,6 +573,10 @@ export async function runShipExecution(options: ShipExecutionOptions): Promise<S
     ...(linkedContext?.artifactBody ? { linkedArtifactBody: linkedContext.artifactBody } : {})
   });
   const githubDeliveryRecord = githubEvidence.record;
+  const deploymentEvidenceRecord = buildDeploymentEvidenceRecord({
+    deliveryMode: options.deliveryMode,
+    githubDeliveryRecord
+  });
 
   const shipPrompt = await buildDeliverShipPrompt({
     cwd: options.cwd,
@@ -371,10 +654,30 @@ export async function runShipExecution(options: ShipExecutionOptions): Promise<S
     };
   }
 
+  const readinessPolicyRecord = buildReadinessPolicyRecord({
+    deliveryMode: options.deliveryMode,
+    reviewVerdict,
+    shipRecord,
+    githubDeliveryRecord,
+    deploymentEvidenceRecord
+  });
+  const postShipArtifacts = buildPostShipArtifacts({
+    runId: options.runId,
+    workflow: "ship",
+    shipRecord,
+    githubDeliveryRecord
+  });
+
   await fs.writeFile(options.paths.shipSummaryPath, shipRecord.reportMarkdown, "utf8");
   await fs.writeFile(options.paths.checklistPath, renderChecklistMarkdown(shipRecord), "utf8");
   await fs.writeFile(options.paths.unresolvedPath, renderUnresolvedMarkdown(shipRecord), "utf8");
   await writeJson(options.paths.shipRecordPath, shipRecord);
+  await writeJson(options.paths.readinessPolicyPath, readinessPolicyRecord);
+  await writeJson(options.paths.deploymentEvidencePath, deploymentEvidenceRecord);
+  await fs.writeFile(options.paths.postShipSummaryPath, postShipArtifacts.summaryMarkdown, "utf8");
+  await writeJson(options.paths.postShipEvidencePath, postShipArtifacts.evidenceRecord);
+  await fs.writeFile(options.paths.followUpDraftPath, postShipArtifacts.followUpDraftMarkdown, "utf8");
+  await writeJson(options.paths.followUpLineagePath, postShipArtifacts.followUpRecord);
   await writeJson(path.join(options.paths.runDir, "artifacts", "github-state.json"), githubEvidence.artifacts.githubState);
   await writeJson(path.join(options.paths.runDir, "artifacts", "pull-request.json"), githubEvidence.artifacts.pullRequest);
   await writeJson(path.join(options.paths.runDir, "artifacts", "issues.json"), githubEvidence.artifacts.issues);
@@ -404,6 +707,7 @@ export async function runShipExecution(options: ShipExecutionOptions): Promise<S
     shipRecord,
     githubMutationRecord: githubMutation.record,
     githubDeliveryRecord,
+    readinessPolicyRecord,
     ...(linkedContext ? { linkedContext } : {})
   });
   await fs.writeFile(options.paths.finalPath, finalBody, "utf8");
@@ -412,6 +716,8 @@ export async function runShipExecution(options: ShipExecutionOptions): Promise<S
     shipRecord,
     githubMutationRecord: githubMutation.record,
     githubDeliveryRecord,
+    postShipEvidenceRecord: postShipArtifacts.evidenceRecord,
+    postShipFollowUpRecord: postShipArtifacts.followUpRecord,
     stageLineage,
     finalBody
   };

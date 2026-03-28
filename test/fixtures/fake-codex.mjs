@@ -37,11 +37,19 @@ if (prompt.includes("## Build execution contract") && process.env.FAKE_CODEX_EAR
 }
 
 await new Promise((resolve) => process.stderr.write("session id: fake-session-123\n", resolve));
+if (process.env.FAKE_CODEX_ACTIVITY_AFTER_SESSION === "1") {
+  await new Promise((resolve) =>
+    process.stderr.write("I'm checking the local repository and the referenced planning documents.\n", resolve)
+  );
+  await new Promise((resolve) =>
+    process.stderr.write("exec /bin/zsh -lc pwd in /tmp succeeded in 0ms:\n", resolve)
+  );
+}
+if (process.env.FAKE_CODEX_HANG_AFTER_SESSION_MS) {
+  await new Promise((resolve) => setTimeout(resolve, Number.parseInt(process.env.FAKE_CODEX_HANG_AFTER_SESSION_MS, 10)));
+}
 await new Promise((resolve) => process.stdout.write("scanning repository context\n", resolve));
 await new Promise((resolve) => setTimeout(resolve, 25));
-if (process.env.FAKE_CODEX_DELAY_MS) {
-  await new Promise((resolve) => setTimeout(resolve, Number.parseInt(process.env.FAKE_CODEX_DELAY_MS, 10)));
-}
 
 let body;
 if (prompt.includes("track in a bounded `cstack discover` research run")) {
@@ -126,10 +134,16 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
       : "Linked context missing."
   ].join("\n");
 } else if (prompt.includes("You are the `Validation Lead` for a bounded `cstack deliver` workflow.")) {
+  const validationStatus = process.env.FAKE_CODEX_VALIDATION_STATUS ?? "ready";
+  const validationCommand = process.env.FAKE_CODEX_VALIDATION_COMMAND ?? "node -e \"process.stdout.write('deliver verify ok')\"";
+  const validationGap = validationStatus === "partial" ? ["Validation evidence intentionally missing from this fake fixture to force partial workflow handling."] : [];
   body = JSON.stringify(
     {
-      status: "ready",
-      summary: "Validation plan completed with bounded local and CI validation.",
+      status: validationStatus,
+      summary:
+        validationStatus === "ready"
+          ? "Validation plan completed with bounded local and CI validation."
+          : "Validation evidence is intentionally incomplete for test control.",
       profileSummary: "Detected a JavaScript/TypeScript repository with GitHub Actions and packaging validation needs.",
       layers: [
         {
@@ -138,8 +152,8 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
           status: "ready",
           rationale: "Static checks catch syntax, types, and workflow errors early.",
           selectedTools: ["actionlint", "zizmor"],
-          localCommands: ["node -e \"process.stdout.write('deliver verify ok')\""],
-          ciCommands: ["node -e \"process.stdout.write('deliver verify ok')\""],
+          localCommands: [validationCommand],
+          ciCommands: [validationCommand],
           coverageIntent: ["type and workflow correctness"],
           notes: []
         },
@@ -149,8 +163,8 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
           status: "ready",
           rationale: "Unit checks protect the common regression surface.",
           selectedTools: ["vitest"],
-          localCommands: ["node -e \"process.stdout.write('deliver verify ok')\""],
-          ciCommands: ["node -e \"process.stdout.write('deliver verify ok')\""],
+          localCommands: [validationCommand],
+          ciCommands: [validationCommand],
           coverageIntent: ["behavioral regressions"],
           notes: []
         },
@@ -182,15 +196,15 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
           status: "ready",
           rationale: "Build and packaging smoke should stay in the delivery path.",
           selectedTools: ["github_actions"],
-          localCommands: ["node -e \"process.stdout.write('deliver verify ok')\""],
-          ciCommands: ["node -e \"process.stdout.write('deliver verify ok')\""],
+          localCommands: [validationCommand],
+          ciCommands: [validationCommand],
           coverageIntent: ["packaging confidence"],
           notes: []
         }
       ],
       selectedSpecialists: [],
       localValidation: {
-        commands: ["node -e \"process.stdout.write('deliver verify ok')\""],
+        commands: [validationCommand],
         prerequisites: ["linux-default"],
         notes: []
       },
@@ -201,7 +215,7 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
             name: "validation",
             runner: "ubuntu-latest",
             purpose: "Run selected validation commands.",
-            commands: ["node -e \"process.stdout.write('deliver verify ok')\""],
+            commands: [validationCommand],
             artifacts: ["test-reports"]
           }
         ],
@@ -211,7 +225,7 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
         confidence: "medium",
         summary: "Coverage is layered and centered on the highest-signal checks for this fake fixture.",
         signals: ["build verification carried forward", "validation pyramid created"],
-        gaps: []
+        gaps: validationGap
       },
       recommendedChanges: ["Keep local and CI validation commands aligned."],
       unsupported: [],
@@ -338,6 +352,12 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
   ].join("\n");
 }
 
+if (process.env.FAKE_CODEX_DISCOVER_DELAY_MS && prompt.includes("cstack discover")) {
+  await new Promise((resolve) => setTimeout(resolve, Number.parseInt(process.env.FAKE_CODEX_DISCOVER_DELAY_MS, 10)));
+} else if (process.env.FAKE_CODEX_DELAY_MS) {
+  await new Promise((resolve) => setTimeout(resolve, Number.parseInt(process.env.FAKE_CODEX_DELAY_MS, 10)));
+}
+
 const resolvedFinalPath =
   finalPath ??
   prompt.match(/write a concise markdown summary to:\s*(.+)$/im)?.[1]?.trim();
@@ -347,10 +367,12 @@ if (!resolvedFinalPath) {
   process.exit(2);
 }
 
-await writeFile(resolvedFinalPath, `${body}\n`, "utf8");
-
-if (process.env.FAKE_CODEX_STALL_AFTER_OUTPUT_MS) {
+if (process.env.FAKE_CODEX_PRINT_BODY === "1" || process.env.FAKE_CODEX_STALL_AFTER_OUTPUT_MS) {
   await new Promise((resolve) => process.stdout.write(`${body}\n`, resolve));
+}
+
+if (process.env.FAKE_CODEX_SKIP_FINAL_WRITE !== "1") {
+  await writeFile(resolvedFinalPath, `${body}\n`, "utf8");
 }
 
 await new Promise((resolve) => process.stdout.write("writing final output\n", resolve));
@@ -358,4 +380,8 @@ process.stdout.write("completed\n");
 
 if (process.env.FAKE_CODEX_STALL_AFTER_OUTPUT_MS) {
   await new Promise((resolve) => setTimeout(resolve, Number.parseInt(process.env.FAKE_CODEX_STALL_AFTER_OUTPUT_MS, 10)));
+}
+
+if (process.env.FAKE_CODEX_EXIT_CODE) {
+  process.exit(Number.parseInt(process.env.FAKE_CODEX_EXIT_CODE, 10));
 }
