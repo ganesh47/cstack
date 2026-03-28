@@ -12,6 +12,8 @@ import type { RunRecord, WorkflowMode } from "../types.js";
 export interface BuildCliOptions {
   fromRunId?: string;
   requestedMode?: WorkflowMode;
+  initiativeId?: string;
+  initiativeTitle?: string;
   allowDirty?: boolean;
 }
 
@@ -44,6 +46,24 @@ export function parseBuildArgs(args: string[]): { prompt: string; options: Build
     }
     if (arg === "--exec") {
       options.requestedMode = "exec";
+      continue;
+    }
+    if (arg === "--initiative") {
+      const value = args[index + 1];
+      if (!value) {
+        throw new Error("`cstack build --initiative` requires an initiative id.");
+      }
+      options.initiativeId = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--initiative-title") {
+      const value = args[index + 1];
+      if (!value) {
+        throw new Error("`cstack build --initiative-title` requires a value.");
+      }
+      options.initiativeTitle = value;
+      index += 1;
       continue;
     }
     if (arg === "--allow-dirty") {
@@ -79,6 +99,8 @@ export async function runBuild(cwd: string, args: string[] = []): Promise<string
   const { config, sources } = await loadConfig(cwd);
   const allowDirty = parsed.options.allowDirty ?? config.workflows.build.allowDirty ?? false;
   const linkedContext = parsed.options.fromRunId ? await resolveLinkedBuildContext(cwd, parsed.options.fromRunId) : undefined;
+  const resolvedInitiativeId = parsed.options.initiativeId ?? linkedContext?.run.inputs.initiativeId;
+  const resolvedInitiativeTitle = parsed.options.initiativeTitle ?? linkedContext?.run.inputs.initiativeTitle;
   const runId = makeRunId("build", resolvedPrompt);
   const runDir = await ensureRunDir(cwd, runId);
   const promptPath = path.join(runDir, "prompt.md");
@@ -131,6 +153,8 @@ export async function runBuild(cwd: string, args: string[] = []): Promise<string
       userPrompt: resolvedPrompt,
       entrypoint: "workflow",
       ...(linkedContext ? { linkedRunId: linkedContext.run.id } : {}),
+      ...(resolvedInitiativeId ? { initiativeId: resolvedInitiativeId } : {}),
+      ...(resolvedInitiativeTitle ? { initiativeTitle: resolvedInitiativeTitle } : {}),
       requestedMode,
       verificationCommands,
       allowDirty,

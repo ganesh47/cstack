@@ -18,17 +18,17 @@ function usage(): string {
     "Usage:",
     "  cstack <intent>",
     "  cstack run <intent> [--dry-run]",
-    "  cstack discover <prompt>",
-    "  cstack spec <prompt>",
-    "  cstack build <prompt> [--from-run <run-id>] [--exec] [--allow-dirty]",
-    "  cstack review <prompt> [--from-run <run-id>]",
-    "  cstack ship <prompt> [--from-run <run-id>] [--release] [--issue <n>] [--allow-dirty]",
-    "  cstack deliver <prompt> [--from-run <run-id>] [--exec] [--release] [--issue <n>]",
+    "  cstack discover <prompt> [--issue <n>]",
+    "  cstack spec <prompt> [--issue <n>] [--initiative <id>] [--initiative-title <title>]",
+    "  cstack build <prompt> [--from-run <run-id>] [--initiative <id>] [--initiative-title <title>] [--exec] [--allow-dirty]",
+    "  cstack review <prompt> [--from-run <run-id>] [--initiative <id>] [--initiative-title <title>]",
+    "  cstack ship <prompt> [--from-run <run-id>] [--initiative <id>] [--initiative-title <title>] [--release] [--issue <n>] [--allow-dirty]",
+    "  cstack deliver <prompt> [--from-run <run-id>] [--initiative <id>] [--initiative-title <title>] [--exec] [--release] [--issue <n>]",
     "  cstack rerun <run-id>",
     "  cstack resume <run-id>",
     "  cstack fork <run-id> [--workflow <name>]",
     "  cstack update [--check] [--dry-run] [--yes] [--version <x>] [--channel stable]",
-    "  cstack runs [--active] [--workflow <name>] [--status <status>] [--recent <n>] [--json]",
+    "  cstack runs [--active] [--workflow <name>] [--status <status>] [--issue <n>] [--initiative <id>] [--recent <n>] [--json]",
     "  cstack inspect [run-id] [--interactive]"
   ].join("\n");
 }
@@ -39,7 +39,7 @@ async function main(): Promise<void> {
 
   switch (command) {
     case "discover":
-      await runDiscover(cwd, rest.join(" "));
+      await runDiscover(cwd, rest);
       return;
     case "run":
       await runIntentCommand(cwd, rest, "run");

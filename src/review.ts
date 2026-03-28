@@ -1,6 +1,6 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import { runCodexExec } from "./codex.js";
+import { readCodexFinalOutput, runCodexExec } from "./codex.js";
 import { resolveLinkedBuildContext } from "./build.js";
 import { buildDeliverReviewLeadPrompt, buildDeliverSpecialistPrompt } from "./prompt.js";
 import { inferRoutingPlan } from "./intent.js";
@@ -20,6 +20,8 @@ import type {
 export interface LinkedReviewContext {
   runId: string;
   workflow: WorkflowName;
+  initiativeId?: string | undefined;
+  initiativeTitle?: string | undefined;
   artifactPath: string | null;
   artifactBody: string;
   buildSummary: string;
@@ -174,7 +176,13 @@ async function runReviewSpecialist(options: {
       stderrPath,
       config: options.config
     });
-    const finalBody = await fs.readFile(finalPath, "utf8");
+    const finalBody = await readCodexFinalOutput({
+      context: `Review specialist ${options.specialist.name}`,
+      finalPath,
+      stdoutPath,
+      stderrPath,
+      result
+    });
     await fs.writeFile(artifactPath, finalBody, "utf8");
 
     return {
@@ -269,7 +277,9 @@ export async function resolveLinkedReviewContext(cwd: string, runId: string): Pr
   if (linked.run.workflow === "build") {
     return {
       runId: linked.run.id,
-      workflow: linked.run.workflow,
+  workflow: linked.run.workflow,
+  initiativeId: linked.run.inputs.initiativeId,
+  initiativeTitle: linked.run.inputs.initiativeTitle,
       artifactPath: linked.artifactPath,
       artifactBody: linked.artifactBody,
       buildSummary: linked.artifactBody,
@@ -288,6 +298,8 @@ export async function resolveLinkedReviewContext(cwd: string, runId: string): Pr
     return {
       runId: linked.run.id,
       workflow: linked.run.workflow,
+      initiativeId: linked.run.inputs.initiativeId,
+      initiativeTitle: linked.run.inputs.initiativeTitle,
       artifactPath: buildSummaryPath,
       artifactBody: buildSummary,
       buildSummary,
@@ -300,6 +312,8 @@ export async function resolveLinkedReviewContext(cwd: string, runId: string): Pr
   return {
     runId: linked.run.id,
     workflow: linked.run.workflow,
+    initiativeId: linked.run.inputs.initiativeId,
+    initiativeTitle: linked.run.inputs.initiativeTitle,
     artifactPath: linked.artifactPath,
     artifactBody: linked.artifactBody,
     buildSummary: linked.artifactBody,
@@ -372,7 +386,13 @@ export async function runReviewExecution(options: ReviewExecutionOptions): Promi
     stderrPath: options.paths.stderrPath,
     config: options.config
   });
-  const reviewRaw = await fs.readFile(options.paths.finalPath, "utf8");
+  const reviewRaw = await readCodexFinalOutput({
+    context: "Review lead",
+    finalPath: options.paths.finalPath,
+    stdoutPath: options.paths.stdoutPath,
+    stderrPath: options.paths.stderrPath,
+    result: reviewResult
+  });
   const reviewVerdict = parseJson<DeliverReviewVerdict>(reviewRaw, "Review lead");
 
   await fs.writeFile(options.paths.findingsPath, reviewVerdict.reportMarkdown, "utf8");

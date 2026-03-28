@@ -2,8 +2,10 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import { buildEvent, ProgressReporter } from "./progress.js";
 import { resolveLinkedBuildContext, runBuildExecution, type BuildExecutionResult, type LinkedBuildContext } from "./build.js";
-import { runCodexExec } from "./codex.js";
+import { readCodexFinalOutput, runCodexExec } from "./codex.js";
 import { collectGitHubDeliveryEvidence, performGitHubDeliverMutations } from "./github.js";
+import { buildPostShipArtifacts } from "./post-ship.js";
+import { buildDeploymentEvidenceRecord, buildReadinessPolicyRecord } from "./ship.js";
 import {
   buildDeliverPrompt,
   buildDeliverReviewLeadPrompt,
@@ -14,6 +16,8 @@ import { inferRoutingPlan } from "./intent.js";
 import { runDeliverValidationExecution, type DeliverValidationExecutionResult } from "./validation.js";
 import type {
   CstackConfig,
+  DeliveryReadinessPolicyRecord,
+  DeploymentEvidenceRecord,
   DeliverTargetMode,
   DeliverReviewVerdict,
   DeliverShipRecord,
@@ -26,6 +30,7 @@ import type {
   StageLineage,
   WorkflowMode
 } from "./types.js";
+import type { PerformGitHubMutationResult } from "./github.js";
 
 export interface DeliverPaths {
   runDir: string;
@@ -188,7 +193,13 @@ async function runDeliverSpecialist(options: {
       config: options.config
     });
 
-    const finalBody = await fs.readFile(finalPath, "utf8");
+    const finalBody = await readCodexFinalOutput({
+      context: `Deliver specialist ${options.specialist.name}`,
+      finalPath,
+      stdoutPath,
+      stderrPath,
+      result
+    });
     await fs.writeFile(artifactPath, finalBody, "utf8");
 
     return {
@@ -272,6 +283,7 @@ function createBlockedValidationExecution(buildExecution: BuildExecutionResult):
     },
     validationPlan: {
       status: "blocked",
+      outcomeCategory: "blocked-by-build",
       summary,
       profileSummary: "Validation profiling was skipped because build failed first.",
       layers: [],
@@ -306,6 +318,7 @@ function createBlockedValidationExecution(buildExecution: BuildExecutionResult):
     },
     coverageSummary: {
       status: "blocked",
+      outcomeCategory: "blocked-by-build",
       confidence: "low",
       summary: "No validation evidence was collected because build failed first.",
       signals: [],
@@ -460,6 +473,8 @@ async function writeBlockedDeliverStageArtifacts(options: {
   validationExecution: DeliverValidationExecutionResult;
   reviewVerdict: DeliverReviewVerdict;
   shipRecord: DeliverShipRecord;
+  readinessPolicyRecord: DeliveryReadinessPolicyRecord;
+  deploymentEvidenceRecord: DeploymentEvidenceRecord;
   githubMutationRecord: GitHubMutationRecord;
   githubDeliveryRecord: GitHubDeliveryRecord;
 }): Promise<void> {
@@ -504,6 +519,8 @@ async function writeBlockedDeliverStageArtifacts(options: {
   await fs.writeFile(path.join(options.shipStageDir, "artifacts", "release-checklist.md"), renderChecklistMarkdown(options.shipRecord), "utf8");
   await fs.writeFile(path.join(options.shipStageDir, "artifacts", "unresolved.md"), renderUnresolvedMarkdown(options.shipRecord), "utf8");
   await writeJson(path.join(options.shipStageDir, "artifacts", "ship-record.json"), options.shipRecord);
+  await writeJson(path.join(options.shipStageDir, "artifacts", "readiness-policy.json"), options.readinessPolicyRecord);
+  await writeJson(path.join(options.shipStageDir, "artifacts", "deployment-evidence.json"), options.deploymentEvidenceRecord);
   await writeJson(path.join(options.shipStageDir, "artifacts", "github-state.json"), { status: "blocked", summary: options.githubDeliveryRecord.overall.summary });
   await writeJson(path.join(options.shipStageDir, "artifacts", "pull-request.json"), options.githubDeliveryRecord.pullRequest);
   await writeJson(path.join(options.shipStageDir, "artifacts", "issues.json"), options.githubDeliveryRecord.issues);
@@ -523,7 +540,13 @@ function buildDeliverFinalSummary(options: {
   shipRecord: DeliverShipRecord;
   githubDeliveryRecord: GitHubDeliveryRecord;
   githubMutationRecord: GitHubMutationRecord;
+  readinessPolicyRecord: DeliveryReadinessPolicyRecord;
 }): string {
+  const postReadinessSummary = options.readinessPolicyRecord?.postReadinessSummary;
+  const postReadinessHeadline = postReadinessSummary?.headline ?? "Post-readiness summary unavailable";
+  const postReadinessHighlights = postReadinessSummary?.highlights ?? [];
+  const postReadinessBlockers = postReadinessSummary?.blockers ?? [];
+
   return [
     "# Deliver Run Summary",
     "",
@@ -538,6 +561,7 @@ function buildDeliverFinalSummary(options: {
     "",
     "## Validation",
     `- status: ${options.validationExecution.validationPlan.status}`,
+    `- outcome category: ${options.validationExecution.validationPlan.outcomeCategory}`,
     `- summary: ${options.validationExecution.validationPlan.summary}`,
     `- local validation: ${options.validationExecution.localValidationRecord.status}`,
     ...options.validationExecution.coverageSummary.gaps.map((gap) => `- gap: ${gap}`),
@@ -551,6 +575,13 @@ function buildDeliverFinalSummary(options: {
     `- readiness: ${options.shipRecord.readiness}`,
     `- summary: ${options.shipRecord.summary}`,
     ...options.shipRecord.nextActions.map((action) => `- next: ${action}`),
+    "",
+    "## Post-readiness summary",
+    `- headline: ${postReadinessHeadline}`,
+    ...postReadinessHighlights.map((highlight) => `- highlight: ${highlight}`),
+    ...(postReadinessBlockers.length > 0
+      ? postReadinessBlockers.map((blocker) => `- blocker class: ${blocker}`)
+      : ["- blocker class: none"]),
     "",
     "## GitHub mutations",
     `- summary: ${options.githubMutationRecord.summary}`,
@@ -571,6 +602,320 @@ function parseJson<T>(raw: string, context: string): T {
   } catch (error) {
     throw new Error(`${context} did not return valid JSON: ${error instanceof Error ? error.message : String(error)}`);
   }
+}
+
+function summarizeOrThrow(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function createFailedValidationExecution(error: string): DeliverValidationExecutionResult {
+  const summary = `Validation stage failed: ${error}`;
+  return {
+    repoProfile: {
+      detectedAt: new Date().toISOString(),
+      languages: ["typescript"],
+      buildSystems: [],
+      surfaces: ["cli"],
+      packageManagers: [],
+      ciSystems: [],
+      runnerConstraints: [],
+      manifests: [],
+      workflowFiles: [],
+      existingTests: [],
+      packageScripts: [],
+      detectedTools: [],
+      workspaceTargets: [],
+      limitations: [summary]
+    },
+    toolResearch: {
+      generatedAt: new Date().toISOString(),
+      summary,
+      candidates: [],
+      selectedTools: [],
+      limitations: [summary]
+    },
+    validationPlan: {
+      status: "blocked",
+      outcomeCategory: "blocked-by-validation",
+      summary,
+      profileSummary: summary,
+      layers: [],
+      selectedSpecialists: [],
+      localValidation: {
+        commands: [],
+        prerequisites: [],
+        notes: [summary]
+      },
+      ciValidation: {
+        workflowFiles: [],
+        jobs: [],
+        notes: [summary]
+      },
+      coverage: {
+        confidence: "low",
+        summary,
+        signals: [],
+        gaps: [summary]
+      },
+      recommendedChanges: ["Re-run deliver after resolving the validation-stage failure."],
+      unsupported: [summary],
+      pyramidMarkdown: "# Test Pyramid\n\nValidation stage failed before test layers could be planned.\n",
+      reportMarkdown: `# Validation Summary\n\n${summary}\n`,
+      githubActionsPlanMarkdown: "# GitHub Actions Validation Plan\n\nValidation could not be planned due to an execution failure.\n"
+    },
+    localValidationRecord: {
+      status: "not-run",
+      requestedCommands: [],
+      results: [],
+      notes: summary
+    },
+    coverageSummary: {
+      status: "blocked",
+      outcomeCategory: "blocked-by-validation",
+      confidence: "low",
+      summary,
+      signals: [],
+      gaps: [summary],
+      localValidationStatus: "not-run"
+    },
+    selectedSpecialists: [],
+    specialistExecutions: [],
+    finalBody: `# Validation Summary\n\n${summary}\n`
+  };
+}
+
+function createFailedReviewVerdict(error: string): DeliverReviewVerdict {
+  return {
+    mode: "readiness",
+    status: "blocked",
+    summary: `Review stage failed: ${error}`,
+    findings: [
+      {
+        severity: "high",
+        title: "Review stage failed",
+        detail: error
+      }
+    ],
+    recommendedActions: ["Inspect the review stage error details and rerun deliver."],
+    acceptedSpecialists: [],
+    reportMarkdown: `# Review Findings\n\n${error}\n`
+  };
+}
+
+function createFailedShipRecord(error: string, readynessMessage: string): DeliverShipRecord {
+  return {
+    readiness: "blocked",
+    summary: `Ship stage failed: ${error}`,
+    checklist: [
+      {
+        item: readynessMessage,
+        status: "blocked",
+        notes: error
+      }
+    ],
+    unresolved: [`${readynessMessage}: ${error}`],
+    nextActions: ["Inspect the ship-stage error details and rerun deliver once fixed."],
+    reportMarkdown: `# Ship Summary\n\nShip stage failed: ${error}\n`
+  };
+}
+
+function stageByName(stageLineage: StageLineage, name: RoutingStagePlan["name"]): RoutingStagePlan {
+  const stage = stageLineage.stages.find((entry) => entry.name === name);
+  if (!stage) {
+    throw new Error(`Stage not found in deliver lineage: ${name}`);
+  }
+  return stage;
+}
+
+async function writeValidationArtifacts({
+  validationStageDir,
+  validationExecution
+}: {
+  validationStageDir: string;
+  validationExecution: DeliverValidationExecutionResult;
+}): Promise<void> {
+  await fs.mkdir(path.join(validationStageDir, "artifacts"), { recursive: true });
+  await fs.writeFile(path.join(validationStageDir, "final.md"), validationExecution.finalBody, "utf8");
+  await writeJson(path.join(validationStageDir, "repo-profile.json"), validationExecution.repoProfile);
+  await writeJson(path.join(validationStageDir, "tool-research.json"), validationExecution.toolResearch);
+  await writeJson(path.join(validationStageDir, "validation-plan.json"), validationExecution.validationPlan);
+  await fs.writeFile(path.join(validationStageDir, "artifacts", "test-pyramid.md"), validationExecution.validationPlan.pyramidMarkdown, "utf8");
+  await writeJson(path.join(validationStageDir, "artifacts", "coverage-summary.json"), validationExecution.coverageSummary);
+  await fs.writeFile(
+    path.join(validationStageDir, "artifacts", "coverage-gaps.md"),
+    `# Coverage Gaps\n\n- ${validationExecution.coverageSummary.gaps.join("\n- ") || "No data was collected."}\n`,
+    "utf8"
+  );
+  await writeJson(path.join(validationStageDir, "artifacts", "local-validation.json"), validationExecution.localValidationRecord);
+  await writeJson(
+    path.join(validationStageDir, "artifacts", "ci-validation.json"),
+    validationExecution.validationPlan.ciValidation
+  );
+  await fs.writeFile(
+    path.join(validationStageDir, "artifacts", "github-actions-plan.md"),
+    validationExecution.validationPlan.githubActionsPlanMarkdown,
+    "utf8"
+  );
+  await writeJson(path.join(validationStageDir, "artifacts", "test-inventory.json"), { status: "blocked", tests: [] });
+}
+
+async function writeReviewArtifacts({
+  reviewStageDir,
+  reviewVerdict
+}: {
+  reviewStageDir: string;
+  reviewVerdict: DeliverReviewVerdict;
+}): Promise<void> {
+  await fs.mkdir(path.join(reviewStageDir, "artifacts"), { recursive: true });
+  await writeJson(path.join(reviewStageDir, "artifacts", "findings.json"), {
+    findings: reviewVerdict.findings,
+    recommendedActions: reviewVerdict.recommendedActions,
+    acceptedSpecialists: reviewVerdict.acceptedSpecialists
+  });
+  await fs.writeFile(path.join(reviewStageDir, "artifacts", "verdict.json"), `${JSON.stringify(reviewVerdict, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(reviewStageDir, "final.md"), `${JSON.stringify(reviewVerdict, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(reviewStageDir, "artifacts", "findings.md"), reviewVerdict.reportMarkdown, "utf8");
+}
+
+async function writeShipArtifacts({
+  shipStageDir,
+  shipRecord,
+  githubDeliveryRecord,
+  readinessPolicyRecord,
+  deploymentEvidenceRecord
+}: {
+  shipStageDir: string;
+  shipRecord: DeliverShipRecord;
+  githubDeliveryRecord: GitHubDeliveryRecord;
+  readinessPolicyRecord: DeliveryReadinessPolicyRecord;
+  deploymentEvidenceRecord: DeploymentEvidenceRecord;
+}): Promise<void> {
+  await fs.mkdir(path.join(shipStageDir, "artifacts"), { recursive: true });
+  await fs.writeFile(path.join(shipStageDir, "final.md"), `${JSON.stringify(shipRecord, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(shipStageDir, "artifacts", "ship-summary.md"), shipRecord.reportMarkdown, "utf8");
+  await fs.writeFile(path.join(shipStageDir, "artifacts", "release-checklist.md"), renderChecklistMarkdown(shipRecord), "utf8");
+  await fs.writeFile(path.join(shipStageDir, "artifacts", "unresolved.md"), renderUnresolvedMarkdown(shipRecord), "utf8");
+  await writeJson(path.join(shipStageDir, "artifacts", "ship-record.json"), shipRecord);
+  await writeJson(path.join(shipStageDir, "artifacts", "readiness-policy.json"), readinessPolicyRecord);
+  await writeJson(path.join(shipStageDir, "artifacts", "deployment-evidence.json"), deploymentEvidenceRecord);
+  await writeJson(path.join(shipStageDir, "artifacts", "github-state.json"), { status: "blocked", summary: githubDeliveryRecord.overall.summary });
+  await writeJson(path.join(shipStageDir, "artifacts", "pull-request.json"), githubDeliveryRecord.pullRequest);
+  await writeJson(path.join(shipStageDir, "artifacts", "issues.json"), githubDeliveryRecord.issues);
+  await writeJson(path.join(shipStageDir, "artifacts", "checks.json"), githubDeliveryRecord.checks);
+  await writeJson(path.join(shipStageDir, "artifacts", "actions.json"), githubDeliveryRecord.actions);
+  await writeJson(path.join(shipStageDir, "artifacts", "security.json"), githubDeliveryRecord.security);
+  await writeJson(path.join(shipStageDir, "artifacts", "release.json"), githubDeliveryRecord.release);
+}
+
+async function writePostShipArtifacts(options: {
+  artifactsDir: string;
+  summaryMarkdown: string;
+  evidenceRecord: object;
+  followUpDraftMarkdown: string;
+  followUpRecord: object;
+}): Promise<void> {
+  await fs.mkdir(options.artifactsDir, { recursive: true });
+  await fs.writeFile(path.join(options.artifactsDir, "post-ship-summary.md"), options.summaryMarkdown, "utf8");
+  await writeJson(path.join(options.artifactsDir, "post-ship-evidence.json"), options.evidenceRecord);
+  await fs.writeFile(path.join(options.artifactsDir, "follow-up-draft.md"), options.followUpDraftMarkdown, "utf8");
+  await writeJson(path.join(options.artifactsDir, "follow-up-lineage.json"), options.followUpRecord);
+}
+
+function summarizeFailureStageError(error: unknown): string {
+  return summarizeOrThrow(error);
+}
+
+function createBlockedDeploymentEvidenceRecord(deliveryMode: DeliverTargetMode, summary: string): DeploymentEvidenceRecord {
+  return {
+    mode: deliveryMode,
+    generatedAt: new Date().toISOString(),
+    summary,
+    blockers: [summary],
+    references: [],
+    status: "missing"
+  };
+}
+
+function createBlockedReadinessPolicyRecord(options: {
+  deliveryMode: DeliverTargetMode;
+  shipRecord: DeliverShipRecord;
+  githubDeliveryRecord: GitHubDeliveryRecord;
+  summary: string;
+}): DeliveryReadinessPolicyRecord {
+  return {
+    mode: options.deliveryMode,
+    readiness: options.shipRecord.readiness,
+    generatedAt: new Date().toISOString(),
+    summary: options.summary,
+    blockers: [options.summary],
+    requirements: [
+      {
+        name: "ship-readiness",
+        required: true,
+        status: "blocked",
+        summary: options.shipRecord.summary,
+        evidence: [options.shipRecord.summary]
+      },
+      {
+        name: "github-delivery",
+        required: true,
+        status: options.githubDeliveryRecord.overall.status === "ready" ? "satisfied" : "blocked",
+        summary: options.githubDeliveryRecord.overall.summary,
+        evidence: [...options.githubDeliveryRecord.overall.blockers]
+      },
+      {
+        name: "deployment-evidence",
+        required: options.deliveryMode === "release",
+        status: options.deliveryMode === "release" ? "missing" : "not-applicable",
+        summary: options.summary,
+        evidence: []
+      }
+    ],
+    classifiedBlockers: [
+      {
+        category: "ship-output",
+        requirement: "ship-readiness",
+        status: "blocked",
+        summary: options.shipRecord.summary,
+        evidence: [options.shipRecord.summary]
+      },
+      ...(options.githubDeliveryRecord.overall.status === "ready"
+        ? []
+        : [
+            {
+              category: "github-delivery" as const,
+              requirement: "github-delivery" as const,
+              status: "blocked" as const,
+              summary: options.githubDeliveryRecord.overall.summary,
+              evidence: [...options.githubDeliveryRecord.overall.blockers]
+            }
+          ]),
+      ...(options.deliveryMode === "release"
+        ? [
+            {
+              category: "deployment-evidence" as const,
+              requirement: "deployment-evidence" as const,
+              status: "missing" as const,
+              summary: options.summary,
+              evidence: []
+            }
+          ]
+        : [])
+    ],
+    postReadinessSummary: {
+      status: options.shipRecord.readiness,
+      headline: options.summary,
+      highlights: [`Ship readiness: ${options.shipRecord.readiness}`],
+      blockers: [
+        `ship-output: ${options.shipRecord.summary}`,
+        ...(options.githubDeliveryRecord.overall.status === "ready"
+          ? []
+          : [`github-delivery: ${options.githubDeliveryRecord.overall.summary}`]),
+        ...(options.deliveryMode === "release" ? [`deployment-evidence: ${options.summary}`] : [])
+      ],
+      nextActions: options.shipRecord.nextActions.slice(0, 8)
+    }
+  };
 }
 
 export async function runDeliverExecution(options: DeliverExecutionOptions): Promise<DeliverExecutionResult> {
@@ -604,12 +949,19 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
   const events = createDeliverEventRecorder(options.runId, options.paths.eventsPath);
   events.setSpecialists(selectedSpecialists.map((specialist) => specialist.name));
   await events.emit("starting", "Running deliver workflow across build -> validation -> review -> ship");
-
+  const persistLineage = async (): Promise<void> => writeJson(options.paths.stageLineagePath, stageLineage);
   const buildStageDir = deliverStageDir(options.paths.runDir, "build");
+  const validationStageDir = deliverStageDir(options.paths.runDir, "validation");
+  const reviewStageDir = deliverStageDir(options.paths.runDir, "review");
+  const shipStageDir = deliverStageDir(options.paths.runDir, "ship");
   await fs.mkdir(path.join(buildStageDir, "artifacts"), { recursive: true });
+  await fs.mkdir(path.join(validationStageDir, "artifacts"), { recursive: true });
+  await fs.mkdir(path.join(reviewStageDir, "artifacts"), { recursive: true });
+  await fs.mkdir(path.join(shipStageDir, "artifacts"), { recursive: true });
+  try {
   const buildStage = stageLineage.stages.find((stage) => stage.name === "build")!;
   buildStage.status = "running";
-  await writeJson(options.paths.stageLineagePath, stageLineage);
+  await persistLineage();
   events.markStage("build", "running");
 
   const buildExecution = await runBuildExecution({
@@ -648,13 +1000,11 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
   } else {
     delete buildStage.notes;
   }
-  await writeJson(options.paths.stageLineagePath, stageLineage);
+  await persistLineage();
   events.markStage("build", buildExecution.result.code === 0 ? "completed" : "failed");
+
   if (buildExecution.result.code !== 0) {
     const buildFailureSummary = summarizeBuildFailure(buildExecution);
-    const validationStageDir = deliverStageDir(options.paths.runDir, "validation");
-    const reviewStageDir = deliverStageDir(options.paths.runDir, "review");
-    const shipStageDir = deliverStageDir(options.paths.runDir, "ship");
     const validationExecution = createBlockedValidationExecution(buildExecution);
     const reviewVerdict = createBlockedReviewVerdict(buildExecution);
     const shipRecord = createBlockedShipRecord(buildExecution);
@@ -666,29 +1016,47 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
       config: options.config,
       githubMutationRecord
     });
+    const deploymentEvidenceRecord = createBlockedDeploymentEvidenceRecord(
+      options.deliveryMode,
+      "Deployment evidence was not collected because build failed before ship readiness evaluation."
+    );
+    const readinessPolicyRecord = createBlockedReadinessPolicyRecord({
+      deliveryMode: options.deliveryMode,
+      shipRecord,
+      githubDeliveryRecord,
+      summary: "Readiness policy evaluation was blocked because build failed before ship readiness evaluation."
+    });
+    const postShipArtifacts = buildPostShipArtifacts({
+      runId: options.runId,
+      workflow: "deliver",
+      shipRecord,
+      githubDeliveryRecord
+    });
 
-    const validationStage = stageLineage.stages.find((stage) => stage.name === "validation")!;
+    const validationStage = stageByName(stageLineage, "validation");
     validationStage.status = "deferred";
     validationStage.executed = false;
     validationStage.stageDir = validationStageDir;
     validationStage.artifactPath = path.join(validationStageDir, "artifacts", "test-pyramid.md");
     validationStage.notes = `Blocked because build failed. ${buildFailureSummary}`;
-    events.markStage("validation", "deferred");
 
-    const reviewStage = stageLineage.stages.find((stage) => stage.name === "review")!;
+    const reviewStage = stageByName(stageLineage, "review");
     reviewStage.status = "deferred";
     reviewStage.executed = false;
     reviewStage.stageDir = reviewStageDir;
     reviewStage.artifactPath = path.join(reviewStageDir, "artifacts", "findings.md");
     reviewStage.notes = `Blocked because build failed. ${buildFailureSummary}`;
-    events.markStage("review", "deferred");
 
-    const shipStage = stageLineage.stages.find((stage) => stage.name === "ship")!;
+    const shipStage = stageByName(stageLineage, "ship");
     shipStage.status = "deferred";
     shipStage.executed = false;
     shipStage.stageDir = shipStageDir;
     shipStage.artifactPath = path.join(shipStageDir, "artifacts", "ship-summary.md");
     shipStage.notes = `Blocked because build failed. ${buildFailureSummary}`;
+    await persistLineage();
+
+    events.markStage("validation", "deferred");
+    events.markStage("review", "deferred");
     events.markStage("ship", "deferred");
 
     await writeBlockedDeliverStageArtifacts({
@@ -698,14 +1066,30 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
       validationExecution,
       reviewVerdict,
       shipRecord,
+      readinessPolicyRecord,
+      deploymentEvidenceRecord,
       githubMutationRecord,
       githubDeliveryRecord
     });
     await writeJson(path.join(options.paths.runDir, "artifacts", "github-mutation.json"), githubMutationRecord);
     await writeJson(path.join(options.paths.runDir, "artifacts", "github-delivery.json"), githubDeliveryRecord);
-    await writeJson(options.paths.stageLineagePath, stageLineage);
+    await writeJson(path.join(options.paths.runDir, "artifacts", "readiness-policy.json"), readinessPolicyRecord);
+    await writeJson(path.join(options.paths.runDir, "artifacts", "deployment-evidence.json"), deploymentEvidenceRecord);
+    await writePostShipArtifacts({
+      artifactsDir: path.join(shipStageDir, "artifacts"),
+      summaryMarkdown: postShipArtifacts.summaryMarkdown,
+      evidenceRecord: postShipArtifacts.evidenceRecord,
+      followUpDraftMarkdown: postShipArtifacts.followUpDraftMarkdown,
+      followUpRecord: postShipArtifacts.followUpRecord
+    });
+    await writePostShipArtifacts({
+      artifactsDir: path.join(options.paths.runDir, "artifacts"),
+      summaryMarkdown: postShipArtifacts.summaryMarkdown,
+      evidenceRecord: postShipArtifacts.evidenceRecord,
+      followUpDraftMarkdown: postShipArtifacts.followUpDraftMarkdown,
+      followUpRecord: postShipArtifacts.followUpRecord
+    });
     await events.emit("failed", `Build failed; downstream stages blocked. ${buildFailureSummary}`);
-    events.close();
 
     const finalBody = buildDeliverFinalSummary({
       input: options.input,
@@ -715,6 +1099,7 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
       shipRecord,
       githubMutationRecord,
       githubDeliveryRecord,
+      readinessPolicyRecord,
       ...(options.linkedContext ? { linkedContext: options.linkedContext } : {})
     });
     await fs.writeFile(options.paths.finalPath, finalBody, "utf8");
@@ -734,264 +1119,412 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
   }
   await events.emit("activity", "Build stage finished, starting validation synthesis");
 
-  const validationStageDir = deliverStageDir(options.paths.runDir, "validation");
-  await fs.mkdir(path.join(validationStageDir, "artifacts"), { recursive: true });
-  const validationStage = stageLineage.stages.find((stage) => stage.name === "validation")!;
+  const validationStage = stageByName(stageLineage, "validation");
   validationStage.status = "running";
-  await writeJson(options.paths.stageLineagePath, stageLineage);
-  events.markStage("validation", "running");
-
-  const validationExecution = await runDeliverValidationExecution({
-    cwd: options.cwd,
-    runId: options.runId,
-    input: options.input,
-    config: options.config,
-    paths: {
-      stageDir: validationStageDir,
-      promptPath: path.join(validationStageDir, "prompt.md"),
-      contextPath: path.join(validationStageDir, "context.md"),
-      finalPath: path.join(validationStageDir, "final.md"),
-      eventsPath: path.join(validationStageDir, "events.jsonl"),
-      stdoutPath: path.join(validationStageDir, "stdout.log"),
-      stderrPath: path.join(validationStageDir, "stderr.log"),
-      repoProfilePath: path.join(validationStageDir, "repo-profile.json"),
-      validationPlanPath: path.join(validationStageDir, "validation-plan.json"),
-      toolResearchPath: path.join(validationStageDir, "tool-research.json"),
-      testPyramidPath: path.join(validationStageDir, "artifacts", "test-pyramid.md"),
-      coverageSummaryPath: path.join(validationStageDir, "artifacts", "coverage-summary.json"),
-      coverageGapsPath: path.join(validationStageDir, "artifacts", "coverage-gaps.md"),
-      localValidationPath: path.join(validationStageDir, "artifacts", "local-validation.json"),
-      ciValidationPath: path.join(validationStageDir, "artifacts", "ci-validation.json"),
-      githubActionsPlanPath: path.join(validationStageDir, "artifacts", "github-actions-plan.md"),
-      testInventoryPath: path.join(validationStageDir, "artifacts", "test-inventory.json")
-    },
-    buildSummary: buildExecution.finalBody,
-    buildVerificationRecord: buildExecution.verificationRecord
-  });
-
-  stageLineage.specialists.push(...validationExecution.specialistExecutions);
-  validationStage.status =
-    validationExecution.validationPlan.status === "ready"
-      ? "completed"
-      : validationExecution.validationPlan.status === "partial"
-        ? "deferred"
-        : "failed";
-  validationStage.executed = true;
   validationStage.stageDir = validationStageDir;
   validationStage.artifactPath = path.join(validationStageDir, "artifacts", "test-pyramid.md");
-  validationStage.notes = validationExecution.validationPlan.summary;
-  await writeJson(options.paths.stageLineagePath, stageLineage);
+  await persistLineage();
+  events.markStage("validation", "running");
+
+  let validationExecution = createFailedValidationExecution("Validation stage did not run.");
+  try {
+    validationExecution = await runDeliverValidationExecution({
+      cwd: options.cwd,
+      runId: options.runId,
+      input: options.input,
+      config: options.config,
+      paths: {
+        stageDir: validationStageDir,
+        promptPath: path.join(validationStageDir, "prompt.md"),
+        contextPath: path.join(validationStageDir, "context.md"),
+        finalPath: path.join(validationStageDir, "final.md"),
+        eventsPath: path.join(validationStageDir, "events.jsonl"),
+        stdoutPath: path.join(validationStageDir, "stdout.log"),
+        stderrPath: path.join(validationStageDir, "stderr.log"),
+        repoProfilePath: path.join(validationStageDir, "repo-profile.json"),
+        validationPlanPath: path.join(validationStageDir, "validation-plan.json"),
+        toolResearchPath: path.join(validationStageDir, "tool-research.json"),
+        testPyramidPath: path.join(validationStageDir, "artifacts", "test-pyramid.md"),
+        coverageSummaryPath: path.join(validationStageDir, "artifacts", "coverage-summary.json"),
+        coverageGapsPath: path.join(validationStageDir, "artifacts", "coverage-gaps.md"),
+        localValidationPath: path.join(validationStageDir, "artifacts", "local-validation.json"),
+        ciValidationPath: path.join(validationStageDir, "artifacts", "ci-validation.json"),
+        githubActionsPlanPath: path.join(validationStageDir, "artifacts", "github-actions-plan.md"),
+        testInventoryPath: path.join(validationStageDir, "artifacts", "test-inventory.json")
+      },
+      buildSummary: buildExecution.finalBody,
+      buildVerificationRecord: buildExecution.verificationRecord
+    });
+  } catch (error) {
+    const message = summarizeFailureStageError(error);
+    validationExecution = createFailedValidationExecution(message);
+    await events.emit("failed", `Validation stage failed. ${message}`);
+  }
+
+  if (validationExecution) {
+    validationStage.status =
+      validationExecution.validationPlan.status === "ready"
+        ? "completed"
+        : validationExecution.validationPlan.status === "partial"
+          ? "deferred"
+          : "failed";
+    validationStage.executed = true;
+    validationStage.notes = `${validationExecution.validationPlan.outcomeCategory}: ${validationExecution.validationPlan.summary}`;
+    stageLineage.specialists.push(...validationExecution.specialistExecutions);
+  } else {
+    validationStage.status = "failed";
+    validationStage.executed = true;
+    validationStage.notes = "Validation stage did not produce a record.";
+  }
+  await persistLineage();
   events.markStage(
     "validation",
     validationStage.status === "completed" ? "completed" : validationStage.status === "deferred" ? "deferred" : "failed"
   );
+  await writeValidationArtifacts({ validationStageDir, validationExecution });
   await events.emit("activity", "Validation stage finished, starting review synthesis");
 
-  const reviewStageDir = deliverStageDir(options.paths.runDir, "review");
-  await fs.mkdir(path.join(reviewStageDir, "artifacts"), { recursive: true });
-  const reviewStage = stageLineage.stages.find((stage) => stage.name === "review")!;
+  const reviewStage = stageByName(stageLineage, "review");
   reviewStage.status = "running";
-  await writeJson(options.paths.stageLineagePath, stageLineage);
+  reviewStage.stageDir = reviewStageDir;
+  reviewStage.artifactPath = path.join(reviewStageDir, "artifacts", "findings.md");
+  await persistLineage();
   events.markStage("review", "running");
 
   const specialistResults: Array<{ name: SpecialistSelection["name"]; reason: string; finalBody: string }> = [];
-  for (const specialist of selectedSpecialists) {
-    events.markSpecialist(specialist.name, "running");
-    const result = await runDeliverSpecialist({
+  let reviewVerdict = createFailedReviewVerdict("Review stage did not run.");
+  try {
+    let reviewResultCode = 1;
+    for (const specialist of selectedSpecialists) {
+      events.markSpecialist(specialist.name, "running");
+      const result = await runDeliverSpecialist({
+        cwd: options.cwd,
+        runId: options.runId,
+        stageDir: reviewStageDir,
+        input: options.input,
+        specialist,
+        config: options.config,
+        buildSummary: buildExecution.finalBody,
+        verificationRecord: buildExecution.verificationRecord
+      });
+      stageLineage.specialists.push(result.execution);
+      specialistResults.push({
+        name: specialist.name,
+        reason: specialist.reason,
+        finalBody: result.finalBody
+      });
+      events.markSpecialist(specialist.name, result.execution.status === "completed" ? "completed" : "failed");
+    }
+
+    const reviewLeadPrompt = await buildDeliverReviewLeadPrompt({
       cwd: options.cwd,
-      runId: options.runId,
-      stageDir: reviewStageDir,
       input: options.input,
-      specialist,
-      config: options.config,
+      mode: "readiness",
       buildSummary: buildExecution.finalBody,
-      verificationRecord: buildExecution.verificationRecord
+      verificationRecord: buildExecution.verificationRecord,
+      validationPlan: validationExecution.validationPlan,
+      validationLocalRecord: validationExecution.localValidationRecord,
+      specialistResults
     });
-    stageLineage.specialists.push(result.execution);
-    specialistResults.push({
-      name: specialist.name,
-      reason: specialist.reason,
-      finalBody: result.finalBody
+    await fs.writeFile(path.join(reviewStageDir, "prompt.md"), reviewLeadPrompt.prompt, "utf8");
+    await fs.writeFile(path.join(reviewStageDir, "context.md"), `${reviewLeadPrompt.context}\n`, "utf8");
+
+    const reviewResult = await runCodexExec({
+      cwd: options.cwd,
+      workflow: "deliver",
+      runId: `${options.runId}-review`,
+      prompt: reviewLeadPrompt.prompt,
+      finalPath: path.join(reviewStageDir, "final.md"),
+      eventsPath: path.join(reviewStageDir, "events.jsonl"),
+      stdoutPath: path.join(reviewStageDir, "stdout.log"),
+      stderrPath: path.join(reviewStageDir, "stderr.log"),
+      config: options.config,
+      ...(typeof options.reviewTimeoutSeconds === "number" ? { timeoutSeconds: options.reviewTimeoutSeconds } : {})
     });
-    events.markSpecialist(specialist.name, result.execution.status === "completed" ? "completed" : "failed");
+    reviewResultCode = reviewResult.code;
+    const reviewRaw = await readCodexFinalOutput({
+      context: "Review lead",
+      finalPath: path.join(reviewStageDir, "final.md"),
+      stdoutPath: path.join(reviewStageDir, "stdout.log"),
+      stderrPath: path.join(reviewStageDir, "stderr.log"),
+      result: reviewResult
+    });
+    reviewVerdict = parseJson<DeliverReviewVerdict>(reviewRaw, "Review lead");
+
+    const acceptedByName = new Map(reviewVerdict.acceptedSpecialists.map((entry) => [entry.name, entry]));
+    stageLineage.specialists = stageLineage.specialists.map((execution) => {
+      const accepted = acceptedByName.get(execution.name);
+      return accepted
+        ? {
+            ...execution,
+            disposition: accepted.disposition,
+            notes: accepted.reason
+          }
+        : {
+            ...execution,
+            disposition: "discarded",
+            notes: execution.notes ?? "The review lead did not rely on this specialist output."
+          };
+    });
+  } catch (error) {
+    reviewVerdict = createFailedReviewVerdict(summarizeFailureStageError(error));
+    await events.emit("failed", `Review stage failed. ${reviewVerdict.summary}`);
   }
 
-  const reviewLeadPrompt = await buildDeliverReviewLeadPrompt({
-    cwd: options.cwd,
-    input: options.input,
-    mode: "readiness",
-    buildSummary: buildExecution.finalBody,
-    verificationRecord: buildExecution.verificationRecord,
-    validationPlan: validationExecution.validationPlan,
-    validationLocalRecord: validationExecution.localValidationRecord,
-    specialistResults
-  });
-  await fs.writeFile(path.join(reviewStageDir, "prompt.md"), reviewLeadPrompt.prompt, "utf8");
-  await fs.writeFile(path.join(reviewStageDir, "context.md"), `${reviewLeadPrompt.context}\n`, "utf8");
-
-  const reviewResult = await runCodexExec({
-    cwd: options.cwd,
-    workflow: "deliver",
-    runId: `${options.runId}-review`,
-    prompt: reviewLeadPrompt.prompt,
-    finalPath: path.join(reviewStageDir, "final.md"),
-    eventsPath: path.join(reviewStageDir, "events.jsonl"),
-    stdoutPath: path.join(reviewStageDir, "stdout.log"),
-    stderrPath: path.join(reviewStageDir, "stderr.log"),
-    config: options.config,
-    ...(typeof options.reviewTimeoutSeconds === "number" ? { timeoutSeconds: options.reviewTimeoutSeconds } : {})
-  });
-  const reviewRaw = await fs.readFile(path.join(reviewStageDir, "final.md"), "utf8");
-  const reviewVerdict = parseJson<DeliverReviewVerdict>(reviewRaw, "Review lead");
-  await fs.writeFile(path.join(reviewStageDir, "artifacts", "findings.md"), reviewVerdict.reportMarkdown, "utf8");
-  await writeJson(path.join(reviewStageDir, "artifacts", "findings.json"), {
-    findings: reviewVerdict.findings,
-    recommendedActions: reviewVerdict.recommendedActions,
-    acceptedSpecialists: reviewVerdict.acceptedSpecialists
-  });
-  await writeJson(path.join(reviewStageDir, "artifacts", "verdict.json"), reviewVerdict);
-
-  const acceptedByName = new Map(reviewVerdict.acceptedSpecialists.map((entry) => [entry.name, entry]));
-  stageLineage.specialists = stageLineage.specialists.map((execution) => {
-    const accepted = acceptedByName.get(execution.name);
-    return accepted
-      ? {
-          ...execution,
-          disposition: accepted.disposition,
-          notes: accepted.reason
-        }
-      : {
-          ...execution,
-          disposition: "discarded",
-          notes: execution.notes ?? "The review lead did not rely on this specialist output."
-        };
-  });
-  reviewStage.status = reviewResult.code === 0 ? "completed" : "failed";
+  reviewStage.status = reviewVerdict.status === "ready" ? "completed" : "failed";
   reviewStage.executed = true;
-  reviewStage.stageDir = reviewStageDir;
-  reviewStage.artifactPath = path.join(reviewStageDir, "artifacts", "findings.md");
   reviewStage.notes = reviewVerdict.summary;
-  await writeJson(options.paths.stageLineagePath, stageLineage);
-  events.markStage("review", reviewResult.code === 0 ? "completed" : "failed");
+  await persistLineage();
+  await writeReviewArtifacts({ reviewStageDir, reviewVerdict });
+  events.markStage("review", reviewStage.status === "completed" ? "completed" : "failed");
   await events.emit("activity", "Review stage finished, preparing ship readiness artifacts");
 
-  const shipStageDir = deliverStageDir(options.paths.runDir, "ship");
-  await fs.mkdir(path.join(shipStageDir, "artifacts"), { recursive: true });
-  const shipStage = stageLineage.stages.find((stage) => stage.name === "ship")!;
+  const shipStage = stageByName(stageLineage, "ship");
   shipStage.status = "running";
-  await writeJson(options.paths.stageLineagePath, stageLineage);
+  shipStage.stageDir = shipStageDir;
+  shipStage.artifactPath = path.join(shipStageDir, "artifacts", "ship-summary.md");
+  await persistLineage();
   events.markStage("ship", "running");
 
-  const githubMutation = await performGitHubDeliverMutations({
-    cwd: options.cwd,
+  let githubMutation = createBlockedGitHubMutationRecord();
+  let githubMutationResult: PerformGitHubMutationResult = {
+    branch: options.gitBranch,
+    record: githubMutation
+  };
+  let githubDeliveryRecord = createBlockedGitHubDeliveryRecord({
     gitBranch: options.gitBranch,
-    runId: options.runId,
-    input: options.input,
-    issueNumbers: options.issueNumbers,
-    policy: options.config.workflows.deliver.github ?? {},
-    buildSummary: buildExecution.finalBody,
-    reviewVerdict,
-    verificationRecord: buildExecution.verificationRecord,
-    ...(options.linkedContext?.run.id ? { linkedRunId: options.linkedContext.run.id } : {}),
-    pullRequestBodyPath: path.join(shipStageDir, "artifacts", "pull-request-body.md")
-  });
-
-  const githubEvidence = await collectGitHubDeliveryEvidence({
-    cwd: options.cwd,
-    gitBranch: githubMutation.branch,
     deliveryMode: options.deliveryMode,
     issueNumbers: options.issueNumbers,
-    policy: options.config.workflows.deliver.github ?? {},
-    input: options.input,
-    mutationRecord: githubMutation.record,
-    ...(options.linkedContext?.artifactBody ? { linkedArtifactBody: options.linkedContext.artifactBody } : {})
+    config: options.config,
+    githubMutationRecord: githubMutation
   });
-  const githubDeliveryRecord = githubEvidence.record;
-  const shipPrompt = await buildDeliverShipPrompt({
-    cwd: options.cwd,
-    input: options.input,
-    buildSummary: buildExecution.finalBody,
-    validationPlan: validationExecution.validationPlan,
-    validationLocalRecord: validationExecution.localValidationRecord,
-    reviewVerdict,
-    verificationRecord: buildExecution.verificationRecord,
-    githubMutationRecord: githubMutation.record,
+  let deploymentEvidenceRecord = createBlockedDeploymentEvidenceRecord(
+    options.deliveryMode,
+    "Deployment evidence was not collected because ship readiness did not run."
+  );
+  let shipRecord = createFailedShipRecord("Ship stage did not run.", "Deliver artifacts were not generated.");
+  let readinessPolicyRecord = createBlockedReadinessPolicyRecord({
+    deliveryMode: options.deliveryMode,
+    shipRecord,
+    githubDeliveryRecord,
+    summary: "Readiness policy evaluation did not run."
+  });
+
+  try {
+    githubMutationResult = await performGitHubDeliverMutations({
+      cwd: options.cwd,
+      gitBranch: options.gitBranch,
+      runId: options.runId,
+      input: options.input,
+      issueNumbers: options.issueNumbers,
+      policy: options.config.workflows.deliver.github ?? {},
+      buildSummary: buildExecution.finalBody,
+      reviewVerdict,
+      verificationRecord: buildExecution.verificationRecord,
+      ...(options.linkedContext?.run.id ? { linkedRunId: options.linkedContext.run.id } : {}),
+      pullRequestBodyPath: path.join(shipStageDir, "artifacts", "pull-request-body.md")
+    });
+
+    const githubEvidence = await collectGitHubDeliveryEvidence({
+      cwd: options.cwd,
+      gitBranch: githubMutationResult.record.branch.current,
+      deliveryMode: options.deliveryMode,
+      issueNumbers: options.issueNumbers,
+      policy: options.config.workflows.deliver.github ?? {},
+      input: options.input,
+      mutationRecord: githubMutationResult.record,
+      ...(options.linkedContext?.artifactBody ? { linkedArtifactBody: options.linkedContext.artifactBody } : {})
+    });
+    githubDeliveryRecord = githubEvidence.record;
+    deploymentEvidenceRecord = buildDeploymentEvidenceRecord({
+      deliveryMode: options.deliveryMode,
+      githubDeliveryRecord
+    });
+
+    const shipPrompt = await buildDeliverShipPrompt({
+      cwd: options.cwd,
+      input: options.input,
+      buildSummary: buildExecution.finalBody,
+      validationPlan: validationExecution.validationPlan,
+      validationLocalRecord: validationExecution.localValidationRecord,
+      reviewVerdict,
+      verificationRecord: buildExecution.verificationRecord,
+      githubMutationRecord: githubMutationResult.record,
+      githubDeliveryRecord
+    });
+    await fs.writeFile(path.join(shipStageDir, "prompt.md"), shipPrompt.prompt, "utf8");
+    await fs.writeFile(path.join(shipStageDir, "context.md"), `${shipPrompt.context}\n`, "utf8");
+    const shipResult = await runCodexExec({
+      cwd: options.cwd,
+      workflow: "deliver",
+      runId: `${options.runId}-ship`,
+      prompt: shipPrompt.prompt,
+      finalPath: path.join(shipStageDir, "final.md"),
+      eventsPath: path.join(shipStageDir, "events.jsonl"),
+      stdoutPath: path.join(shipStageDir, "stdout.log"),
+      stderrPath: path.join(shipStageDir, "stderr.log"),
+      config: options.config,
+      ...(typeof options.shipTimeoutSeconds === "number" ? { timeoutSeconds: options.shipTimeoutSeconds } : {})
+    });
+    const shipRaw = await readCodexFinalOutput({
+      context: "Ship lead",
+      finalPath: path.join(shipStageDir, "final.md"),
+      stdoutPath: path.join(shipStageDir, "stdout.log"),
+      stderrPath: path.join(shipStageDir, "stderr.log"),
+      result: shipResult
+    });
+    let parsedShipRecord = parseJson<DeliverShipRecord>(shipRaw, "Ship lead");
+
+    if (githubDeliveryRecord.overall.status === "blocked") {
+      parsedShipRecord = {
+        ...parsedShipRecord,
+        readiness: "blocked",
+        summary: `${parsedShipRecord.summary} GitHub delivery is blocked.`,
+        unresolved: mergeUniqueLines([...parsedShipRecord.unresolved, ...githubDeliveryRecord.overall.blockers]),
+        nextActions: mergeUniqueLines([...parsedShipRecord.nextActions, ...githubDeliveryRecord.overall.blockers]),
+        checklist: [
+          ...parsedShipRecord.checklist,
+          {
+            item: "GitHub delivery policy",
+            status: "blocked",
+            notes: githubDeliveryRecord.overall.blockers.join("; ")
+          }
+        ],
+        reportMarkdown: `${parsedShipRecord.reportMarkdown.trimEnd()}\n\n## GitHub delivery\n\nStatus: blocked\n`
+      };
+    } else {
+      parsedShipRecord = {
+        ...parsedShipRecord,
+        checklist: [
+          ...parsedShipRecord.checklist,
+          {
+            item: "GitHub delivery policy",
+            status: "complete",
+            notes: githubDeliveryRecord.overall.summary
+          }
+        ],
+        reportMarkdown: `${parsedShipRecord.reportMarkdown.trimEnd()}\n\n## GitHub delivery\n\nStatus: ready\n`
+      };
+    }
+    shipRecord = parsedShipRecord;
+
+    await writeJson(path.join(shipStageDir, "artifacts", "github-state.json"), githubEvidence.artifacts.githubState);
+    await writeJson(path.join(shipStageDir, "artifacts", "pull-request.json"), githubEvidence.artifacts.pullRequest);
+    await writeJson(path.join(shipStageDir, "artifacts", "issues.json"), githubEvidence.artifacts.issues);
+    await writeJson(path.join(shipStageDir, "artifacts", "checks.json"), githubEvidence.artifacts.checks);
+    await writeJson(path.join(shipStageDir, "artifacts", "actions.json"), githubEvidence.artifacts.actions);
+    await writeJson(path.join(shipStageDir, "artifacts", "security.json"), githubEvidence.artifacts.security);
+    await writeJson(path.join(shipStageDir, "artifacts", "release.json"), githubEvidence.artifacts.release);
+    await writeJson(path.join(shipStageDir, "artifacts", "github-mutation.json"), githubMutationResult.record);
+    await writeJson(path.join(options.paths.runDir, "artifacts", "github-mutation.json"), githubMutationResult.record);
+    await writeJson(path.join(options.paths.runDir, "artifacts", "github-delivery.json"), githubDeliveryRecord);
+
+    if (shipResult.code !== 0) {
+      shipRecord = {
+        ...shipRecord,
+        readiness: "blocked",
+        summary: `${shipRecord.summary} Ship lead command exited with code ${shipResult.code}.`,
+        unresolved: mergeUniqueLines([...shipRecord.unresolved, `Ship lead command exited with code ${shipResult.code}.`]),
+        nextActions: mergeUniqueLines([...shipRecord.nextActions, `Re-run ship stage and inspect ship lead output.`]),
+        checklist: [
+          ...shipRecord.checklist,
+          {
+            item: "Ship lead command",
+            status: "blocked",
+            notes: `Command exit code ${shipResult.code}.`
+          }
+        ],
+        reportMarkdown: `${shipRecord.reportMarkdown.trimEnd()}\n\n## Ship lead command\n\nStatus: blocked\n`
+      };
+    }
+    readinessPolicyRecord = buildReadinessPolicyRecord({
+      deliveryMode: options.deliveryMode,
+      reviewVerdict,
+      shipRecord,
+      githubDeliveryRecord,
+      deploymentEvidenceRecord
+    });
+  } catch (error) {
+    shipRecord = createFailedShipRecord(summarizeFailureStageError(error), "Ship lead command");
+    githubMutation = createBlockedGitHubMutationRecord();
+    githubMutation.summary = `Ship stage failed: ${shipRecord.summary}`;
+    githubMutation.branch = {
+      initial: "",
+      current: "",
+      created: false,
+      pushed: false,
+      remote: null
+    };
+    githubMutation.pullRequest = {
+      created: false,
+      updated: false
+    };
+    githubMutation.blockers = [shipRecord.summary];
+    githubMutationResult = {
+      branch: githubMutation.branch.current,
+      record: githubMutation
+    };
+    githubDeliveryRecord = createBlockedGitHubDeliveryRecord({
+      gitBranch: options.gitBranch,
+      deliveryMode: options.deliveryMode,
+      issueNumbers: options.issueNumbers,
+      config: options.config,
+      githubMutationRecord: githubMutation
+    });
+    deploymentEvidenceRecord = createBlockedDeploymentEvidenceRecord(
+      options.deliveryMode,
+      "Deployment evidence was not collected because the ship stage failed before GitHub delivery evidence could be finalized."
+    );
+    readinessPolicyRecord = createBlockedReadinessPolicyRecord({
+      deliveryMode: options.deliveryMode,
+      shipRecord,
+      githubDeliveryRecord,
+      summary: "Readiness policy evaluation was blocked because the ship stage failed."
+    });
+    await events.emit("failed", `Ship stage failed. ${shipRecord.summary}`);
+  }
+
+  const postShipArtifacts = buildPostShipArtifacts({
+    runId: options.runId,
+    workflow: "deliver",
+    shipRecord,
     githubDeliveryRecord
   });
-  await fs.writeFile(path.join(shipStageDir, "prompt.md"), shipPrompt.prompt, "utf8");
-  await fs.writeFile(path.join(shipStageDir, "context.md"), `${shipPrompt.context}\n`, "utf8");
-  const shipResult = await runCodexExec({
-    cwd: options.cwd,
-    workflow: "deliver",
-    runId: `${options.runId}-ship`,
-    prompt: shipPrompt.prompt,
-    finalPath: path.join(shipStageDir, "final.md"),
-    eventsPath: path.join(shipStageDir, "events.jsonl"),
-    stdoutPath: path.join(shipStageDir, "stdout.log"),
-    stderrPath: path.join(shipStageDir, "stderr.log"),
-    config: options.config,
-    ...(typeof options.shipTimeoutSeconds === "number" ? { timeoutSeconds: options.shipTimeoutSeconds } : {})
+
+  await writeShipArtifacts({
+    shipStageDir,
+    shipRecord,
+    githubDeliveryRecord,
+    readinessPolicyRecord,
+    deploymentEvidenceRecord
   });
-  const shipRaw = await fs.readFile(path.join(shipStageDir, "final.md"), "utf8");
-  let shipRecord = parseJson<DeliverShipRecord>(shipRaw, "Ship lead");
-  if (githubDeliveryRecord.overall.status === "blocked") {
-    shipRecord = {
-      ...shipRecord,
-      readiness: "blocked",
-      summary: `${shipRecord.summary} GitHub delivery is blocked.`,
-      unresolved: mergeUniqueLines([...shipRecord.unresolved, ...githubDeliveryRecord.overall.blockers]),
-      nextActions: mergeUniqueLines([...shipRecord.nextActions, ...githubDeliveryRecord.overall.blockers]),
-      checklist: [
-        ...shipRecord.checklist,
-        {
-          item: "GitHub delivery policy",
-          status: "blocked",
-          notes: githubDeliveryRecord.overall.blockers.join("; ")
-        }
-      ],
-      reportMarkdown: `${shipRecord.reportMarkdown.trimEnd()}\n\n## GitHub delivery\n\nStatus: blocked\n`
-    };
-  } else {
-    shipRecord = {
-      ...shipRecord,
-      checklist: [
-        ...shipRecord.checklist,
-        {
-          item: "GitHub delivery policy",
-          status: "complete",
-          notes: githubDeliveryRecord.overall.summary
-        }
-      ],
-      reportMarkdown: `${shipRecord.reportMarkdown.trimEnd()}\n\n## GitHub delivery\n\nStatus: ready\n`
-    };
-  }
-  await fs.writeFile(path.join(shipStageDir, "artifacts", "ship-summary.md"), shipRecord.reportMarkdown, "utf8");
-  await fs.writeFile(path.join(shipStageDir, "artifacts", "release-checklist.md"), renderChecklistMarkdown(shipRecord), "utf8");
-  await fs.writeFile(path.join(shipStageDir, "artifacts", "unresolved.md"), renderUnresolvedMarkdown(shipRecord), "utf8");
-  await writeJson(path.join(shipStageDir, "artifacts", "ship-record.json"), shipRecord);
-  await writeJson(path.join(shipStageDir, "artifacts", "github-state.json"), githubEvidence.artifacts.githubState);
-  await writeJson(path.join(shipStageDir, "artifacts", "pull-request.json"), githubEvidence.artifacts.pullRequest);
-  await writeJson(path.join(shipStageDir, "artifacts", "issues.json"), githubEvidence.artifacts.issues);
-  await writeJson(path.join(shipStageDir, "artifacts", "checks.json"), githubEvidence.artifacts.checks);
-  await writeJson(path.join(shipStageDir, "artifacts", "actions.json"), githubEvidence.artifacts.actions);
-  await writeJson(path.join(shipStageDir, "artifacts", "security.json"), githubEvidence.artifacts.security);
-  await writeJson(path.join(shipStageDir, "artifacts", "release.json"), githubEvidence.artifacts.release);
-  await writeJson(path.join(shipStageDir, "artifacts", "github-mutation.json"), githubMutation.record);
-  await writeJson(path.join(options.paths.runDir, "artifacts", "github-mutation.json"), githubMutation.record);
   await writeJson(path.join(options.paths.runDir, "artifacts", "github-delivery.json"), githubDeliveryRecord);
+  await writeJson(path.join(options.paths.runDir, "artifacts", "github-mutation.json"), githubMutationResult.record);
+  await writeJson(path.join(options.paths.runDir, "artifacts", "readiness-policy.json"), readinessPolicyRecord);
+  await writeJson(path.join(options.paths.runDir, "artifacts", "deployment-evidence.json"), deploymentEvidenceRecord);
+  await writePostShipArtifacts({
+    artifactsDir: path.join(shipStageDir, "artifacts"),
+    summaryMarkdown: postShipArtifacts.summaryMarkdown,
+    evidenceRecord: postShipArtifacts.evidenceRecord,
+    followUpDraftMarkdown: postShipArtifacts.followUpDraftMarkdown,
+    followUpRecord: postShipArtifacts.followUpRecord
+  });
+  await writePostShipArtifacts({
+    artifactsDir: path.join(options.paths.runDir, "artifacts"),
+    summaryMarkdown: postShipArtifacts.summaryMarkdown,
+    evidenceRecord: postShipArtifacts.evidenceRecord,
+    followUpDraftMarkdown: postShipArtifacts.followUpDraftMarkdown,
+    followUpRecord: postShipArtifacts.followUpRecord
+  });
 
   shipStage.status =
-    shipResult.code === 0 && githubMutation.record.blockers.length === 0 && githubDeliveryRecord.overall.status === "ready"
+    shipRecord.readiness === "ready" && githubMutationResult.record.blockers.length === 0 && githubDeliveryRecord.overall.status === "ready"
       ? "completed"
       : "failed";
   shipStage.executed = true;
-  shipStage.stageDir = shipStageDir;
-  shipStage.artifactPath = path.join(shipStageDir, "artifacts", "ship-summary.md");
   shipStage.notes = shipRecord.summary;
-  await writeJson(options.paths.stageLineagePath, stageLineage);
+  await persistLineage();
   events.markStage("ship", shipStage.status === "completed" ? "completed" : "failed");
-  await events.emit("completed", "Deliver workflow completed");
-  events.close();
 
   const finalBody = buildDeliverFinalSummary({
     input: options.input,
@@ -999,8 +1532,9 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
     validationExecution,
     reviewVerdict,
     shipRecord,
-    githubMutationRecord: githubMutation.record,
+    githubMutationRecord: githubMutationResult.record,
     githubDeliveryRecord,
+    readinessPolicyRecord,
     ...(options.linkedContext ? { linkedContext: options.linkedContext } : {})
   });
   await fs.writeFile(options.paths.finalPath, finalBody, "utf8");
@@ -1012,11 +1546,14 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
     reviewVerdict,
     shipRecord,
     githubDeliveryRecord,
-    githubMutationRecord: githubMutation.record,
+    githubMutationRecord: githubMutationResult.record,
     stageLineage,
     selectedSpecialists,
     finalBody
   };
+  } finally {
+    events.close();
+  }
 }
 
 export { resolveLinkedBuildContext };

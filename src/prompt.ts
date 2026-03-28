@@ -89,6 +89,21 @@ function buildReferencePromptLines(referenceFiles: PromptReferenceFile[], option
   return lines;
 }
 
+function summarizeDiscoverDelegates(delegateResults: DiscoverDelegateResult[]): Array<Record<string, unknown>> {
+  return delegateResults.map((delegate) => ({
+    track: delegate.track,
+    status: delegate.status,
+    disposition: delegate.leaderDisposition,
+    summary: delegate.summary,
+    topFindings: delegate.findings.slice(0, 3),
+    unresolved: delegate.unresolved.slice(0, 3),
+    filesInspected: delegate.filesInspected.slice(0, 6),
+    commandsRun: delegate.commandsRun.slice(0, 6),
+    sourceCount: delegate.sources.length,
+    notes: delegate.notes ?? ""
+  }));
+}
+
 async function buildWorkflowPrompt(options: {
   cwd: string;
   input: string;
@@ -133,19 +148,39 @@ async function buildWorkflowPrompt(options: {
   return { prompt, context };
 }
 
-export async function buildSpecPrompt(cwd: string, input: string, config: CstackConfig): Promise<{ prompt: string; context: string }> {
+export async function buildSpecPrompt(
+  cwd: string,
+  input: string,
+  config: CstackConfig,
+  options: { planningIssueNumber?: number; initiativeId?: string; initiativeTitle?: string } = {}
+): Promise<{ prompt: string; context: string }> {
   const { prompt, context } = await buildWorkflowPrompt({ cwd, input, workflow: "spec", config });
   return {
     prompt: [
       prompt,
       "",
+      "## Linked planning issue",
+      options.planningIssueNumber ? `- GitHub issue: #${options.planningIssueNumber}` : "- none",
+      "",
+      "## Initiative",
+      options.initiativeId ? `- initiative: ${options.initiativeId}` : "- none",
+      options.initiativeTitle ? `- title: ${options.initiativeTitle}` : "- no title provided",
+      "",
       "## Spec execution contract",
       "- produce an implementation-ready plan, not an exhaustive repo audit",
       "- if the request is broad, choose the highest-leverage first remediation slice",
+      "- for mixed gap-analysis plus remediation prompts, rank the top 1-3 gap clusters briefly and then select exactly one slice to implement first",
+      "- the chosen slice must fit in one bounded change set with named files, validation, and out-of-scope boundaries",
+      "- avoid multi-epic roadmaps, repo-wide rewrites, or parallel workstreams in the first slice",
       "- rely on provided discover findings and a representative sample of repo files instead of re-scanning everything",
       "- if evidence is incomplete, record bounded open questions and stop"
     ].join("\n"),
-    context
+    context: [
+      context,
+      `Planning issue: ${options.planningIssueNumber ? `#${options.planningIssueNumber}` : "none"}`,
+      `Initiative id: ${options.initiativeId ?? "none"}`,
+      `Initiative title: ${options.initiativeTitle ?? "none"}`
+    ].join("\n")
   };
 }
 
@@ -312,9 +347,12 @@ export async function buildDiscoverTrackPrompt(options: {
     "Workflow: discover",
     `Track: ${track}`,
     `Reason: ${reason}`,
+    typeof plan.planningIssueNumber === "number" ? `Planning issue: #${plan.planningIssueNumber}` : undefined,
     `Web research allowed: ${plan.webResearchAllowed ? "yes" : "no"}`,
     ...buildReferenceContextLines(referenceFiles)
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   const prompt = [
     `You are the \`${track}\` track in a bounded \`cstack discover\` research run.`,
@@ -325,8 +363,12 @@ export async function buildDiscoverTrackPrompt(options: {
     "- stay inside this track's scope",
     "- be concrete and operational",
     "- do not write implementation code",
+    "- inspect representative files only; start with manifests, README/docs, CI workflows, entrypoints, tests, and contracts before deep source scans",
+    "- stop once you can name the top 3 gaps or first remediation candidates with evidence",
+    "- cap shell activity to a small bounded sample; prefer at most 8 commands and at most 12 files inspected",
     "- if web research is not allowed, stay local to the repository and provided docs",
     "- if web research is allowed and needed, cite sources explicitly with stable URLs when possible",
+    "- if the time or evidence budget is insufficient, return partial findings and unresolved items instead of continuing to scan",
     "- return valid JSON only, with no markdown fences or commentary",
     "",
     "Required JSON shape:",
@@ -344,6 +386,9 @@ export async function buildDiscoverTrackPrompt(options: {
     "## User request",
     input,
     "",
+    ...(typeof plan.planningIssueNumber === "number"
+      ? ["## Linked planning issue", `- GitHub issue: #${plan.planningIssueNumber}`, ""]
+      : []),
     "## Track activation reason",
     reason,
     "",
@@ -369,9 +414,12 @@ export async function buildDiscoverLeadPrompt(options: {
     "Workflow: discover",
     "Role: Research Lead",
     `Delegated tracks: ${delegateResults.map((result) => result.track).join(", ") || "none"}`,
+    typeof plan.planningIssueNumber === "number" ? `Planning issue: #${plan.planningIssueNumber}` : undefined,
     `Web research allowed: ${plan.webResearchAllowed ? "yes" : "no"}`,
     ...buildReferenceContextLines(referenceFiles)
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   const prompt = [
     "You are the `Research Lead` for a bounded `cstack discover` run.",
@@ -400,11 +448,14 @@ export async function buildDiscoverLeadPrompt(options: {
     "## User request",
     input,
     "",
+    ...(typeof plan.planningIssueNumber === "number"
+      ? ["## Linked planning issue", `- GitHub issue: #${plan.planningIssueNumber}`, ""]
+      : []),
     "## Discover research plan",
     JSON.stringify(plan, null, 2),
     "",
     "## Delegate results",
-    JSON.stringify(delegateResults, null, 2),
+    JSON.stringify(summarizeDiscoverDelegates(delegateResults), null, 2),
     "",
     ...buildReferencePromptLines(referenceFiles)
   ].join("\n");

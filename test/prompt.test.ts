@@ -53,6 +53,23 @@ describe("prompt builders", () => {
     expect(context).toContain("Reference files:");
   });
 
+  it("adds explicit narrowing rules for broad gap-remediation spec prompts", async () => {
+    const { prompt } = await buildSpecPrompt(repoDir, "What are the gaps in the current project and find them and fix them", config);
+
+    expect(prompt).toContain("select exactly one slice to implement first");
+    expect(prompt).toContain("one bounded change set");
+    expect(prompt).toContain("avoid multi-epic roadmaps");
+  });
+
+  it("records linked planning issue context in spec prompts", async () => {
+    const { prompt, context } = await buildSpecPrompt(repoDir, "Plan the first slice.", config, {
+      planningIssueNumber: 123
+    });
+
+    expect(prompt).toContain("GitHub issue: #123");
+    expect(context).toContain("Planning issue: #123");
+  });
+
   it("omits missing cstack-specific references from discover prompts", async () => {
     const plan: DiscoverResearchPlan = {
       prompt: "Map the repo",
@@ -99,7 +116,13 @@ describe("prompt builders", () => {
 
     expect(trackPrompt.prompt).not.toContain("docs/specs/cstack-spec-v0.1.md");
     expect(trackPrompt.prompt).toContain(path.join(repoDir, "README.md"));
+    expect(trackPrompt.prompt).toContain("inspect representative files only");
+    expect(trackPrompt.prompt).toContain("top 3 gaps or first remediation candidates");
+    expect(trackPrompt.prompt).toContain("at most 8 commands");
+    expect(trackPrompt.prompt).toContain("\"requestedCapabilities\"");
+    expect(trackPrompt.prompt).toContain("\"availableCapabilities\"");
     expect(leadPrompt.prompt).not.toContain("docs/research/gstack-codex-interaction-model.md");
     expect(leadPrompt.prompt).toContain(path.join(repoDir, "specs", "001-plan-alignment", "research.md"));
+    expect(leadPrompt.prompt).toContain("\"topFindings\"");
   });
 });

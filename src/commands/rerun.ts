@@ -28,11 +28,17 @@ function buildWorkflowArgs(run: RunRecord): string[] {
 
   switch (run.workflow) {
     case "discover":
+      if (typeof run.inputs.planningIssueNumber === "number") {
+        args.push("--issue", String(run.inputs.planningIssueNumber));
+      }
       args.push(prompt);
       return args;
     case "spec":
       if (linkedRunId) {
         args.push("--from-run", linkedRunId);
+      }
+      if (typeof run.inputs.planningIssueNumber === "number") {
+        args.push("--issue", String(run.inputs.planningIssueNumber));
       }
       if (prompt) {
         args.push(prompt);

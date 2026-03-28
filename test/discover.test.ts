@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { chmodSync } from "node:fs";
+import { runRerun } from "../src/commands/rerun.js";
 import { runDiscover } from "../src/commands/discover.js";
 import { listRuns, readRun } from "../src/run.js";
 
@@ -32,6 +33,10 @@ describe("runDiscover", () => {
         "[workflows.discover.research]",
         "enabled = true",
         "allowWeb = true",
+        "",
+        "[workflows.discover.capabilities]",
+        'allowed = ["shell", "web", "github"]',
+        'defaultRequested = ["shell", "web"]',
         ""
       ].join("\n"),
       "utf8"
@@ -51,6 +56,11 @@ describe("runDiscover", () => {
   });
 
   afterEach(async () => {
+    delete process.env.FAKE_CODEX_DELAY_MS;
+    delete process.env.FAKE_CODEX_DISCOVER_DELAY_MS;
+    delete process.env.FAKE_CODEX_PRINT_BODY;
+    delete process.env.FAKE_CODEX_SKIP_FINAL_WRITE;
+    delete process.env.FAKE_CODEX_EXIT_CODE;
     await fs.rm(repoDir, { recursive: true, force: true });
   });
 
@@ -73,6 +83,13 @@ describe("runDiscover", () => {
       const researchPlan = JSON.parse(await fs.readFile(path.join(stageDir, "research-plan.json"), "utf8")) as {
         mode: string;
         tracks: Array<{ name: string; selected: boolean }>;
+      };
+      const capabilities = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "capabilities.json"), "utf8")) as {
+        allowed: string[];
+        requested: string[];
+        available: string[];
+        used: string[];
+        downgraded: Array<{ name: string }>;
       };
       const repoResult = JSON.parse(
         await fs.readFile(path.join(stageDir, "delegates", "repo-explorer", "result.json"), "utf8")
@@ -97,6 +114,12 @@ describe("runDiscover", () => {
         "risk-researcher",
         "external-researcher"
       ]);
+      expect(capabilities.allowed).toEqual(["shell", "web", "github"]);
+      expect(capabilities.requested).toEqual(["shell", "web"]);
+      expect(capabilities.available).toEqual(["shell", "web"]);
+      expect(capabilities.used).toContain("shell");
+      expect(capabilities.used).toContain("web");
+      expect(capabilities.downgraded).toEqual([]);
       expect(repoResult.track).toBe("repo-explorer");
       expect(repoResult.leaderDisposition).toBe("accepted");
       expect(externalSources[0]?.location).toContain("https://example.com/docs");
@@ -105,6 +128,47 @@ describe("runDiscover", () => {
       stdoutSpy.mockRestore();
     }
   }, 15_000);
+
+  it("writes planning issue lineage artifacts for issue-linked discover runs", async () => {
+    await runDiscover(repoDir, ["--issue", "123", "Map the repo constraints for the next slice."]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const lineage = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "issue-lineage.json"), "utf8")) as {
+      planningIssueNumber: number;
+      currentRun: { runId: string; workflow: string };
+    };
+    const contextBody = await fs.readFile(run.contextPath, "utf8");
+    const researchPlan = JSON.parse(await fs.readFile(path.join(runDir, "stages", "discover", "research-plan.json"), "utf8")) as {
+      planningIssueNumber?: number;
+    };
+
+    expect(run.inputs.planningIssueNumber).toBe(123);
+    expect(lineage.planningIssueNumber).toBe(123);
+    expect(lineage.currentRun.runId).toBe(run.id);
+    expect(lineage.currentRun.workflow).toBe("discover");
+    expect(contextBody).toContain("Planning issue: #123");
+    expect(researchPlan.planningIssueNumber).toBe(123);
+  });
+
+  it("preserves planning issue linkage on discover rerun", async () => {
+    await runDiscover(repoDir, ["--issue", "123", "Map the repo constraints for the next slice."]);
+    const initialRuns = await listRuns(repoDir);
+    const sourceRun = initialRuns.find((entry) => entry.workflow === "discover");
+
+    const rerunId = await runRerun(repoDir, [sourceRun!.id]);
+    const rerun = await readRun(repoDir, rerunId);
+
+    expect(rerun.workflow).toBe("discover");
+    expect(rerun.inputs.planningIssueNumber).toBe(123);
+    const rerunLineage = JSON.parse(
+      await fs.readFile(path.join(path.dirname(rerun.finalPath), "artifacts", "issue-lineage.json"), "utf8")
+    ) as {
+      planningIssueNumber: number;
+    };
+    expect(rerunLineage.planningIssueNumber).toBe(123);
+  });
 
   it("suppresses discover delegation for a small local prompt", async () => {
     await runDiscover(repoDir, "Rename one helper.");
@@ -122,6 +186,51 @@ describe("runDiscover", () => {
     expect(researchPlan.mode).toBe("single-agent");
     expect(researchPlan.tracks.some((track) => track.selected)).toBe(false);
     expect(researchPlan.limitations[0]).toContain("suppressed");
+    await expect(fs.access(path.join(stageDir, "delegates", "repo-explorer", "result.json"))).rejects.toThrow();
+  });
+
+  it("records downgraded web capability when discover policy disables web research", async () => {
+    const configPath = path.join(repoDir, ".cstack", "config.toml");
+    const existing = await fs.readFile(configPath, "utf8");
+    await fs.writeFile(
+      configPath,
+      existing.replace('allowWeb = true', 'allowWeb = false'),
+      "utf8"
+    );
+
+    await runDiscover(repoDir, "Map the repo constraints, official API docs, and security risks for the next slice.");
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const capabilities = JSON.parse(await fs.readFile(path.join(path.dirname(run.finalPath), "artifacts", "capabilities.json"), "utf8")) as {
+      requested: string[];
+      available: string[];
+      downgraded: Array<{ name: string; reason: string }>;
+    };
+
+    expect(capabilities.requested).toContain("web");
+    expect(capabilities.available).not.toContain("web");
+    expect(capabilities.downgraded).toContainEqual({
+      name: "web",
+      reason: "disabled by discover research policy"
+    });
+  });
+
+  it("suppresses repo-explorer-only delegation for broad prompts and keeps discover single-agent", async () => {
+    await runDiscover(repoDir, "What are the gaps in the current project and find them and fix them");
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const stageDir = path.join(path.dirname(run.finalPath), "stages", "discover");
+    const researchPlan = JSON.parse(await fs.readFile(path.join(stageDir, "research-plan.json"), "utf8")) as {
+      mode: string;
+      tracks: Array<{ name: string; selected: boolean }>;
+      limitations: string[];
+    };
+
+    expect(researchPlan.mode).toBe("single-agent");
+    expect(researchPlan.tracks.every((track) => !track.selected)).toBe(true);
+    expect(researchPlan.limitations.join("\n")).toContain("repo-explorer track qualified");
     await expect(fs.access(path.join(stageDir, "delegates", "repo-explorer", "result.json"))).rejects.toThrow();
   });
 
@@ -143,5 +252,58 @@ describe("runDiscover", () => {
     } finally {
       delete process.env.FAKE_CODEX_DELAY_MS;
     }
+  }, 15_000);
+
+  it("recovers a partial discover artifact from structured stdout when Codex exits non-zero", async () => {
+    process.env.FAKE_CODEX_PRINT_BODY = "1";
+    process.env.FAKE_CODEX_SKIP_FINAL_WRITE = "1";
+    process.env.FAKE_CODEX_EXIT_CODE = "1";
+
+    await runDiscover(repoDir, "Map the repo constraints for the next slice.");
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const stageDir = path.join(runDir, "stages", "discover");
+    const findings = await fs.readFile(path.join(runDir, "artifacts", "findings.md"), "utf8");
+    const discoveryReport = await fs.readFile(path.join(stageDir, "artifacts", "discovery-report.md"), "utf8");
+    const researchPlan = JSON.parse(await fs.readFile(path.join(stageDir, "research-plan.json"), "utf8")) as {
+      mode: string;
+      tracks: Array<{ name: string; selected: boolean }>;
+      limitations: string[];
+    };
+
+    expect(run.status).toBe("completed");
+    expect(run.lastActivity).toContain("partial artifact");
+    expect(run.inputs.delegatedTracks).toEqual([]);
+    expect(findings).toContain("Research Lead synthesis complete.");
+    expect(discoveryReport).toContain("Research Lead synthesis complete.");
+    expect(researchPlan.mode).toBe("single-agent");
+    expect(researchPlan.tracks.every((track) => !track.selected)).toBe(true);
+    await expect(fs.access(path.join(stageDir, "delegates", "repo-explorer", "result.json"))).rejects.toThrow();
+  }, 15_000);
+
+  it("respects a shared discover budget instead of giving every delegated track the full timeout", async () => {
+    const configPath = path.join(repoDir, ".cstack", "config.toml");
+    const existing = await fs.readFile(configPath, "utf8");
+    await fs.writeFile(configPath, `${existing}\n[workflows.discover]\ntimeoutSeconds = 2\n`, "utf8");
+
+    process.env.FAKE_CODEX_DISCOVER_DELAY_MS = "1200";
+    const startedAt = Date.now();
+    await expect(
+      runDiscover(repoDir, "Map the repo constraints, official API docs, and security risks for the next slice.")
+    ).rejects.toThrow(/code 124/);
+    const elapsedMs = Date.now() - startedAt;
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const stageDir = path.join(path.dirname(run.finalPath), "stages", "discover");
+    const repoResult = JSON.parse(
+      await fs.readFile(path.join(stageDir, "delegates", "repo-explorer", "result.json"), "utf8")
+    ) as { notes?: string };
+
+    expect(elapsedMs).toBeLessThan(5_000);
+    expect(run.status).toBe("failed");
+    expect(repoResult.notes).toContain("did not produce structured findings");
   }, 15_000);
 });

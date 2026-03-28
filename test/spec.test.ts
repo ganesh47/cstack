@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { chmodSync } from "node:fs";
+import { runRerun } from "../src/commands/rerun.js";
 import { runSpec } from "../src/commands/spec.js";
 import { listRuns, readRun } from "../src/run.js";
 import type { RunRecord } from "../src/types.js";
@@ -129,6 +130,128 @@ describe("runSpec", () => {
     const promptBody = await fs.readFile(run!.promptPath, "utf8");
     expect(promptBody).toContain(discoverRunId);
     expect(promptBody).toContain("Billing cleanup findings");
+  });
+
+  it("writes planning issue artifacts for issue-linked spec runs", async () => {
+    await runSpec(repoDir, ["--issue", "123", "Draft the first vertical slice."]);
+
+    const runs = await listRuns(repoDir);
+    const run = runs.find((entry) => entry.workflow === "spec");
+    expect(run?.inputs.planningIssueNumber).toBe(123);
+
+    const runDir = path.dirname(run!.finalPath);
+    const draftBody = await fs.readFile(path.join(runDir, "artifacts", "issue-draft.md"), "utf8");
+    const lineage = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "issue-lineage.json"), "utf8")) as {
+      planningIssueNumber: number;
+      currentRun: { runId: string };
+    };
+    const promptBody = await fs.readFile(run!.promptPath, "utf8");
+
+    expect(draftBody).toContain("Planning Issue Draft: #123");
+    expect(lineage.planningIssueNumber).toBe(123);
+    expect(lineage.currentRun.runId).toBe(run!.id);
+    expect(promptBody).toContain("GitHub issue: #123");
+  });
+
+  it("inherits planning issue linkage from a linked discover run", async () => {
+    const discoverRunId = await seedDiscoverRun(repoDir);
+    const discoverRun = await readRun(repoDir, discoverRunId);
+    discoverRun.inputs.planningIssueNumber = 123;
+    await fs.writeFile(path.join(repoDir, ".cstack", "runs", discoverRunId, "run.json"), `${JSON.stringify(discoverRun, null, 2)}\n`, "utf8");
+    await fs.writeFile(
+      path.join(repoDir, ".cstack", "runs", discoverRunId, "artifacts", "issue-lineage.json"),
+      `${JSON.stringify({
+        planningIssueNumber: 123,
+        currentRun: { runId: discoverRunId, workflow: "discover" },
+        downstreamPullRequests: [],
+        downstreamReleases: []
+      }, null, 2)}\n`,
+      "utf8"
+    );
+
+    await runSpec(repoDir, ["--from-run", discoverRunId]);
+
+    const runs = await listRuns(repoDir);
+    const run = runs.find((entry) => entry.workflow === "spec");
+    expect(run?.inputs.planningIssueNumber).toBe(123);
+
+    const promptBody = await fs.readFile(run!.promptPath, "utf8");
+    const lineage = JSON.parse(await fs.readFile(path.join(path.dirname(run!.finalPath), "artifacts", "issue-lineage.json"), "utf8")) as {
+      planningIssueNumber: number;
+      sourceRun?: { runId: string; workflow: string };
+    };
+
+    expect(promptBody).toContain("GitHub issue: #123");
+    expect(lineage.planningIssueNumber).toBe(123);
+    expect(lineage.sourceRun?.runId).toBe(discoverRunId);
+    expect(lineage.sourceRun?.workflow).toBe("discover");
+  });
+
+  it("records initiative linkage and initiative graph for spec runs", async () => {
+    const baselineRunId = "2026-03-14T11-00-00-spec-cache-base";
+    const baselineRunDir = path.join(repoDir, ".cstack", "runs", baselineRunId);
+    const baselineRun: RunRecord = {
+      id: baselineRunId,
+      workflow: "spec",
+      createdAt: "2026-03-14T11:00:00.000Z",
+      updatedAt: "2026-03-14T11:00:05.000Z",
+      status: "completed",
+      cwd: repoDir,
+      gitBranch: "main",
+      codexVersion: "fake",
+      codexCommand: ["codex", "exec"],
+      promptPath: path.join(baselineRunDir, "prompt.md"),
+      finalPath: path.join(baselineRunDir, "final.md"),
+      contextPath: path.join(baselineRunDir, "context.md"),
+      stdoutPath: path.join(baselineRunDir, "stdout.log"),
+      stderrPath: path.join(baselineRunDir, "stderr.log"),
+      configSources: [],
+      summary: "Baseline initiative planning",
+      inputs: {
+        userPrompt: "Baseline initiative planning",
+        initiativeId: "initiative-cache",
+        initiativeTitle: "Cache rollout"
+      }
+    };
+    await fs.mkdir(baselineRunDir, { recursive: true });
+    await fs.writeFile(path.join(baselineRunDir, "run.json"), `${JSON.stringify(baselineRun, null, 2)}\n`, "utf8");
+    await fs.writeFile(path.join(baselineRunDir, "final.md"), "# final\n", "utf8");
+
+    await runSpec(
+      repoDir,
+      ["--initiative", "initiative-cache", "--initiative-title", "Cache rollout", "Draft the first caching slice."]
+    );
+
+    const runs = await listRuns(repoDir);
+    const run = runs.find((entry) => entry.workflow === "spec" && entry.summary === "Draft the first caching slice.");
+    expect(run?.inputs.initiativeId).toBe("initiative-cache");
+    expect(run?.inputs.initiativeTitle).toBe("Cache rollout");
+
+    const initiativeGraph = JSON.parse(
+      await fs.readFile(path.join(path.dirname(run!.finalPath), "artifacts", "initiative-graph.json"), "utf8")
+    ) as {
+      initiativeId: string;
+      initiativeTitle?: string;
+      relatedRuns: Array<{ runId: string; workflow: string }>;
+      currentRun: { runId: string };
+    };
+
+    expect(initiativeGraph.initiativeId).toBe("initiative-cache");
+    expect(initiativeGraph.initiativeTitle).toBe("Cache rollout");
+    expect(initiativeGraph.relatedRuns.some((entry) => entry.runId === baselineRunId)).toBe(true);
+    expect(initiativeGraph.currentRun.runId).toBe(run!.id);
+  });
+
+  it("preserves planning issue linkage on rerun", async () => {
+    await runSpec(repoDir, ["--issue", "123", "Draft the first vertical slice."]);
+    const initialRuns = await listRuns(repoDir);
+    const sourceRun = initialRuns.find((entry) => entry.workflow === "spec");
+
+    const rerunId = await runRerun(repoDir, [sourceRun!.id]);
+    const rerun = await readRun(repoDir, rerunId);
+
+    expect(rerun.workflow).toBe("spec");
+    expect(rerun.inputs.planningIssueNumber).toBe(123);
   });
 
   it("fails closed when the spec stage times out", async () => {

@@ -5,6 +5,8 @@ export interface RunsCommandOptions {
   activeOnly: boolean;
   workflow?: WorkflowName;
   status?: RunStatus;
+  planningIssueNumber?: number;
+  initiativeId?: string;
   recent?: number;
   json: boolean;
 }
@@ -48,6 +50,24 @@ export function parseRunsArgs(args: string[]): RunsCommandOptions {
         throw new Error("Missing value for --status");
       }
       options.status = value as RunStatus;
+      index += 1;
+      continue;
+    }
+    if (arg === "--issue") {
+      const value = args[index + 1];
+      if (!value || !/^\d+$/.test(value)) {
+        throw new Error("`cstack runs --issue` requires a numeric issue id.");
+      }
+      options.planningIssueNumber = Number.parseInt(value, 10);
+      index += 1;
+      continue;
+    }
+    if (arg === "--initiative") {
+      const value = args[index + 1];
+      if (!value) {
+        throw new Error("`cstack runs --initiative` requires an initiative id.");
+      }
+      options.initiativeId = value;
       index += 1;
       continue;
     }

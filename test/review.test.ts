@@ -60,6 +60,60 @@ async function seedBuildRun(repoDir: string): Promise<string> {
   return runId;
 }
 
+async function seedInitiativeBuildRun(repoDir: string): Promise<string> {
+  const runId = "2026-03-14T11-30-00-build-initiative-queue";
+  const runDir = path.join(repoDir, ".cstack", "runs", runId);
+  await fs.mkdir(path.join(runDir, "artifacts"), { recursive: true });
+
+  const run: RunRecord = {
+    id: runId,
+    workflow: "build",
+    createdAt: "2026-03-14T11:30:00.000Z",
+    updatedAt: "2026-03-14T11:30:10.000Z",
+    status: "completed",
+    cwd: repoDir,
+    gitBranch: "main",
+    codexVersion: "fake",
+    codexCommand: ["codex", "exec"],
+    promptPath: path.join(runDir, "prompt.md"),
+    finalPath: path.join(runDir, "final.md"),
+    contextPath: path.join(runDir, "context.md"),
+    stdoutPath: path.join(runDir, "stdout.log"),
+    stderrPath: path.join(runDir, "stderr.log"),
+    configSources: [],
+    summary: "Build initiative cleanup",
+    inputs: {
+      userPrompt: "Build initiative cleanup",
+      initiativeId: "initiative-2026",
+      initiativeTitle: "Refactor platform APIs"
+    }
+  };
+
+  const verification: BuildVerificationRecord = {
+    status: "passed",
+    requestedCommands: ["npm test"],
+    results: [
+      {
+        command: "npm test",
+        exitCode: 0,
+        status: "passed",
+        durationMs: 25,
+        stdoutPath: path.join(runDir, "artifacts", "verification", "1.stdout.log"),
+        stderrPath: path.join(runDir, "artifacts", "verification", "1.stderr.log")
+      }
+    ]
+  };
+
+  await fs.writeFile(path.join(runDir, "run.json"), `${JSON.stringify(run, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(runDir, "final.md"), "# Build Summary\n\nImplemented initiative cleanup.\n", "utf8");
+  await fs.writeFile(path.join(runDir, "artifacts", "change-summary.md"), "# Build Summary\n\nImplemented initiative cleanup.\n", "utf8");
+  await fs.mkdir(path.join(runDir, "artifacts", "verification"), { recursive: true });
+  await fs.writeFile(path.join(runDir, "artifacts", "verification.json"), `${JSON.stringify(verification, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(runDir, "session.json"), `${JSON.stringify({ workflow: "build", requestedMode: "exec", mode: "exec", sessionId: "fake-session-456", codexCommand: ["codex"], observability: { sessionIdObserved: true, transcriptObserved: false, finalArtifactObserved: true }, startedAt: "2026-03-14T11:30:00.000Z", endedAt: "2026-03-14T11:30:10.000Z" }, null, 2)}\n`, "utf8");
+
+  return runId;
+}
+
 describe("runReview", () => {
   let repoDir: string;
 
@@ -188,5 +242,40 @@ describe("runReview", () => {
     } finally {
       stdoutSpy.mockRestore();
     }
+  }, 60_000);
+
+  it("inherits and overrides initiative metadata", async () => {
+    const buildRunId = await seedInitiativeBuildRun(repoDir);
+
+    await runReview(repoDir, [
+      "--from-run",
+      buildRunId,
+      "Review initiative cleanup"
+    ]);
+
+    const inheritedRun = await readRun(
+      repoDir,
+      (await listRuns(repoDir)).filter((entry) => entry.workflow === "review")[0]!.id
+    );
+    expect(inheritedRun.inputs.initiativeId).toBe("initiative-2026");
+    expect(inheritedRun.inputs.initiativeTitle).toBe("Refactor platform APIs");
+
+    await runReview(repoDir, [
+      "--from-run",
+      buildRunId,
+      "--initiative",
+      "initiative-review-override",
+      "--initiative-title",
+      "Override initiative title",
+      "Review initiative cleanup"
+    ]);
+
+    const overrideRun = await readRun(
+      repoDir,
+      (await listRuns(repoDir)).filter((entry) => entry.workflow === "review")[0]!.id
+    );
+    expect(overrideRun.inputs.initiativeId).toBe("initiative-review-override");
+    expect(overrideRun.inputs.initiativeTitle).toBe("Override initiative title");
+    expect(inheritedRun.id).not.toBe(overrideRun.id);
   }, 60_000);
 });

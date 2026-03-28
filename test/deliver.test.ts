@@ -46,6 +46,42 @@ async function seedSpecRun(repoDir: string): Promise<string> {
   return runId;
 }
 
+async function seedInitiativeSpecRun(repoDir: string): Promise<string> {
+  const runId = "2026-03-14T10-30-00-spec-initiative-review";
+  const runDir = path.join(repoDir, ".cstack", "runs", runId);
+  await fs.mkdir(path.join(runDir, "artifacts"), { recursive: true });
+
+  const run: RunRecord = {
+    id: runId,
+    workflow: "spec",
+    createdAt: "2026-03-14T10:30:00.000Z",
+    updatedAt: "2026-03-14T10:30:10.000Z",
+    status: "completed",
+    cwd: repoDir,
+    gitBranch: "main",
+    codexVersion: "fake",
+    codexCommand: ["codex", "exec"],
+    promptPath: path.join(runDir, "prompt.md"),
+    finalPath: path.join(runDir, "final.md"),
+    contextPath: path.join(runDir, "context.md"),
+    stdoutPath: path.join(runDir, "stdout.log"),
+    stderrPath: path.join(runDir, "stderr.log"),
+    configSources: [],
+    summary: "Implement initiative release hardening",
+    inputs: {
+      userPrompt: "Implement initiative release hardening",
+      initiativeId: "initiative-deliver",
+      initiativeTitle: "Release resilience"
+    }
+  };
+
+  await fs.writeFile(path.join(runDir, "run.json"), `${JSON.stringify(run, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(runDir, "final.md"), "# Spec\n\nImplement initiative release hardening.\n", "utf8");
+  await fs.writeFile(path.join(runDir, "artifacts", "spec.md"), "# Spec\n\nImplement initiative release hardening.\n", "utf8");
+
+  return runId;
+}
+
 async function initGitRepo(repoDir: string): Promise<{ remoteDir: string }> {
   const remoteDir = await fs.mkdtemp(path.join(os.tmpdir(), "cstack-deliver-remote-"));
   await execFileAsync("git", ["init", "--bare", remoteDir]);
@@ -133,6 +169,11 @@ describe("runDeliver", () => {
   afterEach(async () => {
     delete process.env.FAKE_CODEX_FAIL_BUILD;
     delete process.env.FAKE_CODEX_DELAY_MS;
+    delete process.env.FAKE_CODEX_VALIDATION_COMMAND;
+    delete process.env.FAKE_CODEX_VALIDATION_STATUS;
+    delete process.env.FAKE_CODEX_NO_FINAL_VALIDATION;
+    delete process.env.FAKE_CODEX_NO_FINAL_DELIVER_REVIEW;
+    delete process.env.FAKE_CODEX_NO_FINAL_SHIP;
     delete process.env.CSTACK_FORCE_CLONE_FALLBACK;
     await fs.rm(repoDir, { recursive: true, force: true });
     await fs.rm(remoteDir, { recursive: true, force: true });
@@ -193,6 +234,7 @@ describe("runDeliver", () => {
       };
       const validationPlan = JSON.parse(await fs.readFile(path.join(runDir, "stages", "validation", "validation-plan.json"), "utf8")) as {
         status: string;
+        outcomeCategory: string;
         ciValidation: { jobs: Array<{ name: string }> };
       };
       const localValidation = JSON.parse(
@@ -222,11 +264,27 @@ describe("runDeliver", () => {
         overall: { status: string };
         issueReferences: number[];
       };
+      const postShipEvidence = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "post-ship-evidence.json"), "utf8")) as {
+        status: string;
+        followUpRequired: boolean;
+      };
+      const postShipEvidenceStage = JSON.parse(
+        await fs.readFile(path.join(runDir, "stages", "ship", "artifacts", "post-ship-evidence.json"), "utf8")
+      ) as { status: string };
+      const followUpLineage = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "follow-up-lineage.json"), "utf8")) as {
+        status: string;
+        recommendedDrafts: Array<{ title: string }>;
+      };
       const finalBody = await fs.readFile(run.finalPath, "utf8");
       const deliveryReport = await fs.readFile(path.join(runDir, "artifacts", "delivery-report.md"), "utf8");
       const mutationArtifact = await fs.readFile(path.join(runDir, "stages", "ship", "artifacts", "github-mutation.json"), "utf8");
       const checksArtifact = await fs.readFile(path.join(runDir, "stages", "ship", "artifacts", "checks.json"), "utf8");
       const actionsArtifact = await fs.readFile(path.join(runDir, "stages", "ship", "artifacts", "actions.json"), "utf8");
+      const postShipSummary = await fs.readFile(path.join(runDir, "artifacts", "post-ship-summary.md"), "utf8");
+      const postShipDraft = await fs.readFile(path.join(runDir, "artifacts", "follow-up-draft.md"), "utf8");
+      const postShipFollowUp = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "follow-up-lineage.json"), "utf8")) as {
+        status: string;
+      };
       const remoteHeads = await execFileAsync("git", ["--git-dir", remoteDir, "for-each-ref", "--format=%(refname:short)", "refs/heads"]);
       const consoleOutput = stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join("");
 
@@ -243,6 +301,7 @@ describe("runDeliver", () => {
       expect(lineage.stages.map((stage) => stage.name)).toEqual(["build", "validation", "review", "ship"]);
       expect(lineage.stages.every((stage) => stage.executed)).toBe(true);
       expect(validationPlan.status).toBe("ready");
+      expect(validationPlan.outcomeCategory).toBe("ready");
       expect(localValidation.status).toBe("passed");
       expect(validationPlan.ciValidation.jobs.map((job) => job.name)).toContain("validation");
       expect(reviewVerdict.status).toBe("ready");
@@ -254,6 +313,11 @@ describe("runDeliver", () => {
       expect(githubMutation.branch.current).toContain("cstack/");
       expect(githubMutation.commit.created).toBe(true);
       expect(githubMutation.commit.sha).toBeTruthy();
+      expect(postShipEvidence.status).toBe("stable");
+      expect(postShipEvidence.followUpRequired).toBe(false);
+      expect(postShipEvidenceStage.status).toBe("stable");
+      expect(followUpLineage.status).toBe("none");
+      expect(followUpLineage.recommendedDrafts).toHaveLength(0);
       expect(githubMutation.commit.changedFiles).toContain("codex-generated-change.txt");
       expect(githubMutation.commit.changedFiles).not.toContain("src-change.txt");
       expect(githubMutation.pullRequest.created).toBe(true);
@@ -273,15 +337,311 @@ describe("runDeliver", () => {
       expect(remoteHeads.stdout).toContain(githubMutation.branch.current);
       expect(finalBody).toContain("# Deliver Run Summary");
       expect(deliveryReport).toContain("# Deliver Run Summary");
+      expect(postShipSummary).toContain("Post-Ship Summary");
+      expect(postShipEvidence.status).toBe("stable");
+      expect(postShipFollowUp.status).toBe("none");
+      expect(postShipDraft).toContain("No follow-up draft is required");
       expect(consoleOutput).toContain("Workflow: deliver");
       expect(consoleOutput).toContain("Execution checkout: git-worktree @");
-      expect(consoleOutput).toContain("Validation: ready");
+      expect(consoleOutput).toContain("Validation: ready (ready)");
       expect(consoleOutput).toContain("GitHub mutation:");
-      expect(consoleOutput).toContain("Review verdict: ready");
+    expect(consoleOutput).toContain("Review verdict: ready");
     } finally {
       stdoutSpy.mockRestore();
     }
   }, 15_000);
+
+  it("does not mark deliver complete when validation is partial", async () => {
+    process.env.FAKE_CODEX_VALIDATION_STATUS = "partial";
+    await writeGitHubFixture({
+      repoView: {
+        nameWithOwner: "ganesh47/cstack",
+        defaultBranchRef: { name: "main" }
+      },
+      createdPullRequest: {
+        reviewDecision: "APPROVED",
+        mergeStateStatus: "CLEAN"
+      },
+      issues: [],
+      prChecks: [
+        { name: "deliver/test", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/20" },
+        { name: "deliver/typecheck", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/21" }
+      ],
+      actions: [
+        { databaseId: 4, workflowName: "Release", status: "completed", conclusion: "success", url: "https://github.com/ganesh47/cstack/actions/runs/4" }
+      ],
+      security: {
+        dependabot: [],
+        codeScanning: []
+      }
+    });
+
+    await runDeliver(repoDir, ["Deliver a bounded slice with partial validation"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const lineage = JSON.parse(await fs.readFile(path.join(runDir, "stage-lineage.json"), "utf8")) as StageLineage;
+    const validationPlan = JSON.parse(await fs.readFile(path.join(runDir, "stages", "validation", "validation-plan.json"), "utf8")) as {
+      status: string;
+      outcomeCategory: string;
+    };
+
+    expect(run.workflow).toBe("deliver");
+    expect(run.status).toBe("failed");
+    expect(validationPlan.status).toBe("partial");
+    expect(validationPlan.outcomeCategory).toBe("partial");
+    expect(lineage.stages.find((stage) => stage.name === "validation")?.status).toBe("deferred");
+  }, 20_000);
+
+  it("fails closed when the validation lead exits without writing final output", async () => {
+    process.env.FAKE_CODEX_NO_FINAL_VALIDATION = "1";
+    await writeGitHubFixture({
+      repoView: {
+        nameWithOwner: "ganesh47/cstack",
+        defaultBranchRef: { name: "main" }
+      },
+      createdPullRequest: {
+        reviewDecision: "APPROVED",
+        mergeStateStatus: "CLEAN"
+      },
+      issues: [],
+      prChecks: [
+        { name: "deliver/test", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/24" },
+        { name: "deliver/typecheck", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/25" }
+      ],
+      actions: [
+        { databaseId: 5, workflowName: "Release", status: "completed", conclusion: "success", url: "https://github.com/ganesh47/cstack/actions/runs/5" }
+      ],
+      security: {
+        dependabot: [],
+        codeScanning: []
+      }
+    });
+
+    await runDeliver(repoDir, ["Deliver a slice where validation exits without final output"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const validationPlan = JSON.parse(await fs.readFile(path.join(runDir, "stages", "validation", "validation-plan.json"), "utf8")) as {
+      status: string;
+      outcomeCategory: string;
+      summary: string;
+    };
+    const validationFinal = await fs.readFile(path.join(runDir, "stages", "validation", "final.md"), "utf8");
+    const deliverySummary = await fs.readFile(run.finalPath, "utf8");
+
+    expect(run.status).toBe("failed");
+    expect(validationPlan.status).toBe("blocked");
+    expect(validationPlan.outcomeCategory).toBe("blocked-by-validation");
+    expect(validationPlan.summary).toContain("Validation lead did not write final output");
+    expect(validationPlan.summary).not.toContain("ENOENT");
+    expect(validationFinal).toContain("Validation stage failed");
+    expect(deliverySummary).toContain("Validation lead did not write final output");
+    expect(deliverySummary).not.toContain("ENOENT");
+  }, 20_000);
+
+  it("fails closed when the ship lead exits without writing final output", async () => {
+    process.env.FAKE_CODEX_NO_FINAL_SHIP = "1";
+    await writeGitHubFixture({
+      repoView: {
+        nameWithOwner: "ganesh47/cstack",
+        defaultBranchRef: { name: "main" }
+      },
+      createdPullRequest: {
+        reviewDecision: "APPROVED",
+        mergeStateStatus: "CLEAN"
+      },
+      issues: [
+        {
+          number: 654,
+          title: "Ship fallback issue",
+          state: "CLOSED",
+          url: "https://github.com/ganesh47/cstack/issues/654",
+          closedAt: "2026-03-14T00:00:00.000Z"
+        }
+      ],
+      prChecks: [
+        { name: "deliver/test", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/26" },
+        { name: "deliver/typecheck", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/27" }
+      ],
+      actions: [
+        { databaseId: 6, workflowName: "Release", status: "completed", conclusion: "success", url: "https://github.com/ganesh47/cstack/actions/runs/6" }
+      ],
+      security: {
+        dependabot: [],
+        codeScanning: []
+      }
+    });
+
+    await runDeliver(repoDir, ["Deliver a slice where ship exits without final output for #654"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const shipRecord = JSON.parse(await fs.readFile(path.join(runDir, "stages", "ship", "artifacts", "ship-record.json"), "utf8")) as {
+      readiness: string;
+      summary: string;
+    };
+    const shipFinal = await fs.readFile(path.join(runDir, "stages", "ship", "final.md"), "utf8");
+    const githubMutation = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "github-mutation.json"), "utf8")) as {
+      summary: string;
+      blockers: string[];
+    };
+    const deliverySummary = await fs.readFile(run.finalPath, "utf8");
+
+    expect(run.status).toBe("failed");
+    expect(shipRecord.readiness).toBe("blocked");
+    expect(shipRecord.summary).toContain("Ship lead did not write final output");
+    expect(shipRecord.summary).not.toContain("ENOENT");
+    expect(shipFinal).toContain("Ship stage failed");
+    expect(githubMutation.summary).toContain("Ship stage failed");
+    expect(githubMutation.summary).not.toContain("ENOENT");
+    expect(githubMutation.blockers.join("\n")).toContain("Ship lead did not write final output");
+    expect(deliverySummary).toContain("Ship lead did not write final output");
+    expect(deliverySummary).not.toContain("ENOENT");
+  }, 20_000);
+
+  it("fails closed when the review lead exits without writing final output", async () => {
+    process.env.FAKE_CODEX_NO_FINAL_DELIVER_REVIEW = "1";
+    await writeGitHubFixture({
+      repoView: {
+        nameWithOwner: "ganesh47/cstack",
+        defaultBranchRef: { name: "main" }
+      },
+      createdPullRequest: {
+        reviewDecision: "APPROVED",
+        mergeStateStatus: "CLEAN"
+      },
+      issues: [],
+      prChecks: [
+        { name: "deliver/test", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/28" },
+        { name: "deliver/typecheck", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/29" }
+      ],
+      actions: [
+        { databaseId: 7, workflowName: "Release", status: "completed", conclusion: "success", url: "https://github.com/ganesh47/cstack/actions/runs/7" }
+      ],
+      security: {
+        dependabot: [],
+        codeScanning: []
+      }
+    });
+
+    await runDeliver(repoDir, ["Deliver a slice where review exits without final output"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const verdict = JSON.parse(await fs.readFile(path.join(runDir, "stages", "review", "artifacts", "verdict.json"), "utf8")) as {
+      status: string;
+      summary: string;
+    };
+    const reviewFinal = await fs.readFile(path.join(runDir, "stages", "review", "final.md"), "utf8");
+    const deliverySummary = await fs.readFile(run.finalPath, "utf8");
+
+    expect(run.status).toBe("failed");
+    expect(verdict.status).toBe("blocked");
+    expect(verdict.summary).toContain("Review lead did not write final output");
+    expect(verdict.summary).not.toContain("ENOENT");
+    expect(reviewFinal).toContain("Review stage failed");
+    expect(deliverySummary).toContain("Review lead did not write final output");
+    expect(deliverySummary).not.toContain("ENOENT");
+  }, 20_000);
+
+  it("classifies registry blockers from local validation commands", async () => {
+    process.env.FAKE_CODEX_VALIDATION_COMMAND =
+      "node -e \"process.stderr.write('npm ERR! request to https://registry.npmjs.org failed, reason: getaddrinfo ENOTFOUND registry.npmjs.org\\n'); process.exit(1)\"";
+    await writeGitHubFixture({
+      repoView: {
+        nameWithOwner: "ganesh47/cstack",
+        defaultBranchRef: { name: "main" }
+      },
+      createdPullRequest: {
+        reviewDecision: "APPROVED",
+        mergeStateStatus: "CLEAN"
+      },
+      issues: [
+        {
+          number: 321,
+          title: "Validation registry issue",
+          state: "CLOSED",
+          url: "https://github.com/ganesh47/cstack/issues/321",
+          closedAt: "2026-03-14T00:00:00.000Z"
+        }
+      ],
+      prChecks: [],
+      actions: [],
+      security: {
+        dependabot: [],
+        codeScanning: []
+      }
+    });
+
+    await runDeliver(repoDir, ["Implement release hardening for #321"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const localValidation = JSON.parse(
+      await fs.readFile(path.join(runDir, "stages", "validation", "artifacts", "local-validation.json"), "utf8")
+    ) as { blockerCategories?: string[] };
+    const coverageSummary = JSON.parse(
+      await fs.readFile(path.join(runDir, "stages", "validation", "artifacts", "coverage-summary.json"), "utf8")
+    ) as { gaps: string[]; outcomeCategory: string };
+
+    expect(run.status).toBe("failed");
+    expect(localValidation.blockerCategories).toContain("registry-unreachable");
+    expect(coverageSummary.outcomeCategory).toBe("blocked-by-validation");
+    expect(coverageSummary.gaps.join("\n")).toContain("registry-unreachable");
+  }, 20_000);
+
+  it("classifies repo test failures from local validation commands separately from environment blockers", async () => {
+    process.env.FAKE_CODEX_VALIDATION_COMMAND =
+      "node -e \"process.stderr.write('AssertionError: expected response status 200\\n'); process.exit(1)\" # test";
+    await writeGitHubFixture({
+      repoView: {
+        nameWithOwner: "ganesh47/cstack",
+        defaultBranchRef: { name: "main" }
+      },
+      createdPullRequest: {
+        reviewDecision: "APPROVED",
+        mergeStateStatus: "CLEAN"
+      },
+      issues: [
+        {
+          number: 322,
+          title: "Validation repo failure",
+          state: "CLOSED",
+          url: "https://github.com/ganesh47/cstack/issues/322",
+          closedAt: "2026-03-14T00:00:00.000Z"
+        }
+      ],
+      prChecks: [],
+      actions: [],
+      security: {
+        dependabot: [],
+        codeScanning: []
+      }
+    });
+
+    await runDeliver(repoDir, ["Implement release hardening for #322"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const localValidation = JSON.parse(
+      await fs.readFile(path.join(runDir, "stages", "validation", "artifacts", "local-validation.json"), "utf8")
+    ) as { blockerCategories?: string[] };
+    const validationPlan = JSON.parse(
+      await fs.readFile(path.join(runDir, "stages", "validation", "validation-plan.json"), "utf8")
+    ) as { outcomeCategory: string };
+
+    expect(run.status).toBe("failed");
+    expect(localValidation.blockerCategories).toContain("repo-test-failure");
+    expect(localValidation.blockerCategories).not.toContain("registry-unreachable");
+    expect(validationPlan.outcomeCategory).toBe("blocked-by-validation");
+  }, 20_000);
 
   it("creates a release-bearing deliver run when release evidence exists", async () => {
     const upstreamRunId = await seedSpecRun(repoDir);
@@ -380,6 +740,60 @@ describe("runDeliver", () => {
     expect(promptBody).toContain("review specialists");
   }, 15_000);
 
+  it("inherits and overrides initiative metadata", async () => {
+    const upstreamRunId = await seedInitiativeSpecRun(repoDir);
+    await writeGitHubFixture({
+      repoView: {
+        nameWithOwner: "ganesh47/cstack",
+        defaultBranchRef: { name: "main" }
+      },
+      createdPullRequest: {
+        reviewDecision: "APPROVED",
+        mergeStateStatus: "CLEAN"
+      },
+      issues: [
+        {
+          number: 789,
+          title: "Review initiative issue",
+          state: "CLOSED",
+          url: "https://github.com/ganesh47/cstack/issues/789",
+          closedAt: "2026-03-14T00:00:00.000Z"
+        }
+      ],
+      prChecks: [
+        { name: "deliver/test", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/40" },
+        { name: "deliver/typecheck", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/41" }
+      ],
+      actions: [
+        { databaseId: 7, workflowName: "Release", status: "completed", conclusion: "success", url: "https://github.com/ganesh47/cstack/actions/runs/7" }
+      ],
+      security: {
+        dependabot: [],
+        codeScanning: []
+      }
+    });
+
+    const inheritedRunId = await runDeliver(repoDir, ["--from-run", upstreamRunId, "Run deliver with inherited initiative"]);
+    const inheritedRun = await readRun(repoDir, inheritedRunId);
+    expect(inheritedRun.inputs.initiativeId).toBe("initiative-deliver");
+    expect(inheritedRun.inputs.initiativeTitle).toBe("Release resilience");
+
+    const overrideRunId = await runDeliver(repoDir, [
+      "--from-run",
+      upstreamRunId,
+      "--initiative",
+      "initiative-deliver-override",
+      "--initiative-title",
+      "Override deliver initiative",
+      "Run deliver with initiative override"
+    ]);
+    const overrideRun = await readRun(repoDir, overrideRunId);
+
+    expect(overrideRun.inputs.initiativeId).toBe("initiative-deliver-override");
+    expect(overrideRun.inputs.initiativeTitle).toBe("Override deliver initiative");
+    expect(inheritedRun.id).not.toBe(overrideRun.id);
+  }, 20_000);
+
   it("fails deliver when required GitHub security or checks are blocked", async () => {
     await writeGitHubFixture({
       repoView: {
@@ -432,6 +846,14 @@ describe("runDeliver", () => {
       security: { status: string; blockers: string[] };
       overall: { status: string; blockers: string[] };
     };
+    const readinessPolicy = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "readiness-policy.json"), "utf8")) as {
+      classifiedBlockers: Array<{ category: string; requirement: string }>;
+      postReadinessSummary: { headline: string; blockers: string[] };
+    };
+    const deploymentEvidence = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "deployment-evidence.json"), "utf8")) as {
+      status: string;
+      blockers: string[];
+    };
     const githubMutation = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "github-mutation.json"), "utf8")) as {
       pullRequest: { created: boolean; url?: string };
     };
@@ -449,6 +871,10 @@ describe("runDeliver", () => {
     expect(githubDelivery.overall.blockers.join("\n")).toContain("Dependabot alert");
     expect(githubDelivery.overall.blockers.join("\n")).toContain("Required check deliver/test");
     expect(shipRecord.unresolved.join("\n")).toContain("Dependabot alert");
+    expect(readinessPolicy.classifiedBlockers.map((entry) => entry.category)).toContain("github-delivery");
+    expect(readinessPolicy.postReadinessSummary.headline).toContain("blocked");
+    expect(readinessPolicy.postReadinessSummary.blockers.join("\n")).toContain("github-delivery:");
+    expect(deploymentEvidence.status).toBe("recorded");
     expect(securityArtifact).toContain("\"severity\": \"high\"");
   }, 15_000);
 
@@ -463,11 +889,21 @@ describe("runDeliver", () => {
     const lineage = JSON.parse(await fs.readFile(path.join(runDir, "stage-lineage.json"), "utf8")) as StageLineage;
     const validationPlan = JSON.parse(await fs.readFile(path.join(runDir, "stages", "validation", "validation-plan.json"), "utf8")) as {
       status: string;
+      outcomeCategory: string;
       summary: string;
     };
     const reviewVerdict = JSON.parse(await fs.readFile(path.join(runDir, "stages", "review", "artifacts", "verdict.json"), "utf8")) as {
       status: string;
       summary: string;
+    };
+    const postShipEvidence = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "post-ship-evidence.json"), "utf8")) as {
+      status: string;
+      followUpRequired: boolean;
+      inferredRecommendations: string[];
+    };
+    const followUpLineage = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "follow-up-lineage.json"), "utf8")) as {
+      status: string;
+      recommendedDrafts: Array<{ title: string }>;
     };
     const shipRecord = JSON.parse(await fs.readFile(path.join(runDir, "stages", "ship", "artifacts", "ship-record.json"), "utf8")) as {
       readiness: string;
@@ -486,9 +922,15 @@ describe("runDeliver", () => {
     expect(lineage.stages.find((stage) => stage.name === "review")).toMatchObject({ status: "deferred", executed: false });
     expect(lineage.stages.find((stage) => stage.name === "ship")).toMatchObject({ status: "deferred", executed: false });
     expect(validationPlan.status).toBe("blocked");
+    expect(validationPlan.outcomeCategory).toBe("blocked-by-build");
     expect(validationPlan.summary).toContain("Build failed after Codex started work");
     expect(reviewVerdict.status).toBe("blocked");
     expect(reviewVerdict.summary).toContain("Build failed after Codex started work");
+    expect(postShipEvidence.status).toBe("follow-up-required");
+    expect(postShipEvidence.followUpRequired).toBe(true);
+    expect(postShipEvidence.inferredRecommendations.length).toBeGreaterThan(0);
+    expect(followUpLineage.status).toBe("recommended");
+    expect(followUpLineage.recommendedDrafts.length).toBeGreaterThan(0);
     expect(shipRecord.readiness).toBe("blocked");
     expect(shipRecord.summary).toContain("Build failed after Codex started work");
     expect(diagnosis.category).toBe("build-script-failure");

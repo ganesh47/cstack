@@ -21,6 +21,7 @@ async function initGitRepo(repoDir: string): Promise<string> {
   await runGit(repoDir, ["init", "-b", "main"]);
   await runGit(repoDir, ["config", "user.name", "cstack test"]);
   await runGit(repoDir, ["config", "user.email", "cstack-test@example.com"]);
+  await runGit(repoDir, ["config", "commit.gpgSign", "false"]);
   await runGit(repoDir, ["remote", "add", "origin", remoteDir]);
   await runGit(repoDir, ["add", "."]);
   await runGit(repoDir, ["commit", "-m", "fixture"]);
@@ -60,6 +61,53 @@ async function seedSpecRun(repoDir: string): Promise<string> {
   await fs.writeFile(path.join(runDir, "artifacts", "spec.md"), "# Spec\n\nImplement the queued billing retry cleanup.\n", "utf8");
 
   return runId;
+}
+
+async function seedInitiativeSpecRun(repoDir: string): Promise<string> {
+  const runId = "2026-03-14T10-30-00-spec-initiative-batching";
+  const runDir = path.join(repoDir, ".cstack", "runs", runId);
+  await fs.mkdir(path.join(runDir, "artifacts"), { recursive: true });
+
+  const run: RunRecord = {
+    id: runId,
+    workflow: "spec",
+    createdAt: "2026-03-14T10:30:00.000Z",
+    updatedAt: "2026-03-14T10:30:10.000Z",
+    status: "completed",
+    cwd: repoDir,
+    gitBranch: "main",
+    codexVersion: "fake",
+    codexCommand: ["codex", "exec"],
+    promptPath: path.join(runDir, "prompt.md"),
+    finalPath: path.join(runDir, "final.md"),
+    contextPath: path.join(runDir, "context.md"),
+    stdoutPath: path.join(runDir, "stdout.log"),
+    stderrPath: path.join(runDir, "stderr.log"),
+    configSources: [],
+    summary: "Implement initiative-queueing",
+    inputs: {
+      userPrompt: "Implement initiative-queueing",
+      initiativeId: "initiative-ops",
+      initiativeTitle: "Quarterly initiative"
+    }
+  };
+
+  await fs.writeFile(path.join(runDir, "run.json"), `${JSON.stringify(run, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(runDir, "final.md"), "# Spec\n\nImplement initiative-queueing.\n", "utf8");
+  await fs.writeFile(path.join(runDir, "artifacts", "spec.md"), "# Spec\n\nImplement initiative-queueing.\n", "utf8");
+
+  return runId;
+}
+
+async function rewriteBuildVerificationCommands(repoDir: string, commands: string[]): Promise<void> {
+  const configPath = path.join(repoDir, ".cstack", "config.toml");
+  const body = await fs.readFile(configPath, "utf8");
+  const commandList = commands.map((command) => JSON.stringify(command)).join(", ");
+  await fs.writeFile(
+    configPath,
+    body.replace(/verificationCommands = \[[^\n]+\]/, `verificationCommands = [${commandList}]`),
+    "utf8"
+  );
 }
 
 describe("runBuild", () => {
@@ -106,7 +154,9 @@ describe("runBuild", () => {
     delete process.env.CSTACK_FORCE_CLONE_FALLBACK;
     delete process.env.FAKE_CODEX_EARLY_EXIT_BUILD;
     await fs.rm(repoDir, { recursive: true, force: true });
-    await fs.rm(remoteDir, { recursive: true, force: true });
+    if (remoteDir) {
+      await fs.rm(remoteDir, { recursive: true, force: true });
+    }
   }, 60_000);
 
   it("creates a build run with session and verification artifacts", async () => {
@@ -182,6 +232,28 @@ describe("runBuild", () => {
     expect(session.linkedArtifactPath).toContain("artifacts/spec.md");
     expect(promptBody).toContain(upstreamRunId);
     expect(promptBody).toContain("Implement the queued billing retry cleanup");
+  }, 60_000);
+
+  it("inherits and overrides initiative metadata", async () => {
+    const upstreamRunId = await seedInitiativeSpecRun(repoDir);
+
+    const inheritedRunId = await runBuild(repoDir, ["--from-run", upstreamRunId]);
+    const inheritedRun = await readRun(repoDir, inheritedRunId);
+    expect(inheritedRun.inputs.initiativeId).toBe("initiative-ops");
+    expect(inheritedRun.inputs.initiativeTitle).toBe("Quarterly initiative");
+
+    const overrideRunId = await runBuild(repoDir, [
+      "--from-run",
+      upstreamRunId,
+      "--initiative",
+      "initiative-override",
+      "--initiative-title",
+      "Override initiative"
+    ]);
+    const overrideRun = await readRun(repoDir, overrideRunId);
+    expect(overrideRun.inputs.initiativeId).toBe("initiative-override");
+    expect(overrideRun.inputs.initiativeTitle).toBe("Override initiative");
+    expect(inheritedRun.id).not.toBe(overrideRun.id);
   }, 60_000);
 
   it("ignores untracked .cstack run artifacts when enforcing a clean worktree", async () => {
@@ -279,5 +351,78 @@ describe("runBuild", () => {
     expect(diagnosis.recoveryAttempts.some((attempt) => attempt.status === "retrying")).toBe(true);
     expect(diagnosis.recommendedActions.join("\n")).toContain("Inspect stderr");
     expect(recoverySummary).toContain("codex build attempt 2");
+  });
+
+  it("classifies missing host tools during verification", async () => {
+    await rewriteBuildVerificationCommands(repoDir, ["missing-build-tool --version"]);
+
+    await runBuild(repoDir, ["--exec", "Implement the queued billing retry cleanup"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const diagnosis = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "failure-diagnosis.json"), "utf8")) as {
+      blockerCategory?: string;
+    };
+    const verification = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "verification.json"), "utf8")) as {
+      blockerCategories?: string[];
+      results: Array<{ blockerCategory?: string }>;
+    };
+
+    expect(run.status).toBe("completed");
+    expect(diagnosis.blockerCategory).toBe("host-tool-missing");
+    expect(verification.blockerCategories).toContain("host-tool-missing");
+    expect(verification.results[0]?.blockerCategory).toBe("host-tool-missing");
+  });
+
+  it("classifies registry outages during verification", async () => {
+    await rewriteBuildVerificationCommands(repoDir, [
+      "node -e \"process.stderr.write('npm ERR! request to https://registry.npmjs.org failed, reason: getaddrinfo ENOTFOUND registry.npmjs.org\\n'); process.exit(1)\""
+    ]);
+
+    await runBuild(repoDir, ["--exec", "Implement the queued billing retry cleanup"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const diagnosis = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "failure-diagnosis.json"), "utf8")) as {
+      blockerCategory?: string;
+    };
+
+    expect(diagnosis.blockerCategory).toBe("registry-unreachable");
+  });
+
+  it("classifies toolchain mismatches during verification", async () => {
+    await rewriteBuildVerificationCommands(repoDir, [
+      "node -e \"process.stderr.write('java.lang.UnsupportedClassVersionError: class file has wrong version 65.0\\n'); process.exit(1)\""
+    ]);
+
+    await runBuild(repoDir, ["--exec", "Implement the queued billing retry cleanup"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const diagnosis = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "failure-diagnosis.json"), "utf8")) as {
+      blockerCategory?: string;
+    };
+
+    expect(diagnosis.blockerCategory).toBe("toolchain-mismatch");
+  });
+
+  it("classifies repo test failures during verification", async () => {
+    await rewriteBuildVerificationCommands(repoDir, [
+      "node -e \"process.stderr.write('AssertionError: expected true to be false\\n'); process.exit(1)\" # test"
+    ]);
+
+    await runBuild(repoDir, ["--exec", "Implement the queued billing retry cleanup"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const diagnosis = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "failure-diagnosis.json"), "utf8")) as {
+      blockerCategory?: string;
+    };
+
+    expect(diagnosis.blockerCategory).toBe("repo-test-failure");
   });
 });

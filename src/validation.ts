@@ -2,13 +2,15 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { runCodexExec } from "./codex.js";
+import { classifyExecutionBlocker, uniqueBlockerCategories } from "./blockers.js";
+import { readCodexFinalOutput, runCodexExec } from "./codex.js";
 import {
   buildDeliverValidationLeadPrompt,
   buildDeliverValidationSpecialistPrompt
 } from "./prompt.js";
 import type {
   BuildVerificationRecord,
+  CapabilityUsageRecord,
   CstackConfig,
   DeliverValidationLocalRecord,
   DeliverValidationPlan,
@@ -233,6 +235,10 @@ function pushUnique(target: string[], values: string[]): void {
       target.push(value);
     }
   }
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))];
 }
 
 function classifyWorkspaceSupport(target: {
@@ -884,6 +890,7 @@ function buildInitialValidationPlan(profile: ValidationRepoProfile, toolResearch
 
   return {
     status: localCommands.length > 0 ? "ready" : "partial",
+    outcomeCategory: localCommands.length > 0 ? "ready" : "partial",
     summary: `Validation planning selected ${layers.filter((layer) => layer.selected).length} pyramid layers.`,
     profileSummary: `Surfaces: ${profile.surfaces.join(", ") || "unknown"}; build systems: ${profile.buildSystems.join(", ") || "unknown"}; workspace targets: ${profile.workspaceTargets.length}.`,
     layers,
@@ -919,6 +926,93 @@ function buildInitialValidationPlan(profile: ValidationRepoProfile, toolResearch
     reportMarkdown: "# Validation Summary\n\nValidation planning completed.\n",
     githubActionsPlanMarkdown: "# GitHub Actions Validation Plan\n\nValidation lead will refine CI job design.\n"
   };
+}
+
+function buildValidationCapabilityRecord(options: {
+  config: CstackConfig;
+  repoProfile: ValidationRepoProfile;
+  toolResearch: ValidationToolResearch;
+}): CapabilityUsageRecord {
+  const workflowPolicy = options.config.workflows.deliver.capabilities ?? {};
+  const allowed = unique(workflowPolicy.allowed ?? []);
+  const requested = unique([
+    ...(workflowPolicy.defaultRequested ?? []),
+    "shell",
+    ...(options.repoProfile.workflowFiles.length > 0 ? ["github"] : []),
+    ...(options.repoProfile.surfaces.includes("web-app") ? ["browser"] : [])
+  ]);
+  const downgraded: CapabilityUsageRecord["downgraded"] = [];
+  const available: string[] = [];
+
+  for (const capability of requested) {
+    if (allowed.length > 0 && !allowed.includes(capability)) {
+      downgraded.push({
+        name: capability,
+        reason: "not allowed by workflow capability policy"
+      });
+      continue;
+    }
+    if (capability === "browser" && !options.repoProfile.surfaces.includes("web-app")) {
+      downgraded.push({
+        name: capability,
+        reason: "repo profile does not justify browser capability for this validation stage"
+      });
+      continue;
+    }
+    available.push(capability);
+  }
+
+  const toolNames = options.toolResearch.candidates.filter((candidate) => candidate.selected).map((candidate) => candidate.tool);
+  const used: string[] = [];
+
+  return {
+    workflow: "deliver",
+    stage: "validation",
+    allowed,
+    requested,
+    available,
+    used,
+    downgraded,
+    notes: [
+      `repo surfaces: ${options.repoProfile.surfaces.join(", ") || "unknown"}`,
+      `selected tools: ${toolNames.join(", ") || "none"}`
+    ]
+  };
+}
+
+function inferUsedValidationCapabilities(options: {
+  localValidationRecord: DeliverValidationLocalRecord;
+  validationPlan: DeliverValidationPlan;
+  availableCapabilities: string[];
+  selectedToolNames: string[];
+}): string[] {
+  const used = new Set<string>();
+
+  if (options.localValidationRecord.status !== "not-run" && options.localValidationRecord.results.length > 0) {
+    used.add("shell");
+  }
+
+  const commandHints = options.localValidationRecord.results
+    .flatMap((result) => [result.command])
+    .concat(options.validationPlan.localValidation.commands)
+    .map((command) => command.toLowerCase());
+
+  for (const command of commandHints) {
+    if (/playwright|cypress|detox|maestro|puppeteer|selenium|e2e|browser/.test(command)) {
+      used.add("browser");
+      break;
+    }
+    if (!options.selectedToolNames.includes("playwright") && !options.selectedToolNames.includes("cypress") && /e2e|browser/.test(command)) {
+      used.add("browser");
+      break;
+    }
+  }
+
+  if (options.validationPlan.ciValidation.jobs.length > 0 && options.localValidationRecord.status !== "not-run") {
+    used.add("github");
+  }
+
+  return [...used].filter((capability) => options.availableCapabilities.includes(capability));
 }
 
 async function runCommandSet(cwd: string, runDir: string, commands: string[]): Promise<DeliverValidationLocalRecord> {
@@ -957,13 +1051,16 @@ async function runCommandSet(cwd: string, runDir: string, commands: string[]): P
       const execError = error as NodeJS.ErrnoException & { stdout?: string; stderr?: string; code?: number };
       await fs.writeFile(stdoutPath, execError.stdout ?? "", "utf8");
       await fs.writeFile(stderrPath, execError.stderr ?? execError.message, "utf8");
+      const blocker = classifyExecutionBlocker(command, `${execError.stderr ?? ""}\n${execError.stdout ?? ""}\n${execError.message ?? ""}`);
       results.push({
         command,
         exitCode: typeof execError.code === "number" ? execError.code : 1,
         status: "failed",
         durationMs: Date.now() - startedAt,
         stdoutPath,
-        stderrPath
+        stderrPath,
+        ...(blocker?.category ? { blockerCategory: blocker.category } : {}),
+        ...(blocker?.detail ? { blockerDetail: blocker.detail } : {})
       });
     }
   }
@@ -971,7 +1068,8 @@ async function runCommandSet(cwd: string, runDir: string, commands: string[]): P
   return {
     status: results.every((entry) => entry.status === "passed") ? "passed" : "failed",
     requestedCommands: commands,
-    results
+    results,
+    blockerCategories: uniqueBlockerCategories(results.map((result) => result.blockerCategory))
   };
 }
 
@@ -1031,7 +1129,13 @@ async function runValidationSpecialist(options: {
       stderrPath,
       config: options.config
     });
-    const finalBody = await fs.readFile(finalPath, "utf8");
+    const finalBody = await readCodexFinalOutput({
+      context: `Validation specialist ${options.specialist.name}`,
+      finalPath,
+      stdoutPath,
+      stderrPath,
+      result
+    });
     await fs.writeFile(artifactPath, finalBody, "utf8");
     return {
       execution: {
@@ -1064,25 +1168,53 @@ function renderCoverageGapsMarkdown(plan: DeliverValidationPlan, localValidation
   return [
     "# Coverage Gaps",
     "",
+    `Outcome category: ${plan.outcomeCategory}`,
+    "",
     ...(plan.coverage.gaps.length > 0 ? plan.coverage.gaps.map((gap) => `- ${gap}`) : ["- none recorded"]),
     "",
-    `Local validation status: ${localValidationRecord.status}`
+    `Local validation status: ${localValidationRecord.status}`,
+    ...(localValidationRecord.blockerCategories?.length ? [`Local blockers: ${localValidationRecord.blockerCategories.join(", ")}`] : [])
   ].join("\n") + "\n";
+}
+
+function deriveValidationOutcomeCategory(
+  plan: Pick<DeliverValidationPlan, "status" | "coverage" | "localValidation" | "unsupported">,
+  localValidationRecord: DeliverValidationLocalRecord
+): DeliverValidationPlan["outcomeCategory"] {
+  if (localValidationRecord.status === "failed" || (localValidationRecord.blockerCategories?.length ?? 0) > 0) {
+    return "blocked-by-validation";
+  }
+  if (plan.status === "ready") {
+    return "ready";
+  }
+  if (plan.status === "blocked") {
+    return "blocked-by-validation";
+  }
+  return "partial";
 }
 
 function buildCoverageSummary(plan: DeliverValidationPlan, localValidationRecord: DeliverValidationLocalRecord): ValidationCoverageSummary {
   return {
     status: plan.status,
+    outcomeCategory: plan.outcomeCategory,
     confidence: plan.coverage.confidence,
-    summary: plan.coverage.summary,
+    summary:
+      plan.outcomeCategory === "blocked-by-validation"
+        ? `Validation commands or validation-specific blockers prevented a ready result. ${plan.coverage.summary}`
+        : plan.coverage.summary,
     signals: [
       ...plan.coverage.signals,
+      `${plan.layers.filter((layer) => layer.selected).length} validation layer(s) selected`,
+      `${plan.localValidation.commands.length} local validation command(s) planned`,
+      `${plan.ciValidation.jobs.length} CI validation job(s) planned`,
       ...(localValidationRecord.status === "passed" ? ["selected local validation commands passed"] : []),
-      ...(localValidationRecord.status === "failed" ? ["one or more selected local validation commands failed"] : [])
+      ...(localValidationRecord.status === "failed" ? ["one or more selected local validation commands failed"] : []),
+      ...(localValidationRecord.blockerCategories?.map((blocker) => `local validation blocker: ${blocker}`) ?? [])
     ],
     gaps: [
       ...plan.coverage.gaps,
       ...(localValidationRecord.status === "failed" ? ["Local validation command execution failed."] : []),
+      ...(localValidationRecord.blockerCategories?.map((blocker) => `Local validation blocked by ${blocker}.`) ?? []),
       ...plan.unsupported
     ],
     localValidationStatus: localValidationRecord.status
@@ -1107,6 +1239,11 @@ export async function runDeliverValidationExecution(options: DeliverValidationEx
 
   const repoProfile = await profileValidationRepository(options.cwd);
   const toolResearch = buildValidationToolResearch(repoProfile);
+  const capabilityRecord = buildValidationCapabilityRecord({
+    config: options.config,
+    repoProfile,
+    toolResearch
+  });
   const selectedSpecialists = selectValidationSpecialists(repoProfile, options.input);
   const initialPlan = buildInitialValidationPlan(repoProfile, toolResearch, options.buildVerificationRecord, selectedSpecialists);
 
@@ -1165,7 +1302,13 @@ export async function runDeliverValidationExecution(options: DeliverValidationEx
     config: options.config
   });
 
-  const finalBody = await fs.readFile(options.paths.finalPath, "utf8");
+  const finalBody = await readCodexFinalOutput({
+    context: "Validation lead",
+    finalPath: options.paths.finalPath,
+    stdoutPath: options.paths.stdoutPath,
+    stderrPath: options.paths.stderrPath,
+    result
+  });
   const validationPlan = parseJson<DeliverValidationPlan>(finalBody, "Validation lead");
   const acceptedByName = new Map(validationPlan.selectedSpecialists.map((entry) => [entry.name, entry]));
   for (let index = 0; index < specialistExecutions.length; index += 1) {
@@ -1196,6 +1339,7 @@ export async function runDeliverValidationExecution(options: DeliverValidationEx
   const normalizedPlan: DeliverValidationPlan = {
     ...validationPlan,
     status: finalizeValidationPlanStatus(validationPlan, localValidationRecord),
+    outcomeCategory: deriveValidationOutcomeCategory(validationPlan, localValidationRecord),
     selectedSpecialists: validationPlan.selectedSpecialists.map((entry) => ({
       ...entry,
       disposition: acceptedByName.get(entry.name)?.disposition ?? entry.disposition
@@ -1204,12 +1348,31 @@ export async function runDeliverValidationExecution(options: DeliverValidationEx
       ...validationPlan.coverage,
       gaps: [
         ...validationPlan.coverage.gaps,
-        ...(localValidationRecord.status === "failed" ? ["One or more selected validation commands failed."] : [])
+        ...(localValidationRecord.status === "failed" ? ["One or more selected validation commands failed."] : []),
+        ...(localValidationRecord.blockerCategories?.map((blocker) => `Validation blocked by ${blocker}.`) ?? [])
       ]
     }
   };
+  const selectedToolNames = toolResearch.candidates
+    .filter((candidate) => candidate.selected)
+    .map((candidate) => candidate.tool);
+  const observedCapabilities = inferUsedValidationCapabilities({
+    localValidationRecord,
+    validationPlan: normalizedPlan,
+    availableCapabilities: capabilityRecord.available,
+    selectedToolNames
+  });
+  const capabilityArtifact: CapabilityUsageRecord = {
+    ...capabilityRecord,
+    used: observedCapabilities,
+    notes: [
+      ...(capabilityRecord.notes ?? []),
+      "used capabilities are derived from executed local validation commands and observed CI validation job coverage."
+    ]
+  };
   const coverageSummary = buildCoverageSummary(normalizedPlan, localValidationRecord);
 
+  await writeJson(path.join(options.paths.stageDir, "artifacts", "capabilities.json"), capabilityArtifact);
   await writeJson(options.paths.validationPlanPath, normalizedPlan);
   await fs.writeFile(options.paths.testPyramidPath, normalizedPlan.pyramidMarkdown, "utf8");
   await writeJson(options.paths.coverageSummaryPath, coverageSummary);

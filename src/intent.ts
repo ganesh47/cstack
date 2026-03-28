@@ -969,10 +969,16 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
           }
         });
         discoverFindings = discoverResult.finalBody;
+        if (discoverResult.status === "failed") {
+          throw new Error(discoverResult.notes[0] ?? `Discover failed closed with exit code ${discoverResult.leadResult.code}`);
+        }
         lineageStage.status = "completed";
         lineageStage.executed = true;
         lineageStage.stageDir = stageDir;
         lineageStage.artifactPath = path.join(stageDir, "artifacts", "findings.md");
+        if (discoverResult.status === "partial") {
+          lineageStage.notes = discoverResult.notes[0] ?? "Discover recovered a partial artifact after a non-zero lead exit.";
+        }
         events.markStage(stageName, "completed");
         await writeJson(stageLineagePath, stageLineage);
         continue;
@@ -1128,11 +1134,31 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
     await maybeOfferInteractiveInspect(cwd, runId);
     return runId;
   } catch (error) {
+    const failureMessage = error instanceof Error ? error.message : String(error);
+    const failedStage = runRecord.currentStage;
+    if (failedStage) {
+      if (failedStage.startsWith("specialist:")) {
+        const specialistName = failedStage.slice("specialist:".length);
+        const lineageSpecialist = stageLineage.specialists.find((specialist) => specialist.name === specialistName);
+        if (lineageSpecialist) {
+          lineageSpecialist.status = "failed";
+          lineageSpecialist.notes = failureMessage;
+        }
+      } else {
+        const lineageStage = stageLineage.stages.find((stage) => stage.name === failedStage);
+        if (lineageStage) {
+          lineageStage.status = "failed";
+          lineageStage.executed = true;
+          lineageStage.notes = failureMessage;
+        }
+      }
+      await writeJson(stageLineagePath, stageLineage);
+    }
     runRecord.status = "failed";
     runRecord.updatedAt = new Date().toISOString();
     delete runRecord.currentStage;
     runRecord.activeSpecialists = [];
-    runRecord.error = error instanceof Error ? error.message : String(error);
+    runRecord.error = failureMessage;
     await writeRunRecord(runDir, runRecord);
     await events.emit("failed", runRecord.error);
     throw error;

@@ -100,10 +100,12 @@ cstack run "Plan a compliance-safe billing migration" --dry-run
 
 # Generate a discovery run
 cstack discover "Map the current CLI surface and artifact model"
+cstack discover --issue 123 "Map the current CLI surface and artifact model"
 
 # Generate a spec run
 cstack spec "Design a run artifact model for cstack"
 cstack spec --from-run <discover-run-id>
+cstack spec --from-run <discover-run-id> --issue 123
 
 # Launch a build run directly or from a saved planning run
 cstack build "Implement the queued billing retry cleanup"
@@ -558,6 +560,8 @@ Current artifact set:
 - `artifacts-index.json` or equivalent artifact inventory derived by the inspector
 - `artifacts/spec.md` for `spec`
 - `artifacts/findings.md` for `discover`
+- `artifacts/issue-lineage.json` for issue-linked `discover` and `spec` runs
+- `artifacts/issue-draft.md` for issue-linked `spec` runs
 - `artifacts/build-transcript.log` for best-effort interactive build capture
 - `artifacts/change-summary.md` for `build`
 - `artifacts/verification.json` for `build`
@@ -587,6 +591,13 @@ Discover-team notes:
 - `external-researcher` is only activated when the prompt implies external or unstable facts and web research is allowed
 - `risk-researcher` is only activated when the prompt implies a concrete risk domain
 - the research lead synthesizes the final discover output; delegated tracks remain advisory until accepted
+- `discover --issue <n>` records planning issue linkage in `run.json` and `artifacts/issue-lineage.json` so later `spec` and `inspect` steps can reuse it
+
+Spec planning-linkage notes:
+
+- `spec --issue <n>` writes `artifacts/issue-draft.md` and `artifacts/issue-lineage.json`
+- `spec --from-run <discover-run-id>` now inherits the planning issue automatically when the linked discover run already recorded one
+- `cstack inspect <run-id>` supports `show issue` for issue-linked discover and spec runs
 
 Build notes:
 
@@ -726,3 +737,21 @@ Implemented:
 - wrapper-native session continuation and rerun wrappers
 - dirty-worktree consent for mutation workflows
 - build, typecheck, and test pipeline
+
+## Forward-Looking Design Notes
+
+These documents are planning artifacts only. They are not part of the active shipped contract until implementation lands and `docs/specs/cstack-spec-v0.1.md` is updated:
+
+- `docs/specs/cstack-end-to-end-workstreams-spec.md`
+- `docs/specs/cstack-github-planning-lineage-slice.md`
+- `docs/specs/cstack-deliver-validation-intelligence-slice.md`
+- `docs/specs/cstack-post-ship-feedback-slice.md`
+- `docs/specs/cstack-initiative-graph-slice.md`
+- `docs/specs/cstack-delivery-checklist-deployment-evidence-slice.md`
+- `docs/specs/cstack-capability-pack-governance-slice.md`
+- `docs/research/cstack-end-to-end-product-delivery-issue-draft.md`
+- `docs/research/cstack-workstream-kickoff-tracker.md`
+- `docs/research/cstack-workstream-execution-tracker.md`
+- `docs/research/cstack-end-to-end-workstream-tracker.md`
+- `docs/research/cstack-workstream-kickoff-tracker.md`
+- `docs/research/cstack-workstream-execution-tracker.md`

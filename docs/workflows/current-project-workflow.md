@@ -17,8 +17,8 @@ Implemented commands:
 
 - `cstack <intent>`
 - `cstack run <intent> [--dry-run]`
-- `cstack discover <prompt>`
-- `cstack spec <prompt> [--from-run <run-id>]`
+- `cstack discover <prompt> [--issue <n>]`
+- `cstack spec <prompt> [--from-run <run-id>] [--issue <n>]`
 - `cstack build <prompt> [--from-run <run-id>] [--exec] [--allow-dirty]`
 - `cstack review <prompt> [--from-run <run-id>]`
 - `cstack ship <prompt> [--from-run <run-id>] [--release] [--issue <n>] [--allow-dirty]`
@@ -33,7 +33,8 @@ Implemented commands:
 Implemented behavior:
 
 - `discover` supports a bounded discover-team model with a Research Lead and optional delegated tracks
-- `spec` emits `spec.md`, `plan.json`, and `open-questions.md`
+- `discover --issue <n>` records planning issue lineage for later `spec` and `inspect` use
+- `spec` emits `spec.md`, `plan.json`, `open-questions.md`, and issue-linkage artifacts when issue-linked
 - `build` records requested vs observed mode, session lineage, change summaries, and verification artifacts
 - `review` is a standalone critique workflow with verdict artifacts and bounded specialist reviewers
 - `ship` is a standalone GitHub-aware handoff and release-readiness workflow
@@ -63,6 +64,7 @@ Recommended commands:
 ```bash
 # Explore unfamiliar areas
 cstack discover "Map the billing retry pipeline and release touchpoints"
+cstack discover --issue 123 "Map the billing retry pipeline and release touchpoints"
 
 # Turn context into a plan
 cstack spec --from-run <discover-run-id> "Design the billing retry cleanup"
@@ -198,3 +200,21 @@ then update all of:
 - tests
 
 The repo is healthy when the code, tests, README, and active spec describe the same product.
+
+## Forward-Looking Slice Specs
+
+The following documents are planning artifacts only. They are not part of the active shipped contract until implementation lands and the active spec is updated:
+
+- `docs/specs/cstack-end-to-end-workstreams-spec.md`
+- `docs/specs/cstack-github-planning-lineage-slice.md`
+- `docs/specs/cstack-deliver-validation-intelligence-slice.md`
+- `docs/specs/cstack-post-ship-feedback-slice.md`
+- `docs/specs/cstack-initiative-graph-slice.md`
+- `docs/specs/cstack-delivery-checklist-deployment-evidence-slice.md`
+- `docs/specs/cstack-capability-pack-governance-slice.md`
+- `docs/research/cstack-end-to-end-product-delivery-issue-draft.md`
+- `docs/research/cstack-workstream-kickoff-tracker.md`
+- `docs/research/cstack-workstream-execution-tracker.md`
+- `docs/research/cstack-end-to-end-workstream-tracker.md`
+- `docs/research/cstack-workstream-kickoff-tracker.md`
+- `docs/research/cstack-workstream-execution-tracker.md`

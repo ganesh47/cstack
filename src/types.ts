@@ -68,6 +68,7 @@ export interface DiscoverResearchPlan {
   prompt: string;
   decidedAt: string;
   mode: DiscoverResearchMode;
+  planningIssueNumber?: number;
   delegationEnabled: boolean;
   maxTracks: number;
   webResearchAllowed: boolean;
@@ -76,6 +77,27 @@ export interface DiscoverResearchPlan {
   summary: string;
   tracks: DiscoverTrackSelection[];
   limitations: string[];
+}
+
+export interface CapabilityPolicyConfig {
+  allowed?: string[];
+  defaultRequested?: string[];
+}
+
+export interface CapabilityDowngradeRecord {
+  name: string;
+  reason: string;
+}
+
+export interface CapabilityUsageRecord {
+  workflow: WorkflowName;
+  stage?: StageName;
+  allowed: string[];
+  requested: string[];
+  available: string[];
+  used: string[];
+  downgraded: CapabilityDowngradeRecord[];
+  notes?: string[];
 }
 
 export interface RoutingStagePlan {
@@ -149,6 +171,9 @@ export interface RunLedgerEntry {
   currentStage?: string | undefined;
   activeSpecialists: string[];
   finalPath: string;
+  planningIssueNumber?: number;
+  initiativeId?: string;
+  initiativeTitle?: string;
 }
 
 export interface RunInspection {
@@ -156,6 +181,9 @@ export interface RunInspection {
   runDir: string;
   routingPlan: RoutingPlan | null;
   stageLineage: StageLineage | null;
+  planningIssueLineage: PlanningIssueLineageRecord | null;
+  discoverCapabilitiesRecord: CapabilityUsageRecord | null;
+  validationCapabilitiesRecord: CapabilityUsageRecord | null;
   discoverResearchPlan: DiscoverResearchPlan | null;
   discoverDelegates: DiscoverDelegateResult[];
   sessionRecord: BuildSessionRecord | null;
@@ -166,8 +194,13 @@ export interface RunInspection {
   validationLocalRecord: DeliverValidationLocalRecord | null;
   deliverReviewVerdict: DeliverReviewVerdict | null;
   deliverShipRecord: DeliverShipRecord | null;
+  readinessPolicyRecord: DeliveryReadinessPolicyRecord | null;
+  deploymentEvidenceRecord: DeploymentEvidenceRecord | null;
   githubDeliveryRecord: GitHubDeliveryRecord | null;
   githubMutationRecord: GitHubMutationRecord | null;
+  postShipEvidenceRecord: PostShipEvidenceRecord | null;
+  postShipFollowUpRecord: PostShipFollowUpRecord | null;
+  initiativeGraph: InitiativeGraphRecord | null;
   executionContext: ExecutionContextRecord | null;
   recentEvents: RunEvent[];
   finalBody: string;
@@ -177,6 +210,49 @@ export interface RunInspection {
   buildFailureDiagnosis?: BuildFailureDiagnosisRecord | null;
   artifacts: ArtifactEntry[];
   childRuns: ChildRunInspection[];
+}
+
+export interface PlanningIssueLineageRecord {
+  planningIssueNumber: number;
+  planningIssueUrl?: string;
+  sourceRun?: {
+    runId: string;
+    workflow?: WorkflowName;
+  };
+  currentRun: {
+    runId: string;
+    workflow: WorkflowName;
+  };
+  downstreamPullRequests: Array<{
+    number: number;
+    url?: string;
+    state?: string;
+  }>;
+  downstreamReleases: Array<{
+    tag: string;
+    url?: string;
+    state?: string;
+  }>;
+}
+
+export interface InitiativeGraphRecord {
+  initiativeId: string;
+  initiativeTitle?: string;
+  sourceRun?: {
+    runId: string;
+    workflow?: WorkflowName;
+    summary?: string;
+  };
+  currentRun: {
+    runId: string;
+    workflow: WorkflowName;
+    summary?: string;
+  };
+  relatedRuns: Array<{
+    runId: string;
+    workflow: WorkflowName;
+    status: RunStatus;
+  }>;
 }
 
 export interface ChildRunInspection {
@@ -235,6 +311,7 @@ export interface WorkflowConfig {
     enabled?: boolean;
     allowWeb?: boolean;
   };
+  capabilities?: CapabilityPolicyConfig;
   validation?: DeliverValidationConfig;
   github?: DeliverGitHubConfig;
 }
@@ -329,10 +406,22 @@ export interface BuildSessionRecord {
     finalArtifactObserved: boolean;
     timedOut?: boolean;
     timeoutSeconds?: number;
+    stalled?: boolean;
+    stallReason?: string;
     fallbackReason?: string;
   };
   notes?: string[];
 }
+
+export type EnvironmentBlockerCategory =
+  | "network-blocked"
+  | "registry-unreachable"
+  | "toolchain-mismatch"
+  | "host-tool-missing"
+  | "repo-test-failure"
+  | "orchestration-timeout"
+  | "external-service-blocked"
+  | "unknown";
 
 export type BuildFailureCategory =
   | "missing-tool"
@@ -359,6 +448,7 @@ export interface BuildRecoveryAttemptRecord {
 
 export interface BuildFailureDiagnosisRecord {
   category: BuildFailureCategory;
+  blockerCategory?: EnvironmentBlockerCategory;
   summary: string;
   detail: string;
   evidence: string[];
@@ -402,12 +492,15 @@ export interface BuildVerificationCommandRecord {
   durationMs: number;
   stdoutPath: string;
   stderrPath: string;
+  blockerCategory?: EnvironmentBlockerCategory;
+  blockerDetail?: string;
 }
 
 export interface BuildVerificationRecord {
   status: "not-run" | "passed" | "failed";
   requestedCommands: string[];
   results: BuildVerificationCommandRecord[];
+  blockerCategories?: EnvironmentBlockerCategory[];
   notes?: string;
 }
 
@@ -459,6 +552,102 @@ export interface DeliverShipRecord {
   unresolved: string[];
   nextActions: string[];
   reportMarkdown: string;
+}
+
+export type DeliveryRequirementStatus = "satisfied" | "missing" | "blocked" | "not-applicable";
+export type DeliveryReadinessBlockerCategory =
+  | "review-evidence"
+  | "ship-output"
+  | "github-delivery"
+  | "linked-issues"
+  | "release-evidence"
+  | "deployment-evidence";
+
+export interface DeliveryReadinessRequirement {
+  name:
+    | "review-verdict"
+    | "ship-readiness"
+    | "github-delivery"
+    | "linked-issues"
+    | "release-evidence"
+    | "deployment-evidence";
+  required: boolean;
+  status: DeliveryRequirementStatus;
+  summary: string;
+  evidence: string[];
+}
+
+export interface DeliveryReadinessBlocker {
+  category: DeliveryReadinessBlockerCategory;
+  requirement: DeliveryReadinessRequirement["name"];
+  status: Exclude<DeliveryRequirementStatus, "satisfied" | "not-applicable">;
+  summary: string;
+  evidence: string[];
+}
+
+export interface DeliveryPostReadinessSummary {
+  status: DeliverShipRecord["readiness"];
+  headline: string;
+  highlights: string[];
+  blockers: string[];
+  nextActions: string[];
+}
+
+export interface DeliveryReadinessPolicyRecord {
+  mode: DeliverTargetMode;
+  readiness: DeliverShipRecord["readiness"];
+  generatedAt: string;
+  summary: string;
+  blockers: string[];
+  requirements: DeliveryReadinessRequirement[];
+  classifiedBlockers: DeliveryReadinessBlocker[];
+  postReadinessSummary: DeliveryPostReadinessSummary;
+}
+
+export interface DeploymentEvidenceReference {
+  kind: "pull-request" | "issue" | "check" | "action" | "release";
+  label: string;
+  status: string;
+  url?: string;
+}
+
+export interface DeploymentEvidenceRecord {
+  mode: DeliverTargetMode;
+  generatedAt: string;
+  summary: string;
+  blockers: string[];
+  references: DeploymentEvidenceReference[];
+  status: "recorded" | "missing";
+}
+
+export interface PostShipObservedSignal {
+  kind: "ship-readiness" | "github-delivery" | "issues" | "checks" | "actions" | "release" | "security";
+  status: "ready" | "blocked" | "not-applicable" | "unknown";
+  summary: string;
+}
+
+export interface PostShipEvidenceRecord {
+  status: "stable" | "follow-up-required" | "signal-unavailable";
+  summary: string;
+  observedAt: string;
+  observedSignals: PostShipObservedSignal[];
+  inferredRecommendations: string[];
+  followUpRequired: boolean;
+  sourceArtifacts: string[];
+}
+
+export interface PostShipFollowUpRecord {
+  status: "none" | "recommended";
+  sourceRun: {
+    runId: string;
+    workflow: WorkflowName;
+  };
+  linkedIssueNumbers: number[];
+  recommendedDrafts: Array<{
+    title: string;
+    reason: string;
+    priority: "high" | "medium";
+  }>;
 }
 
 export interface ValidationToolCandidate {
@@ -533,6 +722,7 @@ export interface ValidationLayerPlan {
 
 export interface DeliverValidationPlan {
   status: "ready" | "partial" | "blocked";
+  outcomeCategory: "ready" | "partial" | "blocked-by-build" | "blocked-by-validation";
   summary: string;
   profileSummary: string;
   layers: ValidationLayerPlan[];
@@ -577,17 +767,21 @@ export interface ValidationCommandRecord {
   durationMs: number;
   stdoutPath: string;
   stderrPath: string;
+  blockerCategory?: EnvironmentBlockerCategory;
+  blockerDetail?: string;
 }
 
 export interface DeliverValidationLocalRecord {
   status: "not-run" | "passed" | "failed";
   requestedCommands: string[];
   results: ValidationCommandRecord[];
+  blockerCategories?: EnvironmentBlockerCategory[];
   notes?: string;
 }
 
 export interface ValidationCoverageSummary {
   status: "ready" | "partial" | "blocked";
+  outcomeCategory: DeliverValidationPlan["outcomeCategory"];
   confidence: "low" | "medium" | "high";
   summary: string;
   signals: string[];
@@ -775,6 +969,10 @@ export interface RunRecord {
     delegatedTracks?: string[];
     webResearchAllowed?: boolean;
     linkedRunId?: string;
+    planningIssueNumber?: number;
+    planningIssueUrl?: string;
+    initiativeId?: string;
+    initiativeTitle?: string;
     requestedMode?: WorkflowMode;
     observedMode?: WorkflowMode;
     verificationCommands?: string[];

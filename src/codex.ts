@@ -19,6 +19,8 @@ export interface CodexRunOptions {
   config: CstackConfig;
   silentProgress?: boolean;
   timeoutSeconds?: number;
+  staleSessionTimeoutSeconds?: number;
+  noProgressTimeoutSeconds?: number;
 }
 
 export interface CodexRunResult {
@@ -29,6 +31,10 @@ export interface CodexRunResult {
   lastActivity?: string;
   timedOut?: boolean;
   timeoutSeconds?: number;
+  stalled?: boolean;
+  stallReason?: string;
+  synthesizedFinalArtifact?: boolean;
+  synthesizedFinalReason?: string;
 }
 
 export interface CodexInteractiveRunOptions {
@@ -71,6 +77,16 @@ function summarizeCommandLine(line: string): string | null {
   return `Tool ${toolMatch[2]}: ${command}`;
 }
 
+function summarizeCommandStartLine(line: string): string | null {
+  const toolMatch = line.match(/^(.+?) in .+$/);
+  if (!toolMatch?.[1]) {
+    return null;
+  }
+
+  const command = toolMatch[1].replace(/^\/bin\/(?:ba|z)sh -lc\s+/, "").trim();
+  return command ? `Tool started: ${command}` : null;
+}
+
 function looksLikeCodeLine(trimmed: string): boolean {
   return (
     /^(const|let|var|function|class|interface|type|import|export|return|await)\b/.test(trimmed) ||
@@ -85,41 +101,47 @@ export function summarizeActivityLine(line: string): string | null {
   if (!trimmed) {
     return null;
   }
+  const normalized = trimmed.replaceAll("’", "'");
 
-  if (/^session id:/i.test(trimmed)) {
+  if (/^session id:/i.test(normalized)) {
     return null;
   }
 
   if (
     /^(OpenAI Codex v|[-]{3,}|workdir:|model:|provider:|approval:|sandbox:|reasoning effort:|reasoning summaries:|user$)/i.test(
-      trimmed
+      normalized
     )
   ) {
     return null;
   }
 
-  if (/^(#|##|###)\s/.test(trimmed)) {
+  if (/^(#|##|###)\s/.test(normalized)) {
     return null;
   }
 
-  if (looksLikeCodeLine(trimmed)) {
+  if (looksLikeCodeLine(normalized)) {
     return null;
   }
 
-  const commandSummary = summarizeCommandLine(trimmed);
+  const commandSummary = summarizeCommandLine(normalized);
   if (commandSummary) {
     return commandSummary;
   }
 
-  if (/^(mcp:|mcp startup:)/i.test(trimmed)) {
+  const commandStartSummary = summarizeCommandStartLine(normalized);
+  if (commandStartSummary) {
+    return commandStartSummary;
+  }
+
+  if (/^(mcp:|mcp startup:)/i.test(normalized)) {
     return trimmed;
   }
 
-  if (/^(I('| a)m|I'm)\b/i.test(trimmed)) {
+  if (/^(I(?:'m| am))\b/i.test(normalized)) {
     return trimmed;
   }
 
-  if (/^(scanning|writing|thinking|reading|mapping|drafting|analyzing|summarizing|checking|reviewing|completed)\b/i.test(trimmed)) {
+  if (/^(scanning|writing|thinking|reading|mapping|drafting|analyzing|summarizing|checking|reviewing|completed)\b/i.test(normalized)) {
     return trimmed;
   }
 
@@ -231,6 +253,62 @@ function appendPreview(preview: string, chunk: string, limit = 16_384): string {
   return combined.length <= limit ? combined : combined.slice(combined.length - limit);
 }
 
+function extractFallbackArtifactBody(input: string): string {
+  const cleaned = stripCapturedControl(input).trim();
+  if (!cleaned) {
+    return "";
+  }
+
+  const markdownIndex = cleaned.search(/^#\s+/m);
+  if (markdownIndex >= 0) {
+    return `${cleaned.slice(markdownIndex).trimEnd()}\n`;
+  }
+
+  const jsonStart = cleaned.indexOf("{");
+  const jsonEnd = cleaned.lastIndexOf("}");
+  if (jsonStart >= 0 && jsonEnd > jsonStart) {
+    return `${cleaned.slice(jsonStart, jsonEnd + 1).trim()}\n`;
+  }
+
+  return `${cleaned}\n`;
+}
+
+async function ensureFinalArtifact(options: {
+  finalPath: string;
+  stdoutPreview: string;
+  stderrPreview: string;
+  exitCode: number;
+  lastActivity: string;
+}): Promise<{ synthesized: boolean; reason?: string }> {
+  try {
+    const existing = await fs.readFile(path.resolve(options.finalPath), "utf8");
+    if (existing.trim()) {
+      return { synthesized: false };
+    }
+  } catch {}
+
+  const recoveredBody =
+    extractFallbackArtifactBody(options.stdoutPreview) ||
+    extractFallbackArtifactBody(options.stderrPreview) ||
+    [
+      "# Codex Fallback Artifact",
+      "",
+      `Codex exited with code ${options.exitCode} before writing the expected final artifact.`,
+      "",
+      `Last activity: ${options.lastActivity}`
+    ].join("\n") + "\n";
+
+  await fs.mkdir(path.dirname(path.resolve(options.finalPath)), { recursive: true });
+  await fs.writeFile(path.resolve(options.finalPath), recoveredBody, "utf8");
+  return {
+    synthesized: true,
+    reason:
+      recoveredBody.startsWith("# Codex Fallback Artifact")
+        ? "Codex exited without writing a final artifact; cstack synthesized a fallback artifact from execution status."
+        : "Codex exited without writing a final artifact; cstack synthesized a fallback artifact from captured output."
+  };
+}
+
 function looksLikeCompletedPayload(input: string): boolean {
   const cleaned = stripCapturedControl(input).trim();
   if (!cleaned) {
@@ -242,6 +320,70 @@ function looksLikeCompletedPayload(input: string): boolean {
     /^\{\s*"summary"\s*:\s*"/.test(cleaned) ||
     /^#\s+/.test(cleaned)
   );
+}
+
+async function readTextFromPath(filePath: string): Promise<string> {
+  try {
+    return await fs.readFile(path.resolve(filePath), "utf8");
+  } catch {
+    return "";
+  }
+}
+
+async function tailTextFromPath(filePath: string, maxLines = 24): Promise<string> {
+  const body = await readTextFromPath(filePath);
+  if (!body.trim()) {
+    return "";
+  }
+  return body
+    .trim()
+    .split("\n")
+    .slice(-maxLines)
+    .join("\n");
+}
+
+function compactSnippet(input: string, limit = 320): string {
+  const normalized = input.replace(/\s+/g, " ").trim();
+  if (normalized.length <= limit) {
+    return normalized;
+  }
+  return `${normalized.slice(0, limit - 1)}...`;
+}
+
+export async function readCodexFinalOutput(options: {
+  context: string;
+  finalPath: string;
+  stdoutPath: string;
+  stderrPath: string;
+  result: Pick<CodexRunResult, "code" | "signal" | "timedOut" | "timeoutSeconds" | "stalled" | "stallReason" | "lastActivity">;
+}): Promise<string> {
+  const finalBody = await readTextFromPath(options.finalPath);
+  if (finalBody.trim()) {
+    return finalBody;
+  }
+
+  const details: string[] = [];
+  if (options.result.timedOut && options.result.timeoutSeconds) {
+    details.push(`timed out after ${options.result.timeoutSeconds}s`);
+  } else {
+    details.push(`exit code ${options.result.code}${options.result.signal ? ` (${options.result.signal})` : ""}`);
+  }
+  if (options.result.stalled && options.result.stallReason) {
+    details.push(options.result.stallReason);
+  }
+  if (options.result.lastActivity) {
+    details.push(`last activity: ${options.result.lastActivity}`);
+  }
+
+  const stderrTail = compactSnippet(await tailTextFromPath(options.stderrPath, 12));
+  const stdoutTail = compactSnippet(await tailTextFromPath(options.stdoutPath, 12));
+  if (stderrTail) {
+    details.push(`stderr tail: ${stderrTail}`);
+  } else if (stdoutTail) {
+    details.push(`stdout tail: ${stdoutTail}`);
+  }
+
+  throw new Error(`${options.context} did not write final output. ${details.join(". ")}`);
 }
 
 async function appendEvent(eventsPath: string, event: RunEvent): Promise<void> {
@@ -346,13 +488,28 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
     let stderrPreview = "";
     let lastHeartbeatAt = startedAt;
     let lastRawOutputAt = startedAt;
+    let sessionObservedAt: number | undefined;
+    let meaningfulActivitySinceSession = false;
+    let noProgressTimeoutMs =
+      typeof options.noProgressTimeoutSeconds === "number" && options.noProgressTimeoutSeconds > 0
+        ? options.noProgressTimeoutSeconds * 1000
+        : undefined;
+    let lastProgressMessage: string | undefined;
+    let lastProgressAt = startedAt;
     let timedOut = false;
     let stalledAfterOutput = false;
+    let stalledAfterSession = false;
+    let stalledAfterNoProgress = false;
+    let stallReason: string | undefined;
     let forcedSignal: NodeJS.Signals | null = null;
     let killTimer: NodeJS.Timeout | undefined;
     const completionStallMs = Number.parseInt(process.env.CSTACK_CODEX_COMPLETION_STALL_MS ?? "", 10);
     const postOutputStallMs =
       Number.isFinite(completionStallMs) && completionStallMs > 0 ? completionStallMs : DEFAULT_COMPLETION_STALL_MS;
+    const staleSessionTimeoutMs =
+      typeof options.staleSessionTimeoutSeconds === "number" && options.staleSessionTimeoutSeconds > 0
+        ? options.staleSessionTimeoutSeconds * 1000
+        : undefined;
 
     const emitEvent = (event: RunEvent) => {
       events.write(`${JSON.stringify(event)}\n`);
@@ -360,6 +517,16 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
       if (event.type !== "heartbeat") {
         lastActivity = event.message;
         lastMeaningfulActivityAt = Date.now();
+        if (!lastProgressMessage || lastProgressMessage !== event.message) {
+          lastProgressMessage = event.message;
+          lastProgressAt = lastMeaningfulActivityAt;
+        }
+        if (event.type === "session") {
+          sessionObservedAt = lastMeaningfulActivityAt;
+          meaningfulActivitySinceSession = false;
+        } else if (sessionId) {
+          meaningfulActivitySinceSession = true;
+        }
       }
     };
 
@@ -414,6 +581,53 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
             child.kill("SIGKILL");
           }
         }, 2_000).unref?.();
+      } else if (
+        !timedOut &&
+        !stalledAfterSession &&
+        !stalledAfterOutput &&
+        staleSessionTimeoutMs &&
+        sessionId &&
+        sessionObservedAt &&
+        !meaningfulActivitySinceSession &&
+        now - sessionObservedAt >= staleSessionTimeoutMs
+      ) {
+        stalledAfterSession = true;
+        forcedSignal = "SIGTERM";
+        stallReason = `Stalled after session setup for ${Math.round(staleSessionTimeoutMs / 1000)}s without meaningful activity`;
+        lastActivity = stallReason;
+        emit("failed", stallReason);
+        stderr.write(`cstack: ${stallReason}\n`);
+        child.kill("SIGTERM");
+        setTimeout(() => {
+          if (child.exitCode === null) {
+            forcedSignal = "SIGKILL";
+            child.kill("SIGKILL");
+          }
+        }, 2_000).unref?.();
+      } else if (
+        !timedOut &&
+        !stalledAfterSession &&
+        !stalledAfterNoProgress &&
+        !stalledAfterOutput &&
+        noProgressTimeoutMs &&
+        sessionId &&
+        sessionObservedAt &&
+        lastProgressAt >= sessionObservedAt &&
+        now - lastProgressAt >= noProgressTimeoutMs
+      ) {
+        stalledAfterNoProgress = true;
+        forcedSignal = "SIGTERM";
+        stallReason = `No meaningful activity for ${Math.round(noProgressTimeoutMs / 1000)}s after session`;
+        lastActivity = stallReason;
+        emit("failed", stallReason);
+        stderr.write(`cstack: ${stallReason}\n`);
+        child.kill("SIGTERM");
+        setTimeout(() => {
+          if (child.exitCode === null) {
+            forcedSignal = "SIGKILL";
+            child.kill("SIGKILL");
+          }
+        }, 2_000).unref?.();
       }
     }, 1_000);
 
@@ -435,28 +649,28 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
       stdout.write(chunk);
       const text = chunk.toString("utf8");
       lastRawOutputAt = Date.now();
-      stdoutBuffer += text;
-      stdoutPreview = appendPreview(stdoutPreview, text);
-      flushLines("stdout");
       const match = text.match(/session id:\s*([^\s]+)/i);
       if (match?.[1]) {
         sessionId = match[1];
         emit("session", sessionId);
       }
+      stdoutBuffer += text;
+      stdoutPreview = appendPreview(stdoutPreview, text);
+      flushLines("stdout");
     });
 
     child.stderr.on("data", (chunk: Buffer) => {
       stderr.write(chunk);
       const text = chunk.toString("utf8");
       lastRawOutputAt = Date.now();
-      stderrBuffer += text;
-      stderrPreview = appendPreview(stderrPreview, text);
-      flushLines("stderr");
       const match = text.match(/session id:\s*([^\s]+)/i);
       if (match?.[1]) {
         sessionId = match[1];
         emit("session", sessionId);
       }
+      stderrBuffer += text;
+      stderrPreview = appendPreview(stderrPreview, text);
+      flushLines("stderr");
     });
 
     if (timeoutSeconds && timeoutSeconds > 0) {
@@ -488,11 +702,21 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
     child.on("close", async (code, signal) => {
       detachStdinError();
       clearInterval(heartbeat);
-       stopTimeouts();
+      stopTimeouts();
       flushLines("stdout", true);
       flushLines("stderr", true);
-      const exitCode = timedOut ? 124 : stalledAfterOutput ? 0 : (code ?? 1);
+      const exitCode = timedOut || stalledAfterSession || stalledAfterNoProgress ? 124 : stalledAfterOutput ? 0 : (code ?? 1);
       const resolvedSignal = forcedSignal ?? signal;
+      const finalArtifact = await ensureFinalArtifact({
+        finalPath: options.finalPath,
+        stdoutPreview,
+        stderrPreview,
+        exitCode,
+        lastActivity
+      });
+      if (finalArtifact.synthesized && finalArtifact.reason) {
+        emit("activity", finalArtifact.reason);
+      }
       if (exitCode === 0) {
         emit("completed", `Exit code ${exitCode}`);
       } else if (!timedOut) {
@@ -504,8 +728,26 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
         command: [invocation.file, ...invocation.args],
         lastActivity,
         ...(timedOut ? { timedOut: true } : {}),
-        ...(timeoutSeconds ? { timeoutSeconds } : {})
+        ...(stalledAfterSession || stalledAfterNoProgress
+          ? {
+              stalled: true,
+              ...(stalledAfterNoProgress && noProgressTimeoutMs
+                ? { timeoutSeconds: Math.round(noProgressTimeoutMs / 1000) }
+                : timeoutSeconds
+                  ? { timeoutSeconds }
+                  : {})
+            }
+          : timeoutSeconds
+            ? { timeoutSeconds }
+            : {}),
+        ...(stallReason ? { stallReason } : {})
       };
+      if (finalArtifact.synthesized) {
+        result.synthesizedFinalArtifact = true;
+        if (finalArtifact.reason) {
+          result.synthesizedFinalReason = finalArtifact.reason;
+        }
+      }
       if (sessionId) {
         result.sessionId = sessionId;
       }

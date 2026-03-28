@@ -952,6 +952,7 @@ async function seedDeliverRun(
     `${JSON.stringify(
       {
         status: blocked ? "partial" : "ready",
+        outcomeCategory: blocked ? "partial" : "ready",
         summary: "Validation planning completed with local and CI parity guidance.",
         profileSummary: "CLI plus GitHub workflow validation.",
         layers: [
@@ -1010,6 +1011,7 @@ async function seedDeliverRun(
     `${JSON.stringify(
       {
         status: blocked ? "partial" : "ready",
+        outcomeCategory: blocked ? "partial" : "ready",
         confidence: "medium",
         summary: "Coverage is layered.",
         signals: ["static checks planned"],
@@ -1067,6 +1069,64 @@ async function seedDeliverRun(
       null,
       2
     )}\n`,
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(runDir, "stages", "ship", "artifacts", "post-ship-evidence.json"),
+    `${JSON.stringify(
+      {
+        status: blocked ? "follow-up-required" : "stable",
+        summary: blocked
+          ? "Post-ship follow-up is required based on the recorded ship and GitHub delivery blockers."
+          : "Post-ship evidence is stable based on the recorded ship and GitHub delivery artifacts.",
+        observedAt: "2026-03-14T12:15:21.000Z",
+        observedSignals: [
+          {
+            kind: "ship-readiness",
+            status: readiness === "ready" ? "ready" : "blocked",
+            summary: blocked ? "Ship artifacts prepared with outstanding blockers." : "Ship artifacts prepared."
+          },
+          {
+            kind: "github-delivery",
+            status: blocked ? "blocked" : "ready",
+            summary: blocked ? "GitHub delivery still has blockers." : "GitHub delivery is ready."
+          }
+        ],
+        inferredRecommendations: blocked ? ["Create a follow-up to restore the blocked required checks and rerun delivery verification."] : [],
+        followUpRequired: blocked,
+        sourceArtifacts: ["artifacts/ship-record.json", "artifacts/github-delivery.json", "artifacts/github-mutation.json"]
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(runDir, "stages", "ship", "artifacts", "follow-up-lineage.json"),
+    `${JSON.stringify(
+      {
+        status: blocked ? "recommended" : "none",
+        sourceRun: { runId, workflow: "deliver" },
+        linkedIssueNumbers: [123],
+        recommendedDrafts: blocked
+          ? [{ title: "Follow-up for linked issue #123 (1)", reason: "Create a follow-up to restore the blocked required checks and rerun delivery verification.", priority: "high" }]
+          : []
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+  await fs.writeFile(path.join(runDir, "artifacts", "post-ship-summary.md"), "# Post-Ship Summary\n", "utf8");
+  await fs.writeFile(
+    path.join(runDir, "artifacts", "post-ship-evidence.json"),
+    await fs.readFile(path.join(runDir, "stages", "ship", "artifacts", "post-ship-evidence.json"), "utf8"),
+    "utf8"
+  );
+  await fs.writeFile(path.join(runDir, "artifacts", "follow-up-draft.md"), "# Post-Ship Follow-Up Draft\n", "utf8");
+  await fs.writeFile(
+    path.join(runDir, "artifacts", "follow-up-lineage.json"),
+    await fs.readFile(path.join(runDir, "stages", "ship", "artifacts", "follow-up-lineage.json"), "utf8"),
     "utf8"
   );
   const githubDelivery = {
@@ -1274,6 +1334,159 @@ async function seedDeliverRun(
   await fs.writeFile(path.join(runDir, "stages", "ship", "artifacts", "actions.json"), `${JSON.stringify(githubDelivery.actions, null, 2)}\n`, "utf8");
   await fs.writeFile(path.join(runDir, "stages", "ship", "artifacts", "security.json"), `${JSON.stringify(githubDelivery.security, null, 2)}\n`, "utf8");
   await fs.writeFile(path.join(runDir, "stages", "ship", "artifacts", "release.json"), `${JSON.stringify(githubDelivery.release, null, 2)}\n`, "utf8");
+  await fs.writeFile(
+    path.join(runDir, "stages", "ship", "artifacts", "readiness-policy.json"),
+    `${JSON.stringify(
+      {
+        mode,
+        readiness,
+        generatedAt: "2026-03-14T12:15:20.000Z",
+        summary: blocked ? "Readiness policy has 2 unmet requirements." : "Readiness policy requirements are satisfied.",
+        blockers: blocked ? ["github-delivery: 2 blockers remain."] : [],
+        requirements: [
+          {
+            name: "ship-readiness",
+            required: true,
+            status: blocked ? "blocked" : "satisfied",
+            summary: blocked ? "Ship artifacts prepared with outstanding blockers." : "Ship artifacts prepared.",
+            evidence: []
+          },
+          {
+            name: "github-delivery",
+            required: true,
+            status: blocked ? "blocked" : "satisfied",
+            summary: blocked ? "2 blockers remain." : "All required GitHub gates passed.",
+            evidence: blocked ? ["Required check deliver/test is failing.", "Dependabot alert #7 is open at severity high."] : []
+          }
+        ],
+        classifiedBlockers: blocked
+          ? [
+              {
+                category: "github-delivery",
+                requirement: "github-delivery",
+                status: "blocked",
+                summary: "2 blockers remain.",
+                evidence: ["Required check deliver/test is failing.", "Dependabot alert #7 is open at severity high."]
+              }
+            ]
+          : [],
+        postReadinessSummary: {
+          status: readiness,
+          headline: blocked ? "Final delivery is blocked by 1 readiness category." : "Final delivery readiness is satisfied.",
+          highlights: [`Ship readiness: ${readiness}`],
+          blockers: blocked ? ["github-delivery: 2 blockers remain."] : [],
+          nextActions: blocked ? ["Resolve the blocked GitHub gates before rerunning deliver."] : []
+        }
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(runDir, "stages", "ship", "artifacts", "deployment-evidence.json"),
+    `${JSON.stringify(
+      {
+        mode,
+        generatedAt: "2026-03-14T12:15:20.000Z",
+        summary: blocked ? "Recorded 3 deployment-adjacent evidence references." : "Recorded 4 deployment-adjacent evidence references.",
+        blockers: [],
+        references: [
+          { kind: "pull-request", label: "PR #42", status: blocked ? "blocked" : "ready", url: "https://example.com/pr/42" },
+          { kind: "check", label: "deliver/test", status: blocked ? "fail" : "pass" },
+          { kind: "action", label: "Release", status: "success", url: "https://example.com/actions/1" }
+        ],
+        status: "recorded"
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(runDir, "artifacts", "post-ship-summary.md"),
+    `${blocked ? "# Post-ship follow-up required\n" : "# Post-ship stable\n"}` +
+      `\n- status: ${blocked ? "follow-up-required" : "stable"}\n- summary: synthetic post-ship status\n`,
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(runDir, "artifacts", "post-ship-evidence.json"),
+    `${JSON.stringify(
+      {
+        status: blocked || buildFailure ? "follow-up-required" : "stable",
+        summary: "Synthetic post-ship evidence for inspect fixture.",
+        observedAt: "2026-03-14T12:15:30.000Z",
+        observedSignals: [
+          {
+            kind: "ship-readiness",
+            status: blocked ? "blocked" : "ready",
+            summary: "Synthetic ship readiness signal."
+          },
+          {
+            kind: "github-delivery",
+            status: blocked || buildFailure ? "blocked" : "ready",
+            summary: "Synthetic github delivery signal."
+          },
+          {
+            kind: "issues",
+            status: blocked ? "blocked" : "ready",
+            summary: "Synthetic issue signal."
+          },
+          {
+            kind: "checks",
+            status: blocked || buildFailure ? "blocked" : "ready",
+            summary: "Synthetic check signal."
+          },
+          {
+            kind: "actions",
+            status: "ready",
+            summary: "Synthetic actions signal."
+          },
+          {
+            kind: "release",
+            status: mode === "release" ? "ready" : "not-applicable",
+            summary: "Synthetic release signal."
+          },
+          {
+            kind: "security",
+            status: blocked || buildFailure ? "blocked" : "ready",
+            summary: "Synthetic security signal."
+          }
+        ],
+        inferredRecommendations: blocked || buildFailure ? ["Re-run checks and blockers before ship is stable."] : [],
+        followUpRequired: blocked || buildFailure,
+        sourceArtifacts: ["artifacts/ship-record.json", "artifacts/github-delivery.json", "artifacts/github-mutation.json"]
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(runDir, "artifacts", "follow-up-draft.md"),
+    blocked || buildFailure ? "# Follow-up draft\n\n- medium: re-run blocked checks\n" : "# Follow-up draft\n\nNo follow-up required.\n",
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(runDir, "artifacts", "follow-up-lineage.json"),
+    `${JSON.stringify(
+      {
+        status: blocked || buildFailure ? "recommended" : "none",
+        sourceRun: { runId, workflow: "deliver" },
+        linkedIssueNumbers: githubDelivery.issueReferences,
+        recommendedDrafts: blocked || buildFailure
+          ? [{
+            title: `Follow-up for linked issue #${githubDelivery.issueReferences[0] ?? 0} (1)`,
+            reason: "Rerun delivery after blockers clear.",
+            priority: "high"
+          }]
+          : []
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
   await fs.writeFile(path.join(runDir, "stderr.log"), buildFailure ? "Interactive codex exited with code 1\n" : "", "utf8");
 
   return runId;
@@ -1389,13 +1602,21 @@ describe("inspect", () => {
     await expect(handleInspectorCommand(repoDir, inspection, "show verification")).resolves.toContain("\"status\": \"passed\"");
     await expect(handleInspectorCommand(repoDir, inspection, "show validation")).resolves.toContain("Workspace targets: 2");
     await expect(handleInspectorCommand(repoDir, inspection, "show validation")).resolves.toContain("\"status\": \"partial\"");
+    await expect(handleInspectorCommand(repoDir, inspection, "show validation")).resolves.toContain("Outcome category: partial");
     await expect(handleInspectorCommand(repoDir, inspection, "show validation")).resolves.toContain("packages/cli: inventory-only");
     await expect(handleInspectorCommand(repoDir, inspection, "show pyramid")).resolves.toContain("# Test Pyramid");
     await expect(handleInspectorCommand(repoDir, inspection, "show coverage")).resolves.toContain("\"localValidationStatus\": \"passed\"");
+    await expect(handleInspectorCommand(repoDir, inspection, "show coverage")).resolves.toContain("Outcome category: partial");
     await expect(handleInspectorCommand(repoDir, inspection, "show ci-validation")).resolves.toContain("\"runner\": \"ubuntu-latest\"");
     await expect(handleInspectorCommand(repoDir, inspection, "show tool-research")).resolves.toContain("\"tool\": \"actionlint\"");
     await expect(handleInspectorCommand(repoDir, inspection, "show review")).resolves.toContain("\"status\": \"changes-requested\"");
+    await expect(handleInspectorCommand(repoDir, inspection, "show post-ship")).resolves.toContain("Post-ship evidence:");
+    await expect(handleInspectorCommand(repoDir, inspection, "show follow-up")).resolves.toContain("Post-ship follow-up:");
     await expect(handleInspectorCommand(repoDir, inspection, "show ship")).resolves.toContain("\"readiness\": \"blocked\"");
+    await expect(handleInspectorCommand(repoDir, inspection, "show readiness")).resolves.toContain("Classified blockers:");
+    await expect(handleInspectorCommand(repoDir, inspection, "show readiness")).resolves.toContain("github-delivery: 2 blockers remain.");
+    await expect(handleInspectorCommand(repoDir, inspection, "show deployment")).resolves.toContain("Deployment evidence:");
+    await expect(handleInspectorCommand(repoDir, inspection, "show deployment")).resolves.toContain("pull-request: PR #42");
     await expect(handleInspectorCommand(repoDir, inspection, "show mutation")).resolves.toContain("\"current\": \"cstack/billing-cleanup\"");
     await expect(handleInspectorCommand(repoDir, inspection, "show github")).resolves.toContain("\"status\": \"blocked\"");
     await expect(handleInspectorCommand(repoDir, inspection, "show checks")).resolves.toContain("GitHub checks gate: blocked");
@@ -1406,9 +1627,10 @@ describe("inspect", () => {
     await expect(handleInspectorCommand(repoDir, inspection, "show artifact stages/ship/artifacts/checks.json")).resolves.toContain("\"conclusion\": \"fail\"");
     await expect(handleInspectorCommand(repoDir, inspection, "show artifact stages/ship/artifacts/security.json")).resolves.toContain("\"severity\": \"high\"");
     await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("ship readiness: blocked");
-    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("validation: partial");
+    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("validation: partial (partial)");
     await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("github mutation: Branch pushed and pull request prepared.");
     await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("github delivery: blocked (checks, security: Required check deliver/test is failing.)");
+    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("post-ship: follow-up-required");
   });
 
   it("shows ready GitHub delivery details for ready deliver runs", async () => {
@@ -1419,13 +1641,19 @@ describe("inspect", () => {
     expect(inspection.deliverShipRecord?.readiness).toBe("ready");
     expect(inspection.githubMutationRecord?.branch.current).toBe("cstack/billing-cleanup-ready");
     expect(inspection.githubDeliveryRecord?.overall.status).toBe("ready");
+    await expect(handleInspectorCommand(repoDir, inspection, "show readiness")).resolves.toContain("Final delivery readiness is satisfied.");
+    await expect(handleInspectorCommand(repoDir, inspection, "show deployment")).resolves.toContain("status: recorded");
     await expect(handleInspectorCommand(repoDir, inspection, "show mutation")).resolves.toContain("\"url\": \"https://example.com/pr/42\"");
     await expect(handleInspectorCommand(repoDir, inspection, "show pr")).resolves.toContain("GitHub pull request gate: ready");
     await expect(handleInspectorCommand(repoDir, inspection, "show release")).resolves.toContain("GitHub release gate: ready");
     await expect(handleInspectorCommand(repoDir, inspection, "show actions")).resolves.toContain("GitHub actions gate: ready");
+    await expect(handleInspectorCommand(repoDir, inspection, "show post-ship")).resolves.toContain("- status: stable");
+    await expect(handleInspectorCommand(repoDir, inspection, "show follow-up")).resolves.toContain("No recommended follow-up drafts.");
+    await expect(handleInspectorCommand(repoDir, inspection, "show artifact artifacts/post-ship-evidence.json")).resolves.toContain("\"status\": \"stable\"");
     await expect(handleInspectorCommand(repoDir, inspection, "what remains")).resolves.toContain("no deferred or missing work recorded");
     await expect(handleInspectorCommand(repoDir, inspection, "show artifact stages/ship/artifacts/release.json")).resolves.toContain("\"tagName\": \"v1.2.3\"");
     await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("github delivery: ready");
+    await expect(handleInspectorCommand(repoDir, inspection, "1")).resolves.toContain("post-ship: stable");
   });
 
   it("can launch a mitigation workflow directly from a review inspection", async () => {
@@ -1585,5 +1813,187 @@ describe("inspect", () => {
     await expect(handleInspectorCommand(repoDir, inspection, "show child build")).resolves.toContain("root cause stage: build");
     await expect(handleInspectorCommand(repoDir, inspection, "show stage build")).resolves.toContain("Linked child run:");
     await expect(handleInspectorCommand(repoDir, inspection, "artifacts")).resolves.toContain(`- child build: ${childRunId} (failed)`);
+  });
+
+  it("renders planning issue artifacts for spec runs", async () => {
+    const runId = "2026-03-14T11-00-00-spec-issue-linked";
+    const runDir = path.join(repoDir, ".cstack", "runs", runId);
+    await fs.mkdir(path.join(runDir, "artifacts"), { recursive: true });
+
+    const run: RunRecord = {
+      id: runId,
+      workflow: "spec",
+      createdAt: "2026-03-14T11:00:00.000Z",
+      updatedAt: "2026-03-14T11:00:20.000Z",
+      status: "completed",
+      cwd: repoDir,
+      gitBranch: "main",
+      codexVersion: "fake",
+      codexCommand: ["codex", "exec"],
+      promptPath: path.join(runDir, "prompt.md"),
+      finalPath: path.join(runDir, "final.md"),
+      contextPath: path.join(runDir, "context.md"),
+      eventsPath: path.join(runDir, "events.jsonl"),
+      stdoutPath: path.join(runDir, "stdout.log"),
+      stderrPath: path.join(runDir, "stderr.log"),
+      configSources: [],
+      summary: "Issue-linked spec",
+      inputs: {
+        userPrompt: "Issue-linked spec",
+        planningIssueNumber: 123
+      }
+    };
+
+    await fs.writeFile(path.join(runDir, "run.json"), `${JSON.stringify(run, null, 2)}\n`, "utf8");
+    await fs.writeFile(path.join(runDir, "final.md"), "# Final\n\nSpec summary.\n", "utf8");
+    await fs.writeFile(path.join(runDir, "artifacts", "spec.md"), "# Spec\n", "utf8");
+    await fs.writeFile(path.join(runDir, "artifacts", "issue-draft.md"), "# Planning Issue Draft: #123\n", "utf8");
+    await fs.writeFile(
+      path.join(runDir, "artifacts", "issue-lineage.json"),
+      `${JSON.stringify({
+        planningIssueNumber: 123,
+        currentRun: { runId, workflow: "spec" },
+        downstreamPullRequests: [],
+        downstreamReleases: []
+      }, null, 2)}\n`,
+      "utf8"
+    );
+
+    const inspection = await loadRunInspection(repoDir, runId);
+
+    await expect(handleInspectorCommand(repoDir, inspection, "summary")).resolves.toContain("planning issue: #123");
+    await expect(handleInspectorCommand(repoDir, inspection, "summary")).resolves.toContain("issue draft: artifacts/issue-draft.md");
+    await expect(handleInspectorCommand(repoDir, inspection, "show issue")).resolves.toContain("Planning issue: #123");
+    await expect(handleInspectorCommand(repoDir, inspection, "show issue")).resolves.toContain("Issue lineage: artifacts/issue-lineage.json");
+  });
+
+  it("renders planning issue artifacts for discover runs", async () => {
+    const runId = "2026-03-14T11-00-00-discover-issue-linked";
+    const runDir = path.join(repoDir, ".cstack", "runs", runId);
+    await fs.mkdir(path.join(runDir, "artifacts"), { recursive: true });
+
+    const run: RunRecord = {
+      id: runId,
+      workflow: "discover",
+      createdAt: "2026-03-14T11:00:00.000Z",
+      updatedAt: "2026-03-14T11:00:20.000Z",
+      status: "completed",
+      cwd: repoDir,
+      gitBranch: "main",
+      codexVersion: "fake",
+      codexCommand: ["codex", "exec"],
+      promptPath: path.join(runDir, "prompt.md"),
+      finalPath: path.join(runDir, "final.md"),
+      contextPath: path.join(runDir, "context.md"),
+      eventsPath: path.join(runDir, "events.jsonl"),
+      stdoutPath: path.join(runDir, "stdout.log"),
+      stderrPath: path.join(runDir, "stderr.log"),
+      configSources: [],
+      summary: "Issue-linked discover",
+      inputs: {
+        userPrompt: "Issue-linked discover",
+        planningIssueNumber: 123
+      }
+    };
+
+    await fs.writeFile(path.join(runDir, "run.json"), `${JSON.stringify(run, null, 2)}\n`, "utf8");
+    await fs.writeFile(path.join(runDir, "final.md"), "# Final\n\nDiscover summary.\n", "utf8");
+    await fs.writeFile(path.join(runDir, "artifacts", "findings.md"), "# Findings\n", "utf8");
+    await fs.writeFile(
+      path.join(runDir, "artifacts", "issue-lineage.json"),
+      `${JSON.stringify({
+        planningIssueNumber: 123,
+        currentRun: { runId, workflow: "discover" },
+        downstreamPullRequests: [],
+        downstreamReleases: []
+      }, null, 2)}\n`,
+      "utf8"
+    );
+
+    const inspection = await loadRunInspection(repoDir, runId);
+
+    await expect(handleInspectorCommand(repoDir, inspection, "summary")).resolves.toContain("planning issue: #123");
+    await expect(handleInspectorCommand(repoDir, inspection, "summary")).resolves.toContain("issue lineage: artifacts/issue-lineage.json");
+    await expect(handleInspectorCommand(repoDir, inspection, "show issue")).resolves.toContain("Planning issue: #123");
+    await expect(handleInspectorCommand(repoDir, inspection, "show issue")).resolves.toContain(`Current run: ${runId} (discover)`);
+  });
+
+  it("derives initiative summaries from run metadata when no artifact is present", async () => {
+    const baselineRunId = "2026-03-14T11-00-00-spec-cache-base";
+    const baselineRunDir = path.join(repoDir, ".cstack", "runs", baselineRunId);
+    const baselineRun: RunRecord = {
+      id: baselineRunId,
+      workflow: "spec",
+      createdAt: "2026-03-14T11:00:00.000Z",
+      updatedAt: "2026-03-14T11:00:05.000Z",
+      status: "completed",
+      cwd: repoDir,
+      gitBranch: "main",
+      codexVersion: "fake",
+      codexCommand: ["codex", "exec"],
+      promptPath: path.join(baselineRunDir, "prompt.md"),
+      finalPath: path.join(baselineRunDir, "final.md"),
+      contextPath: path.join(baselineRunDir, "context.md"),
+      stdoutPath: path.join(baselineRunDir, "stdout.log"),
+      stderrPath: path.join(baselineRunDir, "stderr.log"),
+      configSources: [],
+      summary: "Baseline initiative planning",
+      inputs: {
+        userPrompt: "Baseline initiative planning",
+        initiativeId: "initiative-cache",
+        initiativeTitle: "Cache rollout"
+      }
+    };
+    const currentRunId = "2026-03-14T11-10-00-spec-cache-follow-up";
+    const currentRunDir = path.join(repoDir, ".cstack", "runs", currentRunId);
+    const currentRun: RunRecord = {
+      id: currentRunId,
+      workflow: "spec",
+      createdAt: "2026-03-14T11:10:00.000Z",
+      updatedAt: "2026-03-14T11:10:05.000Z",
+      status: "completed",
+      cwd: repoDir,
+      gitBranch: "main",
+      codexVersion: "fake",
+      codexCommand: ["codex", "exec"],
+      promptPath: path.join(currentRunDir, "prompt.md"),
+      finalPath: path.join(currentRunDir, "final.md"),
+      contextPath: path.join(currentRunDir, "context.md"),
+      eventsPath: path.join(currentRunDir, "events.jsonl"),
+      stdoutPath: path.join(currentRunDir, "stdout.log"),
+      stderrPath: path.join(currentRunDir, "stderr.log"),
+      configSources: [],
+      summary: "Follow-up initiative planning",
+      inputs: {
+        userPrompt: "Follow-up initiative planning",
+        initiativeId: "initiative-cache",
+        initiativeTitle: "Cache rollout"
+      }
+    };
+
+    await fs.mkdir(baselineRunDir, { recursive: true });
+    await fs.mkdir(currentRunDir, { recursive: true });
+    await fs.writeFile(path.join(baselineRunDir, "run.json"), `${JSON.stringify(baselineRun, null, 2)}\n`, "utf8");
+    await fs.writeFile(path.join(currentRunDir, "run.json"), `${JSON.stringify(currentRun, null, 2)}\n`, "utf8");
+    await fs.writeFile(path.join(baselineRunDir, "final.md"), "# Final\n", "utf8");
+    await fs.writeFile(path.join(currentRunDir, "final.md"), "# Final\n", "utf8");
+
+    const inspection = await loadRunInspection(repoDir, currentRunId);
+
+    expect(inspection.initiativeGraph?.initiativeId).toBe("initiative-cache");
+    expect(inspection.initiativeGraph?.relatedRuns.some((entry) => entry.runId === baselineRunId)).toBe(true);
+    await expect(handleInspectorCommand(repoDir, inspection, "summary")).resolves.toContain(
+      "initiative: initiative-cache (Cache rollout)"
+    );
+    await expect(handleInspectorCommand(repoDir, inspection, "summary")).resolves.toContain(
+      "initiative graph: derived from run metadata"
+    );
+    await expect(handleInspectorCommand(repoDir, inspection, "show initiative")).resolves.toContain(
+      "Initiative: initiative-cache (Cache rollout)"
+    );
+    await expect(handleInspectorCommand(repoDir, inspection, "show initiative")).resolves.toContain("Run group:");
+    await expect(handleInspectorCommand(repoDir, inspection, "show initiative")).resolves.toContain(
+      `${baselineRunId} (spec, completed)`
+    );
   });
 });

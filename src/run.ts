@@ -124,7 +124,10 @@ export async function buildRunLedgerEntry(cwd: string, run: RunRecord): Promise<
     summary: summarizeRun(run),
     currentStage: run.currentStage ?? runningStage?.name,
     activeSpecialists,
-    finalPath: run.finalPath
+    finalPath: run.finalPath,
+    ...(typeof run.inputs?.planningIssueNumber === "number" ? { planningIssueNumber: run.inputs.planningIssueNumber } : {}),
+    ...(typeof run.inputs?.initiativeId === "string" ? { initiativeId: run.inputs.initiativeId } : {}),
+    ...(typeof run.inputs?.initiativeTitle === "string" ? { initiativeTitle: run.inputs.initiativeTitle } : {})
   };
 }
 
@@ -132,6 +135,8 @@ export interface ListRunLedgerOptions {
   activeOnly?: boolean;
   status?: RunRecord["status"];
   workflow?: WorkflowName;
+  initiativeId?: string;
+  planningIssueNumber?: number;
   recent?: number;
 }
 
@@ -173,6 +178,12 @@ export async function listRunLedger(cwd: string, options: ListRunLedgerOptions =
   }
   if (options.workflow) {
     runs = runs.filter((run) => run.workflow === options.workflow);
+  }
+  if (options.initiativeId) {
+    runs = runs.filter((run) => run.inputs?.initiativeId === options.initiativeId);
+  }
+  if (typeof options.planningIssueNumber === "number") {
+    runs = runs.filter((run) => run.inputs?.planningIssueNumber === options.planningIssueNumber);
   }
 
   if (typeof options.recent === "number") {
