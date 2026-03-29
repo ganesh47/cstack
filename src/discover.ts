@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import { buildEvent, ProgressReporter } from "./progress.js";
 import { runCodexExec, type CodexRunResult } from "./codex.js";
 import { buildDiscoverLeadPrompt, buildDiscoverTrackPrompt } from "./prompt.js";
+import { isBroadGapRemediationPrompt } from "./spec-contract.js";
 import type {
   CapabilityUsageRecord,
   CstackConfig,
@@ -17,6 +18,7 @@ import type {
 const TRACK_ORDER: DiscoverTrackName[] = ["repo-explorer", "risk-researcher", "external-researcher"];
 const DISCOVER_LEAD_RESERVE_SECONDS = 15;
 const DISCOVER_STALE_SESSION_TIMEOUT_SECONDS = 60;
+const DEFAULT_DISCOVER_NO_PROGRESS_TIMEOUT_SECONDS = 45;
 
 interface DiscoverPaths {
   runDir: string;
@@ -62,8 +64,25 @@ interface DiscoverLeadJson {
   reportMarkdown?: string;
 }
 
+interface HeuristicFileRecord {
+  path: string;
+  body: string;
+}
+
 function compact(input: string): string {
   return input.replace(/\s+/g, " ").trim();
+}
+
+function resolveDiscoverNoProgressTimeoutSeconds(timeoutSeconds?: number): number | undefined {
+  const configured = Number.parseInt(process.env.CSTACK_DISCOVER_NO_PROGRESS_TIMEOUT_SECONDS ?? "", 10);
+  const baseTimeout =
+    Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_DISCOVER_NO_PROGRESS_TIMEOUT_SECONDS;
+
+  if (typeof timeoutSeconds === "number" && timeoutSeconds > 0) {
+    return Math.max(1, Math.min(baseTimeout, timeoutSeconds));
+  }
+
+  return baseTimeout;
 }
 
 function unique(values: string[]): string[] {
@@ -152,7 +171,8 @@ function inferTrackSelections(input: string, config: CstackConfig, planningIssue
     }
   }
 
-  const repoOnlyDelegation = selected.size === 1 && selected.has("repo-explorer");
+  const repoOnlyDelegation =
+    selected.size === 1 && selected.has("repo-explorer") && !isBroadGapRemediationPrompt(input);
   if (repoOnlyDelegation) {
     selected.clear();
   }
@@ -422,6 +442,112 @@ function synthesizeFallbackReport(input: string, delegates: DiscoverDelegateResu
   };
 }
 
+async function readHeuristicFiles(cwd: string, relativePaths: string[]): Promise<HeuristicFileRecord[]> {
+  const resolved: HeuristicFileRecord[] = [];
+
+  for (const relativePath of relativePaths) {
+    try {
+      const body = await fs.readFile(path.join(cwd, relativePath), "utf8");
+      resolved.push({ path: relativePath, body });
+    } catch {}
+  }
+
+  return resolved;
+}
+
+async function buildBroadGapHeuristicFallback(
+  cwd: string,
+  input: string,
+  plan: DiscoverResearchPlan,
+  delegates: DiscoverDelegateResult[]
+): Promise<DiscoverLeadJson | null> {
+  if (!isBroadGapRemediationPrompt(input)) {
+    return null;
+  }
+
+  const files = await readHeuristicFiles(cwd, [
+    "README.md",
+    "docs/project-readme.md",
+    "docker/README.md",
+    "docker/api/compose.yml",
+    "docker/compose.stack.yml",
+    "specs/001-plan-alignment/quickstart.md"
+  ]);
+
+  if (files.length === 0) {
+    return null;
+  }
+
+  const docsBody = files
+    .filter((file) => /(^|\/)(README\.md|project-readme\.md|quickstart\.md)$/i.test(file.path))
+    .map((file) => file.body)
+    .join("\n");
+  const composeFiles = files.filter((file) => /compose\.(ya?ml)$/i.test(file.path));
+  const composeBody = composeFiles.map((file) => file.body).join("\n");
+  const dockerReadme = files.find((file) => file.path === "docker/README.md")?.body ?? "";
+
+  const findings: string[] = [];
+  const openQuestions: string[] = [];
+
+  const hasPlaceholderCompose =
+    /(tail -f \/dev\/null|placeholder|Run pnpm start once Fastify server exists|CLI placeholder|Connector placeholder)/i.test(composeBody);
+  const docsClaimRunnableCompose =
+    /(docker compose\s+-f\s+docker\/api\/compose\.yml\s+up -d|curl http:\/\/localhost:8080\/health\/ready|end-to-end workflow|local smoke tests)/i.test(
+      `${docsBody}\n${dockerReadme}`
+    );
+
+  if (hasPlaceholderCompose && docsClaimRunnableCompose) {
+    findings.push(
+      "Docker delivery artifacts drift from the documented runnable flow: the compose files still use placeholder commands and `tail -f /dev/null`, while the docs present them as ready smoke-test entrypoints."
+    );
+    openQuestions.push(
+      "After the compose entrypoints are made truthful, rerun the documented local smoke path to confirm the API and dependent services actually boot."
+    );
+  }
+
+  if (findings.length === 0) {
+    return null;
+  }
+
+  return {
+    summary: "Recovered bounded local findings from repo heuristics after delegated discover did not converge cleanly.",
+    localFindings: findings,
+    externalFindings: [],
+    risks: [],
+    openQuestions,
+    delegateDisposition: delegates.map((delegate) => ({
+      track: delegate.track,
+      leaderDisposition: delegate.leaderDisposition,
+      reason: delegate.notes ?? delegate.summary
+    })),
+    reportMarkdown:
+      [
+        "# Discovery Report",
+        "",
+        "## Request",
+        input,
+        "",
+        "## Research plan",
+        plan.summary,
+        "",
+        "## Local findings",
+        ...findings.map((finding) => `- ${finding}`),
+        "",
+        "## External findings",
+        "- none recorded",
+        "",
+        "## Risks",
+        "- none recorded",
+        "",
+        "## Open questions",
+        ...openQuestions.map((question) => `- ${question}`),
+        "",
+        "## Recovery notes",
+        "- Discover recovered this bounded fallback from representative repo files after delegated research exceeded the no-progress guard."
+      ].join("\n") + "\n"
+  };
+}
+
 function normalizeLeadJson(input: string, delegates: DiscoverDelegateResult[], plan: DiscoverResearchPlan, rawText: string): DiscoverLeadJson {
   const parsed = parseJson<DiscoverLeadJson>(rawText);
   if (!parsed) {
@@ -563,6 +689,7 @@ async function runTrack(options: {
 
   options.recorder.markTrack(options.track.name, "running");
   await options.recorder.emit("activity", `Running discover track ${options.track.name}`);
+  const noProgressTimeoutSeconds = resolveDiscoverNoProgressTimeoutSeconds(options.timeoutSeconds);
 
   const result = await runCodexExec({
     cwd: options.cwd,
@@ -576,6 +703,7 @@ async function runTrack(options: {
     config: options.config,
     silentProgress: true,
     staleSessionTimeoutSeconds: DISCOVER_STALE_SESSION_TIMEOUT_SECONDS,
+    ...(typeof noProgressTimeoutSeconds === "number" ? { noProgressTimeoutSeconds } : {}),
     ...(typeof options.timeoutSeconds === "number" ? { timeoutSeconds: options.timeoutSeconds } : {})
   });
 
@@ -683,6 +811,7 @@ export async function runDiscoverExecution(options: DiscoverExecutionOptions): P
   await recorder.emit("activity", "Running Research Lead synthesis");
 
   const leadBudget = remainingBudgetSeconds(startedAt, discoverTimeoutSeconds);
+  const leadNoProgressTimeoutSeconds = resolveDiscoverNoProgressTimeoutSeconds(leadBudget);
   const leadResult: CodexRunResult =
     typeof leadBudget === "number" && leadBudget <= 0
       ? {
@@ -698,15 +827,16 @@ export async function runDiscoverExecution(options: DiscoverExecutionOptions): P
           workflow: "discover",
           runId: `${runId}-research-lead`,
           prompt,
-          finalPath: paths.finalPath,
-          eventsPath: path.join(paths.stageDir, "lead-events.jsonl"),
-          stdoutPath: paths.stdoutPath,
-          stderrPath: paths.stderrPath,
-          config,
-          silentProgress: true,
-          staleSessionTimeoutSeconds: DISCOVER_STALE_SESSION_TIMEOUT_SECONDS,
-          ...(typeof leadBudget === "number" ? { timeoutSeconds: leadBudget } : {})
-        });
+        finalPath: paths.finalPath,
+        eventsPath: path.join(paths.stageDir, "lead-events.jsonl"),
+        stdoutPath: paths.stdoutPath,
+        stderrPath: paths.stderrPath,
+        config,
+        silentProgress: true,
+        staleSessionTimeoutSeconds: DISCOVER_STALE_SESSION_TIMEOUT_SECONDS,
+        ...(typeof leadNoProgressTimeoutSeconds === "number" ? { noProgressTimeoutSeconds: leadNoProgressTimeoutSeconds } : {}),
+        ...(typeof leadBudget === "number" ? { timeoutSeconds: leadBudget } : {})
+      });
   if (leadResult.sessionId) {
     await recorder.emit("session", leadResult.sessionId);
   }
@@ -721,7 +851,16 @@ export async function runDiscoverExecution(options: DiscoverExecutionOptions): P
     stdoutPath: paths.stdoutPath,
     stderrPath: paths.stderrPath
   });
-  const leadJson = normalizeLeadJson(input, delegates, plan, rawLead);
+  let leadJson = normalizeLeadJson(input, delegates, plan, rawLead);
+  let recoveredFromHeuristicFallback = false;
+  if (!hasUsableLeadArtifact(leadJson)) {
+    const heuristicFallback = await buildBroadGapHeuristicFallback(cwd, input, plan, delegates);
+    if (heuristicFallback) {
+      leadJson = heuristicFallback;
+      recoveredFromHeuristicFallback = true;
+      notes.push("Discover recovered bounded fallback findings from representative repo files after delegated research failed to converge.");
+    }
+  }
   const finalizedDelegates = applyLeadDisposition(delegates, leadJson);
   const usableArtifact = hasUsableLeadArtifact(leadJson);
   const finalBody =
@@ -742,7 +881,11 @@ export async function runDiscoverExecution(options: DiscoverExecutionOptions): P
           "## Blockers",
           ...(notes.length > 0 ? notes.map((note) => `- ${note}`) : ["- Discover did not recover usable findings before the stage ended."])
         ].join("\n") + "\n";
-  const status: DiscoverExecutionResult["status"] = usableArtifact ? (leadResult.code === 0 ? "completed" : "partial") : "failed";
+  const status: DiscoverExecutionResult["status"] = usableArtifact
+    ? leadResult.code === 0 && !recoveredFromHeuristicFallback
+      ? "completed"
+      : "partial"
+    : "failed";
 
   for (const delegate of finalizedDelegates) {
     if (delegate.resultPath) {

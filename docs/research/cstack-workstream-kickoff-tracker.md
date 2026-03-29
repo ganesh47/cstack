@@ -2,8 +2,13 @@
 
 Historical note:
 
-- This document is a forward execution tracker, not part of the active shipped contract.
-- It turns umbrella issue [#32](https://github.com/ganesh47/cstack/issues/32) and workstream issues [#33](https://github.com/ganesh47/cstack/issues/33) through [#38](https://github.com/ganesh47/cstack/issues/38) into implementation-ready autonomous threads.
+- This document started as a kickoff tracker and now remains as the kickoff-to-completion record for umbrella issue [#32](https://github.com/ganesh47/cstack/issues/32) and workstream issues [#33](https://github.com/ganesh47/cstack/issues/33) through [#38](https://github.com/ganesh47/cstack/issues/38).
+
+## Completion Summary
+
+- all six workstreams were completed and verified on 2026-03-28
+- the active shipped contract is captured in `docs/specs/cstack-spec-v0.1.md`
+- the issue threads now include implementation-complete status updates for the umbrella and each child slice
 
 ## Umbrella
 

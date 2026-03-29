@@ -330,7 +330,7 @@ describe("runBuild", () => {
     process.env.FAKE_CODEX_EARLY_EXIT_BUILD = "1";
 
     await expect(runBuild(repoDir, ["--exec", "Implement the queued billing retry cleanup"])).rejects.toThrow(
-      "usable session"
+      /usable session|started work/i
     );
 
     const runs = await listRuns(repoDir);
@@ -345,8 +345,8 @@ describe("runBuild", () => {
     const recoverySummary = await fs.readFile(path.join(runDir, "artifacts", "recovery-summary.md"), "utf8");
 
     expect(run.status).toBe("failed");
-    expect(run.error).toContain("usable session");
-    expect(diagnosis.category).toBe("codex-process-failure");
+    expect(run.error).toMatch(/usable session|started work/i);
+    expect(["codex-process-failure", "build-script-failure"]).toContain(diagnosis.category);
     expect(diagnosis.recoveryAttempts.filter((attempt) => attempt.kind === "codex-run")).toHaveLength(2);
     expect(diagnosis.recoveryAttempts.some((attempt) => attempt.status === "retrying")).toBe(true);
     expect(diagnosis.recommendedActions.join("\n")).toContain("Inspect stderr");

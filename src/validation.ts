@@ -85,6 +85,7 @@ export interface DeliverValidationExecutionOptions {
   paths: DeliverValidationPaths;
   buildSummary: string;
   buildVerificationRecord: BuildVerificationRecord;
+  timeoutSeconds?: number;
 }
 
 export interface DeliverValidationExecutionResult {
@@ -99,6 +100,9 @@ export interface DeliverValidationExecutionResult {
 }
 
 type ValidationSpecialistSelection = Array<{ name: SpecialistName; reason: string; selected: boolean }>;
+
+const VALIDATION_STALE_SESSION_TIMEOUT_SECONDS = 20;
+const VALIDATION_NO_PROGRESS_TIMEOUT_SECONDS = 45;
 
 async function writeJson(filePath: string, value: unknown): Promise<void> {
   await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
@@ -121,6 +125,148 @@ async function readJsonFile<T>(filePath: string): Promise<T | null> {
   } catch {
     return null;
   }
+}
+
+async function readTextFile(filePath: string): Promise<string> {
+  try {
+    return await fs.readFile(filePath, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function resolveValidationNoProgressTimeoutSeconds(timeoutSeconds?: number): number | undefined {
+  if (typeof timeoutSeconds === "number" && timeoutSeconds > 0) {
+    return Math.max(1, Math.min(timeoutSeconds, VALIDATION_NO_PROGRESS_TIMEOUT_SECONDS));
+  }
+  return VALIDATION_NO_PROGRESS_TIMEOUT_SECONDS;
+}
+
+function buildValidationSpecialistFailureBody(options: {
+  name: SpecialistName;
+  summary: string;
+  blockerCategory?: string;
+  blockerDetail?: string;
+  stderrTail?: string;
+  stdoutTail?: string;
+}): string {
+  return [
+    "# Validation Specialist Findings",
+    "",
+    `Specialist \`${options.name}\` failed before producing a normal final artifact.`,
+    "",
+    `Summary: ${options.summary}`,
+    ...(options.blockerCategory ? [`Blocker category: ${options.blockerCategory}`] : []),
+    ...(options.blockerDetail ? [`Blocker detail: ${options.blockerDetail}`] : []),
+    ...(options.stderrTail ? ["", "## Stderr tail", "```text", options.stderrTail.trim(), "```"] : []),
+    ...(!options.stderrTail && options.stdoutTail ? ["", "## Stdout tail", "```text", options.stdoutTail.trim(), "```"] : [])
+  ].join("\n") + "\n";
+}
+
+async function diagnoseValidationSpecialistFailure(options: {
+  name: SpecialistName;
+  stdoutPath: string;
+  stderrPath: string;
+  message: string;
+}): Promise<{
+  notes: string;
+  finalBody: string;
+  blockerCategory?: SpecialistExecution["blockerCategory"];
+  blockerDetail?: string;
+}> {
+  const [stdout, stderr] = await Promise.all([readTextFile(options.stdoutPath), readTextFile(options.stderrPath)]);
+  const blocker = classifyExecutionBlocker(`validation specialist ${options.name}`, `${stderr}\n${stdout}\n${options.message}`);
+  const stderrTail = stderr.trim().split("\n").slice(-12).join("\n");
+  const stdoutTail = stdout.trim().split("\n").slice(-12).join("\n");
+  const summary = blocker
+    ? `External blocker during ${options.name}: ${blocker.category}.`
+    : `Validation specialist ${options.name} failed before producing final output.`;
+  const notes = [summary, blocker?.detail ?? options.message].filter(Boolean).join(" ");
+
+  return {
+    notes,
+    finalBody: buildValidationSpecialistFailureBody({
+      name: options.name,
+      summary,
+      ...(blocker?.category ? { blockerCategory: blocker.category } : {}),
+      ...(blocker?.detail ? { blockerDetail: blocker.detail } : {}),
+      ...(stderrTail ? { stderrTail } : {}),
+      ...(stdoutTail ? { stdoutTail } : {})
+    }),
+    ...(blocker?.category ? { blockerCategory: blocker.category } : {}),
+    ...(blocker?.detail ? { blockerDetail: blocker.detail } : {})
+  };
+}
+
+function createBlockedValidationExecutionFromSpecialists(options: {
+  repoProfile: ValidationRepoProfile;
+  toolResearch: ValidationToolResearch;
+  initialPlan: DeliverValidationPlan;
+  selectedSpecialists: ValidationSpecialistSelection;
+  specialistExecutions: SpecialistExecution[];
+}): DeliverValidationExecutionResult {
+  const failedExecutions = options.specialistExecutions.filter((entry) => entry.status === "failed");
+  const blockerCategories = uniqueBlockerCategories(failedExecutions.map((entry) => entry.blockerCategory));
+  const blockerLines = failedExecutions.map((entry) => {
+    const base = `${entry.name}: ${entry.notes ?? "specialist failed"}`;
+    return entry.blockerCategory ? `${base} [${entry.blockerCategory}]` : base;
+  });
+  const summary =
+    blockerCategories.length > 0
+      ? `Validation blocked by external specialist blocker(s): ${blockerCategories.join(", ")}.`
+      : "Validation blocked because a selected specialist failed before producing usable output.";
+  const validationPlan: DeliverValidationPlan = {
+    ...options.initialPlan,
+    status: "blocked",
+    outcomeCategory: "blocked-by-validation",
+    summary,
+    profileSummary: summary,
+    selectedSpecialists: options.selectedSpecialists
+      .filter((entry) => entry.selected)
+      .map((entry) => {
+        const execution = failedExecutions.find((candidate) => candidate.name === entry.name);
+        return {
+          name: entry.name,
+          disposition: execution?.disposition ?? "discarded",
+          reason: execution?.notes ?? entry.reason
+        };
+      }),
+    localValidation: {
+      commands: [],
+      prerequisites: options.initialPlan.localValidation.prerequisites,
+      notes: [summary, ...blockerLines]
+    },
+    ciValidation: {
+      ...options.initialPlan.ciValidation,
+      notes: [...options.initialPlan.ciValidation.notes, summary, ...blockerLines]
+    },
+    coverage: {
+      ...options.initialPlan.coverage,
+      summary,
+      gaps: [...options.initialPlan.coverage.gaps, ...blockerLines]
+    },
+    recommendedChanges: [...options.initialPlan.recommendedChanges, "Retry validation after resolving the specialist blocker."],
+    unsupported: [...options.initialPlan.unsupported, ...blockerLines],
+    reportMarkdown: ["# Validation Summary", "", summary, "", "## Specialist blockers", ...blockerLines.map((line) => `- ${line}`)].join("\n") + "\n"
+  };
+  const localValidationRecord: DeliverValidationLocalRecord = {
+    status: "not-run",
+    requestedCommands: [],
+    results: [],
+    notes: summary,
+    ...(blockerCategories.length > 0 ? { blockerCategories } : {})
+  };
+  const coverageSummary = buildCoverageSummary(validationPlan, localValidationRecord);
+  return {
+    repoProfile: options.repoProfile,
+    toolResearch: options.toolResearch,
+    validationPlan,
+    localValidationRecord,
+    coverageSummary,
+    selectedSpecialists: options.selectedSpecialists,
+    specialistExecutions: options.specialistExecutions,
+    finalBody: validationPlan.reportMarkdown
+  };
 }
 
 async function pathExists(filePath: string): Promise<boolean> {
@@ -1087,6 +1233,7 @@ async function runValidationSpecialist(options: {
   toolResearch: ValidationToolResearch;
   buildSummary: string;
   buildVerificationRecord: BuildVerificationRecord;
+  timeoutSeconds?: number;
 }): Promise<{ execution: SpecialistExecution; finalBody: string }> {
   const delegateDir = path.join(options.stageDir, "delegates", options.specialist.name);
   await fs.mkdir(path.join(delegateDir, "artifacts"), { recursive: true });
@@ -1121,6 +1268,7 @@ async function runValidationSpecialist(options: {
   await fs.writeFile(contextPath, `${context}\n`, "utf8");
 
   try {
+    const noProgressTimeoutSeconds = resolveValidationNoProgressTimeoutSeconds(options.timeoutSeconds);
     const result = await runCodexExec({
       cwd: options.cwd,
       workflow: "deliver",
@@ -1130,16 +1278,54 @@ async function runValidationSpecialist(options: {
       eventsPath,
       stdoutPath,
       stderrPath,
-      config: options.config
+      config: options.config,
+      staleSessionTimeoutSeconds: VALIDATION_STALE_SESSION_TIMEOUT_SECONDS,
+      ...(typeof noProgressTimeoutSeconds === "number" ? { noProgressTimeoutSeconds } : {}),
+      ...(typeof options.timeoutSeconds === "number" ? { timeoutSeconds: options.timeoutSeconds } : {})
     });
-    const finalBody = await readCodexFinalOutput({
-      context: `Validation specialist ${options.specialist.name}`,
-      finalPath,
-      stdoutPath,
-      stderrPath,
-      result
-    });
+    let finalBody = "";
+    try {
+      finalBody = await readCodexFinalOutput({
+        context: `Validation specialist ${options.specialist.name}`,
+        finalPath,
+        stdoutPath,
+        stderrPath,
+        result,
+        acceptSynthesizedFinalArtifact: true
+      });
+    } catch (error) {
+      const diagnosis = await diagnoseValidationSpecialistFailure({
+        name: options.specialist.name,
+        stdoutPath,
+        stderrPath,
+        message: error instanceof Error ? error.message : String(error)
+      });
+      finalBody = diagnosis.finalBody;
+      await fs.writeFile(finalPath, finalBody, "utf8");
+      await fs.writeFile(artifactPath, finalBody, "utf8");
+      return {
+        execution: {
+          name: options.specialist.name,
+          reason: options.specialist.reason,
+          status: "failed",
+          disposition: "discarded",
+          specialistDir: delegateDir,
+          artifactPath,
+          notes: diagnosis.notes,
+          ...(diagnosis.blockerCategory ? { blockerCategory: diagnosis.blockerCategory } : {}),
+          ...(diagnosis.blockerDetail ? { blockerDetail: diagnosis.blockerDetail } : {})
+        },
+        finalBody
+      };
+    }
     await fs.writeFile(artifactPath, finalBody, "utf8");
+    const blocker =
+      result.code === 0
+        ? null
+        : classifyExecutionBlocker(
+            `validation specialist ${options.specialist.name}`,
+            `${await readTextFile(stderrPath)}\n${await readTextFile(stdoutPath)}`
+          );
     return {
       execution: {
         name: options.specialist.name,
@@ -1148,11 +1334,26 @@ async function runValidationSpecialist(options: {
         disposition: result.code === 0 ? "accepted" : "discarded",
         specialistDir: delegateDir,
         artifactPath,
-        notes: result.code === 0 ? "Accepted provisionally until the validation lead synthesizes the final plan." : `Exited with code ${result.code}.`
+        notes:
+          result.code === 0
+            ? "Accepted provisionally until the validation lead synthesizes the final plan."
+            : blocker
+              ? `External blocker during ${options.specialist.name}: ${blocker.category}. ${blocker.detail}`
+              : `Exited with code ${result.code}.`,
+        ...(blocker?.category ? { blockerCategory: blocker.category } : {}),
+        ...(blocker?.detail ? { blockerDetail: blocker.detail } : {})
       },
       finalBody
     };
   } catch (error) {
+    const diagnosis = await diagnoseValidationSpecialistFailure({
+      name: options.specialist.name,
+      stdoutPath,
+      stderrPath,
+      message: error instanceof Error ? error.message : String(error)
+    });
+    await fs.writeFile(finalPath, diagnosis.finalBody, "utf8");
+    await fs.writeFile(artifactPath, diagnosis.finalBody, "utf8");
     return {
       execution: {
         name: options.specialist.name,
@@ -1160,9 +1361,12 @@ async function runValidationSpecialist(options: {
         status: "failed",
         disposition: "discarded",
         specialistDir: delegateDir,
-        notes: error instanceof Error ? error.message : String(error)
+        artifactPath,
+        notes: diagnosis.notes,
+        ...(diagnosis.blockerCategory ? { blockerCategory: diagnosis.blockerCategory } : {}),
+        ...(diagnosis.blockerDetail ? { blockerDetail: diagnosis.blockerDetail } : {})
       },
-      finalBody: ""
+      finalBody: diagnosis.finalBody
     };
   }
 }
@@ -1270,13 +1474,24 @@ export async function runDeliverValidationExecution(options: DeliverValidationEx
       repoProfile,
       toolResearch,
       buildSummary: options.buildSummary,
-      buildVerificationRecord: options.buildVerificationRecord
+      buildVerificationRecord: options.buildVerificationRecord,
+      ...(typeof options.timeoutSeconds === "number" ? { timeoutSeconds: options.timeoutSeconds } : {})
     });
     specialistExecutions.push(result.execution);
     specialistOutputs.push({
       name: specialist.name,
       reason: specialist.reason,
       finalBody: result.finalBody
+    });
+  }
+
+  if (specialistExecutions.some((entry) => entry.status === "failed")) {
+    return createBlockedValidationExecutionFromSpecialists({
+      repoProfile,
+      toolResearch,
+      initialPlan,
+      selectedSpecialists,
+      specialistExecutions
     });
   }
 
@@ -1293,6 +1508,7 @@ export async function runDeliverValidationExecution(options: DeliverValidationEx
   await fs.writeFile(options.paths.promptPath, leadPrompt.prompt, "utf8");
   await fs.writeFile(options.paths.contextPath, `${leadPrompt.context}\n`, "utf8");
 
+  const leadNoProgressTimeoutSeconds = resolveValidationNoProgressTimeoutSeconds(options.timeoutSeconds);
   const result = await runCodexExec({
     cwd: options.cwd,
     workflow: "deliver",
@@ -1302,7 +1518,10 @@ export async function runDeliverValidationExecution(options: DeliverValidationEx
     eventsPath: options.paths.eventsPath,
     stdoutPath: options.paths.stdoutPath,
     stderrPath: options.paths.stderrPath,
-    config: options.config
+    config: options.config,
+    staleSessionTimeoutSeconds: VALIDATION_STALE_SESSION_TIMEOUT_SECONDS,
+    ...(typeof leadNoProgressTimeoutSeconds === "number" ? { noProgressTimeoutSeconds: leadNoProgressTimeoutSeconds } : {}),
+    ...(typeof options.timeoutSeconds === "number" ? { timeoutSeconds: options.timeoutSeconds } : {})
   });
 
   const finalBody = await readCodexFinalOutput({

@@ -1,5 +1,6 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
+import { isBroadGapRemediationPrompt } from "./spec-contract.js";
 import type {
   CstackConfig,
   DeliverValidationPlan,
@@ -155,6 +156,7 @@ export async function buildSpecPrompt(
   options: { planningIssueNumber?: number; initiativeId?: string; initiativeTitle?: string } = {}
 ): Promise<{ prompt: string; context: string }> {
   const { prompt, context } = await buildWorkflowPrompt({ cwd, input, workflow: "spec", config });
+  const requiresBoundedFirstSlice = isBroadGapRemediationPrompt(input);
   return {
     prompt: [
       prompt,
@@ -167,19 +169,37 @@ export async function buildSpecPrompt(
       options.initiativeTitle ? `- title: ${options.initiativeTitle}` : "- no title provided",
       "",
       "## Spec execution contract",
+      "- this stage is planning-only; do not edit repository files, apply patches, or run implementation commands",
       "- produce an implementation-ready plan, not an exhaustive repo audit",
       "- if the request is broad, choose the highest-leverage first remediation slice",
+      "- if the prompt includes a preselected first slice, keep that slice fixed unless the linked evidence proves it is impossible",
       "- for mixed gap-analysis plus remediation prompts, rank the top 1-3 gap clusters briefly and then select exactly one slice to implement first",
       "- the chosen slice must fit in one bounded change set with named files, validation, and out-of-scope boundaries",
       "- avoid multi-epic roadmaps, repo-wide rewrites, or parallel workstreams in the first slice",
       "- rely on provided discover findings and a representative sample of repo files instead of re-scanning everything",
-      "- if evidence is incomplete, record bounded open questions and stop"
+      "- inspect at most 8 additional files and run at most 6 shell commands before you stop planning",
+      "- stop once you can fill the required headings with evidence; do not continue scanning after the first slice is clear",
+      "- if evidence is incomplete, record bounded open questions and stop",
+      ...(requiresBoundedFirstSlice
+        ? [
+            "",
+            "## Required output headings",
+            "- include these exact headings in the final output, in order:",
+            "- `## Gap Clusters`",
+            "- `## Selected First Slice`",
+            "- `## Files In Scope`",
+            "- `## Validation`",
+            "- `## Out Of Scope`",
+            "- optional: `## Open Questions`"
+          ]
+        : [])
     ].join("\n"),
     context: [
       context,
       `Planning issue: ${options.planningIssueNumber ? `#${options.planningIssueNumber}` : "none"}`,
       `Initiative id: ${options.initiativeId ?? "none"}`,
-      `Initiative title: ${options.initiativeTitle ?? "none"}`
+      `Initiative title: ${options.initiativeTitle ?? "none"}`,
+      `Bounded first-slice required: ${requiresBoundedFirstSlice ? "yes" : "no"}`
     ].join("\n")
   };
 }
@@ -365,7 +385,8 @@ export async function buildDiscoverTrackPrompt(options: {
     "- do not write implementation code",
     "- inspect representative files only; start with manifests, README/docs, CI workflows, entrypoints, tests, and contracts before deep source scans",
     "- stop once you can name the top 3 gaps or first remediation candidates with evidence",
-    "- cap shell activity to a small bounded sample; prefer at most 8 commands and at most 12 files inspected",
+    "- after the first credible implementation-ready gap is supported by evidence, stop scanning and summarize it",
+    "- cap shell activity to a small bounded sample; prefer at most 6 commands and at most 8 files inspected",
     "- if web research is not allowed, stay local to the repository and provided docs",
     "- if web research is allowed and needed, cite sources explicitly with stable URLs when possible",
     "- if the time or evidence budget is insufficient, return partial findings and unresolved items instead of continuing to scan",
@@ -424,13 +445,20 @@ export async function buildDiscoverLeadPrompt(options: {
   const prompt = [
     "You are the `Research Lead` for a bounded `cstack discover` run.",
     "",
-    "Synthesize the delegated research tracks into one concise discovery report.",
+    delegateResults.length > 0
+      ? "Synthesize the delegated research tracks into one concise discovery report."
+      : "Perform one bounded first-pass discover sweep and return a concise discovery report.",
     "",
     "Requirements:",
     "- distinguish observed local findings from external findings",
     "- preserve uncertainty and unresolved questions",
     "- do not invent facts not supported by delegate output",
     "- make the result directly useful for a later `spec` stage",
+    "- if no delegated tracks were provided, inspect representative files only and avoid a repo-wide scan",
+    "- stop once you can name the top 3 gaps or first remediation candidates with evidence",
+    "- after the first credible implementation-ready gap is supported by evidence, stop scanning and summarize it",
+    "- cap shell activity to a small bounded sample; prefer at most 6 commands and at most 8 files inspected",
+    "- if time or evidence is limited, return partial findings instead of continuing to scan",
     "- structure the output with clear sections and direct language",
     "- return valid JSON only, with no markdown fences or commentary",
     "",
@@ -773,6 +801,9 @@ export async function buildDeliverValidationSpecialistPrompt(options: {
       "Requirements:",
       "- stay inside the named specialist scope",
       "- prefer OSS tools that work both locally and in GitHub Actions",
+      "- do not install, download, or upgrade tools during this specialist run; use only tools already present on the host",
+      "- if a desired tool is missing or would require registry/network access, record that as an external blocker or limitation instead of retrying installs",
+      "- do not mutate repository files in this specialist run",
       "- call out concrete gaps, runner constraints, and suggested test layers",
       "- be concise and operational",
       "- structure the output so the validation lead can accept, partially accept, or discard it cleanly",
@@ -830,6 +861,8 @@ export async function buildDeliverValidationLeadPrompt(options: {
       "- refine or extend tests and GitHub Actions validation only when justified by the repo profile",
       "- think in a test pyramid: static, unit/component, integration/contract, e2e/system, packaging/smoke",
       "- prefer OSS tools that support both local execution and GitHub Actions",
+      "- do not rely on ad-hoc network installs or package-registry downloads during this validation run",
+      "- classify missing tools, registry failures, or network failures as explicit external blockers instead of repo defects",
       "- avoid recommending tools with weak repo fit just because they are popular",
       "- preserve platform constraints such as macOS, emulators, or Docker requirements",
       "- return valid JSON only, with no markdown fences or extra commentary",

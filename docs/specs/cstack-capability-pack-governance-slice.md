@@ -2,9 +2,9 @@
 
 Historical note:
 
-- This document is a future slice spec, not part of the active shipped contract.
+- This document was originally written as a future slice spec and now records the capability-pack governance workstream that shipped on 2026-03-28.
 - The active shipped contract remains `docs/specs/cstack-spec-v0.1.md`.
-- This slice defines how workflow-attached capabilities should become explicit, policy-visible, and inspectable.
+- This slice records how workflow-attached capabilities became explicit, policy-visible, and inspectable.
 
 ## Thesis
 

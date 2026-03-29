@@ -184,7 +184,8 @@ async function runReviewSpecialist(options: {
       finalPath,
       stdoutPath,
       stderrPath,
-      result
+      result,
+      acceptSynthesizedFinalArtifact: true
     });
     await fs.writeFile(artifactPath, finalBody, "utf8");
 

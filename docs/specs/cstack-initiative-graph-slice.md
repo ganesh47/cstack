@@ -2,9 +2,9 @@
 
 Historical note:
 
-- This document is a future slice spec, not part of the active shipped contract.
+- This document was originally written as a future slice spec and now records the initiative-graph workstream that shipped on 2026-03-28.
 - The active shipped contract remains `docs/specs/cstack-spec-v0.1.md`.
-- This slice defines how `cstack` should move from single-run lineage into initiative-level grouping and inspection.
+- This slice records how `cstack` moved from single-run lineage into initiative-level grouping and inspection.
 
 ## Thesis
 

@@ -2,9 +2,9 @@
 
 Historical note:
 
-- This document is a future slice spec, not part of the active shipped contract.
+- This document was originally written as a future slice spec and now records the GitHub planning-lineage workstream that shipped on 2026-03-28.
 - The active shipped contract remains `docs/specs/cstack-spec-v0.1.md`.
-- This slice defines how GitHub should become part of the planning control plane for `cstack`.
+- This slice records how GitHub became part of the planning control plane for `cstack`.
 
 ## Thesis
 

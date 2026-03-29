@@ -2,9 +2,9 @@
 
 Historical note:
 
-- This document is a future slice spec, not part of the active shipped contract.
+- This document was originally written as a future slice spec and now records the delivery-checklist and deployment-evidence workstream that shipped on 2026-03-28.
 - The active shipped contract remains `docs/specs/cstack-spec-v0.1.md`.
-- This slice defines how `ship` and `deliver` should grow a stronger final-delivery readiness contract.
+- This slice records how `ship` and `deliver` grew a stronger final-delivery readiness contract.
 
 ## Thesis
 

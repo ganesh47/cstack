@@ -78,6 +78,9 @@ describe("runSpec", () => {
   });
 
   afterEach(async () => {
+    delete process.env.FAKE_CODEX_SPEC_TOO_BROAD;
+    delete process.env.FAKE_CODEX_SPEC_BOUNDED;
+    delete process.env.FAKE_CODEX_DELAY_MS;
     await fs.rm(repoDir, { recursive: true, force: true });
   });
 
@@ -254,21 +257,72 @@ describe("runSpec", () => {
     expect(rerun.inputs.planningIssueNumber).toBe(123);
   });
 
+  it("fails closed when a broad spec response does not satisfy the bounded first-slice contract", async () => {
+    process.env.FAKE_CODEX_SPEC_TOO_BROAD = "1";
+
+    await expect(
+      runSpec(repoDir, "What are the gaps in the current project and find them and fix them")
+    ).rejects.toThrow(/bounded first-slice contract/);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const finalBody = await fs.readFile(run.finalPath, "utf8");
+    const contract = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "spec-contract.json"), "utf8")) as {
+      status: string;
+      violations: string[];
+    };
+    const plan = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "plan.json"), "utf8")) as {
+      contractStatus: string;
+    };
+
+    expect(run.status).toBe("failed");
+    expect(run.error).toMatch(/bounded first-slice contract/);
+    expect(finalBody).toContain("## Workstreams");
+    expect(contract.status).toBe("invalid");
+    expect(contract.violations).toContain("missing required section: ## Gap Clusters");
+    expect(plan.contractStatus).toBe("invalid");
+  });
+
+  it("records bounded first-slice artifacts for broad spec prompts", async () => {
+    await runSpec(repoDir, "What are the gaps in the current project and find them and fix them");
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const plan = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "plan.json"), "utf8")) as {
+      contractStatus: string;
+      selectedSlice: string;
+      filesInScope: string[];
+      validation: string[];
+      outOfScope: string[];
+    };
+    const contract = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "spec-contract.json"), "utf8")) as {
+      status: string;
+      filesInScope: string[];
+    };
+
+    expect(run.status).toBe("completed");
+    expect(plan.contractStatus).toBe("valid");
+    expect(plan.selectedSlice).toContain("contract-validation slice");
+    expect(plan.filesInScope).toContain("packages/api/src/routes/connectors.ts");
+    expect(plan.validation[0]).toContain("contract integration test");
+    expect(plan.outOfScope[0]).toContain("Do not redesign unrelated connector flows.");
+    expect(contract.status).toBe("valid");
+    expect(contract.filesInScope).toContain("specs/001-plan-alignment/contracts/api.yaml");
+  });
+
   it("fails closed when the spec stage times out", async () => {
     const configPath = path.join(repoDir, ".cstack", "config.toml");
     const existing = await fs.readFile(configPath, "utf8");
     await fs.writeFile(configPath, `${existing}\n[workflows.spec]\ntimeoutSeconds = 1\n`, "utf8");
 
     process.env.FAKE_CODEX_DELAY_MS = "1500";
-    try {
-      await expect(runSpec(repoDir, "Draft the first vertical slice.")).rejects.toThrow(/code 124/);
+    await expect(runSpec(repoDir, "Draft the first vertical slice.")).rejects.toThrow(/code 124/);
 
-      const runs = await listRuns(repoDir);
-      const run = await readRun(repoDir, runs[0]!.id);
-      expect(run.status).toBe("failed");
-      expect(run.error).toContain("code 124");
-    } finally {
-      delete process.env.FAKE_CODEX_DELAY_MS;
-    }
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    expect(run.status).toBe("failed");
+    expect(run.error).toContain("code 124");
   });
 });

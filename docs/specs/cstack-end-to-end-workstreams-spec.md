@@ -2,9 +2,9 @@
 
 Historical note:
 
-- This document is a forward-looking decomposition spec, not part of the active shipped contract.
+- This document was originally written as a forward decomposition spec and is now retained as the rollout record for the workstreams implemented on 2026-03-28.
 - The active shipped contract remains `docs/specs/cstack-spec-v0.1.md`.
-- The purpose of this document is to split future `cstack` expansion into independently shippable workstreams with clear team ownership, artifact boundaries, and evaluation rules.
+- The purpose of this document is to record the independently shippable workstreams, ownership boundaries, and evaluation rules that were used to land the expansion.
 
 ## Thesis
 
@@ -32,7 +32,7 @@ The current product already ships:
 - bounded delegation and specialist review
 - artifact-grounded inspection
 
-The missing gap is not one monolithic feature. It is a set of adjacent control-plane capabilities that should be designed, implemented, evaluated, and released independently.
+The missing gap was not one monolithic feature. It was a set of adjacent control-plane capabilities that were designed, implemented, evaluated, and released independently.
 
 ## Workstream Set
 
@@ -50,6 +50,12 @@ Each workstream must satisfy three conditions:
 - first useful release is independently shippable
 - artifact contracts are explicit
 - inspector and ledger impact is defined
+
+Implementation status:
+
+- all six workstreams were implemented on the current branch and verified with `npm run typecheck && npm test`
+- umbrella issue: [#32](https://github.com/ganesh47/cstack/issues/32)
+- child issues: [#33](https://github.com/ganesh47/cstack/issues/33) through [#38](https://github.com/ganesh47/cstack/issues/38)
 
 ## Workstream Index
 
@@ -119,7 +125,7 @@ All workstreams must preserve the current product posture:
 
 - local-first artifacts remain the durable source of truth
 - `cstack` records requested behavior separately from observed behavior
-- no workstream claims shipped scope in the active spec until implementation lands
+- shipped scope is reflected in the active spec and workflow docs; this document remains as the decomposition reference
 - every new artifact family must be visible in `inspect`
 - every new grouping or lineage surface must be visible in `runs` or an equivalent ledger view
 

@@ -137,6 +137,8 @@ export interface SpecialistExecution {
   specialistDir?: string;
   artifactPath?: string;
   notes?: string;
+  blockerCategory?: EnvironmentBlockerCategory;
+  blockerDetail?: string;
 }
 
 export interface RoutingPlan {

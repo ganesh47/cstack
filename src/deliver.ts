@@ -57,6 +57,7 @@ export interface DeliverExecutionOptions {
   deliveryMode: DeliverTargetMode;
   issueNumbers: number[];
   buildTimeoutSeconds?: number;
+  validationTimeoutSeconds?: number;
   reviewTimeoutSeconds?: number;
   shipTimeoutSeconds?: number;
 }
@@ -198,7 +199,8 @@ async function runDeliverSpecialist(options: {
       finalPath,
       stdoutPath,
       stderrPath,
-      result
+      result,
+      acceptSynthesizedFinalArtifact: true
     });
     await fs.writeFile(artifactPath, finalBody, "utf8");
 
@@ -1156,7 +1158,8 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
         testInventoryPath: path.join(validationStageDir, "artifacts", "test-inventory.json")
       },
       buildSummary: buildExecution.finalBody,
-      buildVerificationRecord: buildExecution.verificationRecord
+      buildVerificationRecord: buildExecution.verificationRecord,
+      ...(typeof options.validationTimeoutSeconds === "number" ? { timeoutSeconds: options.validationTimeoutSeconds } : {})
     });
   } catch (error) {
     const message = summarizeFailureStageError(error);

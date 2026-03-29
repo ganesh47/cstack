@@ -68,6 +68,7 @@ Execution model:
 Key artifacts:
 
 - `artifacts/findings.md`
+- optional `artifacts/capabilities.json`
 - optional `artifacts/issue-lineage.json`
 - `stages/discover/research-plan.json`
 - `stages/discover/artifacts/discovery-report.md`
@@ -91,6 +92,7 @@ Inputs:
 - direct prompt, or
 - `--from-run <run-id>` to link to an upstream artifact
 - optional `--issue <n>` to bind or override the planning issue for downstream lineage
+- optional `--initiative <id>` and `--initiative-title <title>` to group related runs under one initiative
 
 Key artifacts:
 
@@ -99,6 +101,7 @@ Key artifacts:
 - `artifacts/open-questions.md`
 - optional `artifacts/issue-draft.md`
 - optional `artifacts/issue-lineage.json`
+- optional `artifacts/initiative-graph.json`
 - `final.md`
 
 ### `build`
@@ -117,6 +120,7 @@ Inputs:
 
 - direct prompt, or
 - `--from-run <run-id>` to link upstream planning context
+- optional `--initiative <id>` and `--initiative-title <title>` to inherit or override initiative grouping
 
 Safety:
 
@@ -173,6 +177,7 @@ Inputs:
 
 - direct prompt, or
 - `--from-run <run-id>` to link build or deliver context
+- optional `--initiative <id>` and `--initiative-title <title>` to inherit or override initiative grouping
 
 Semantics:
 
@@ -208,6 +213,7 @@ Inputs:
 
 - direct prompt, or
 - `--from-run <run-id>` to link review, build, or deliver context
+- optional `--initiative <id>` and `--initiative-title <title>` to inherit or override initiative grouping
 - `--release` for release-bearing delivery
 - `--issue <n>` to bind issue linkage explicitly
 
@@ -231,6 +237,12 @@ Key artifacts:
 - `artifacts/actions.json`
 - `artifacts/security.json`
 - `artifacts/release.json`
+- `artifacts/readiness-policy.json`
+- `artifacts/deployment-evidence.json`
+- `artifacts/post-ship-summary.md`
+- `artifacts/post-ship-evidence.json`
+- `artifacts/follow-up-draft.md`
+- `artifacts/follow-up-lineage.json`
 - `artifacts/pull-request-body.md`
 - `stage-lineage.json`
 - `final.md`
@@ -253,6 +265,7 @@ Inputs:
 
 - direct prompt, or
 - `--from-run <run-id>`
+- `--initiative <id>` and `--initiative-title <title>`
 - `--release`
 - `--issue <n>`
 
@@ -280,6 +293,12 @@ Key artifacts:
 - `artifacts/delivery-report.md`
 - `artifacts/github-mutation.json`
 - `artifacts/github-delivery.json`
+- `artifacts/readiness-policy.json`
+- `artifacts/deployment-evidence.json`
+- `artifacts/post-ship-summary.md`
+- `artifacts/post-ship-evidence.json`
+- `artifacts/follow-up-draft.md`
+- `artifacts/follow-up-lineage.json`
 - `final.md`
 
 ## Intent Routing
@@ -318,6 +337,7 @@ When repo policy enables GitHub delivery enforcement, the wrapper evaluates:
 - required GitHub Actions workflows
 - release-bearing requirements such as tag and GitHub Release existence
 - security gates such as Dependabot or code-scanning alerts when configured
+- explicit readiness-policy and deployment-evidence requirements when configured
 
 When repo policy enables GitHub mutation, the wrapper may:
 
@@ -348,6 +368,12 @@ A successful GitHub-complete engineering delivery run means:
 - review status supports the run
 - required GitHub gates are ready
 - unresolved blocking items are empty
+
+Post-ship follow-up remains bounded:
+
+- the wrapper records post-ship evidence and follow-up recommendations from saved ship and GitHub delivery artifacts
+- it does not promise continuous monitoring or deployment orchestration
+- issue reopen or rollback context may currently be represented through observed-signal summaries rather than dedicated remote polling contracts
 
 The guarantee is repo-policy-complete, not universal. Repos choose which GitHub gates are required through configuration.
 

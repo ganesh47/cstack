@@ -143,6 +143,7 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
   const deliveryMode = parsed.options.deliveryMode ?? config.workflows.deliver.github?.mode ?? "merge-ready";
   const issueNumbers = resolvedIssueNumbers ?? [];
   const buildTimeoutSeconds = config.workflows.deliver.stageTimeoutSeconds?.build ?? config.workflows.build.timeoutSeconds;
+  const validationTimeoutSeconds = config.workflows.deliver.stageTimeoutSeconds?.validation ?? config.workflows.deliver.timeoutSeconds;
   const reviewTimeoutSeconds = config.workflows.deliver.stageTimeoutSeconds?.review ?? config.workflows.review.timeoutSeconds;
   const shipTimeoutSeconds = config.workflows.deliver.stageTimeoutSeconds?.ship ?? config.workflows.ship.timeoutSeconds;
 
@@ -214,6 +215,7 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
       deliveryMode,
       issueNumbers,
       ...(typeof buildTimeoutSeconds === "number" ? { buildTimeoutSeconds } : {}),
+      ...(typeof validationTimeoutSeconds === "number" ? { validationTimeoutSeconds } : {}),
       ...(typeof reviewTimeoutSeconds === "number" ? { reviewTimeoutSeconds } : {}),
       ...(typeof shipTimeoutSeconds === "number" ? { shipTimeoutSeconds } : {}),
       ...(linkedContext ? { linkedContext } : {})

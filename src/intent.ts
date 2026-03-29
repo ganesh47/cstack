@@ -7,6 +7,7 @@ import { runDiscoverExecution } from "./discover.js";
 import { maybeOfferInteractiveInspect } from "./inspector.js";
 import { buildSpecPrompt, buildSpecialistPrompt, excerpt } from "./prompt.js";
 import { detectCodexVersion, detectGitBranch, ensureRunDir, makeRunId, readRun, writeRunRecord } from "./run.js";
+import { buildBoundedSpecInput, buildSpecContractError, deriveSpecPlanArtifact, validateSpecOutput } from "./spec-contract.js";
 import type {
   CstackConfig,
   RoutingDecision,
@@ -391,6 +392,7 @@ async function executeStage(options: {
   runId: string;
   runDir: string;
   stage: Extract<StageName, "discover" | "spec">;
+  contractInput?: string;
   prompt: string;
   context: string;
   config: CstackConfig;
@@ -428,6 +430,16 @@ async function executeStage(options: {
 
   const finalBody = await fs.readFile(finalPath, "utf8");
   await fs.writeFile(artifactPath, finalBody, "utf8");
+  if (options.stage === "spec") {
+    const specContract = validateSpecOutput(options.contractInput ?? options.prompt, finalBody);
+    await writeJson(path.join(stageDir, "artifacts", "plan.json"), deriveSpecPlanArtifact(finalBody, specContract));
+    if (specContract.required) {
+      await writeJson(path.join(stageDir, "artifacts", "spec-contract.json"), specContract);
+    }
+    if (specContract.status === "invalid") {
+      throw new Error(buildSpecContractError(specContract));
+    }
+  }
 
   return {
     stageDir,
@@ -984,15 +996,16 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
         continue;
       }
 
-      const specInput = discoverFindings
-        ? `${resolvedIntent}\n\n## Linked discover findings\n${excerpt(discoverFindings, 40)}`
-        : resolvedIntent;
+      const specInput =
+        buildBoundedSpecInput(resolvedIntent, discoverFindings) ??
+        (discoverFindings ? `${resolvedIntent}\n\n## Linked discover findings\n${excerpt(discoverFindings, 40)}` : resolvedIntent);
       const { prompt, context } = await buildSpecPrompt(cwd, specInput, config);
       const result = await executeStage({
         cwd,
         runId,
         runDir,
         stage: "spec",
+        contractInput: resolvedIntent,
         prompt,
         context,
         config,

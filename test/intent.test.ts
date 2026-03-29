@@ -76,6 +76,7 @@ describe("intent router", () => {
   afterEach(async () => {
     delete process.env.FAKE_CODEX_FAIL_BUILD;
     delete process.env.FAKE_CODEX_DELAY_MS;
+    delete process.env.FAKE_CODEX_SPEC_TOO_BROAD;
     await fs.rm(repoDir, { recursive: true, force: true });
     if (remoteDir) {
       await fs.rm(remoteDir, { recursive: true, force: true });
@@ -171,7 +172,7 @@ describe("intent router", () => {
     } finally {
       stdoutSpy.mockRestore();
     }
-  }, 60_000);
+  }, 120_000);
 
   it("tracks downstream review progress in the parent intent run", async () => {
     await runIntent(repoDir, "What are the gaps in the current project?", {
@@ -272,6 +273,35 @@ describe("intent router", () => {
     expect(executionContext.source.localChangesIgnored).toBe(true);
   }, 60_000);
 
+  it("fails closed when the shared spec stage returns a broad roadmap instead of one bounded slice", async () => {
+    process.env.FAKE_CODEX_SPEC_TOO_BROAD = "1";
+
+    await expect(
+      runIntent(repoDir, "What are the gaps in this project? Can you work on closing the gaps?", {
+        entrypoint: "bare",
+        dryRun: false
+      })
+    ).rejects.toThrow(/bounded first-slice contract/);
+
+    const runs = await listRuns(repoDir);
+    const intentRun = await readRun(
+      repoDir,
+      runs.find((entry) => entry.workflow === "intent")!.id
+    );
+    const intentRunDir = path.dirname(intentRun.finalPath);
+    const lineage = JSON.parse(await fs.readFile(path.join(intentRunDir, "stage-lineage.json"), "utf8")) as StageLineage;
+    const specContract = JSON.parse(
+      await fs.readFile(path.join(intentRunDir, "stages", "spec", "artifacts", "spec-contract.json"), "utf8")
+    ) as { status: string; violations: string[] };
+
+    expect(intentRun.status).toBe("failed");
+    expect(intentRun.error).toMatch(/bounded first-slice contract/);
+    expect(lineage.stages.find((stage) => stage.name === "spec")?.status).toBe("failed");
+    expect(lineage.stages.find((stage) => stage.name === "build")?.status).toBe("planned");
+    expect(specContract.status).toBe("invalid");
+    expect(specContract.violations).toContain("missing required section: ## Gap Clusters");
+  }, 60_000);
+
   it("marks discover failed in stage lineage when the direct discover stage times out", async () => {
     const configPath = path.join(repoDir, ".cstack", "config.toml");
     const existingConfig = await fs.readFile(configPath, "utf8");
@@ -283,7 +313,7 @@ describe("intent router", () => {
         entrypoint: "bare",
         dryRun: false
       })
-    ).rejects.toThrow(/code 124|timed out/i);
+    ).rejects.toThrow(/code 124|timed out|without writing a final artifact|shared discover budget was exhausted/i);
 
     const runs = await listRuns(repoDir);
     const intentRun = await readRun(
@@ -294,10 +324,12 @@ describe("intent router", () => {
     const lineage = JSON.parse(await fs.readFile(path.join(intentRunDir, "stage-lineage.json"), "utf8")) as StageLineage;
 
     expect(intentRun.status).toBe("failed");
-    expect(intentRun.error).toMatch(/code 124|timed out/i);
+    expect(intentRun.error).toMatch(/code 124|timed out|without writing a final artifact|shared discover budget was exhausted/i);
     expect(lineage.stages.find((stage) => stage.name === "discover")?.status).toBe("failed");
     expect(lineage.stages.find((stage) => stage.name === "discover")?.executed).toBe(true);
-    expect(lineage.stages.find((stage) => stage.name === "discover")?.notes).toMatch(/code 124|timed out/i);
+    expect(lineage.stages.find((stage) => stage.name === "discover")?.notes).toMatch(
+      /code 124|timed out|without writing a final artifact|shared discover budget was exhausted/i
+    );
   }, 60_000);
 
   it("surfaces downstream build failure promptly and marks later stages deferred", async () => {

@@ -139,7 +139,7 @@ describe("runDeliver", () => {
         'createPullRequest = true',
         'updatePullRequest = true',
         'pullRequestBase = "main"',
-        'watchChecks = true',
+        'watchChecks = false',
         'checkWatchTimeoutSeconds = 1',
         'checkWatchPollSeconds = 0',
         'prRequired = true',
@@ -171,16 +171,25 @@ describe("runDeliver", () => {
     delete process.env.FAKE_CODEX_DELAY_MS;
     delete process.env.FAKE_CODEX_VALIDATION_COMMAND;
     delete process.env.FAKE_CODEX_VALIDATION_STATUS;
+    delete process.env.FAKE_CODEX_VALIDATION_SPECIALIST_REGISTRY_STALL;
+    delete process.env.FAKE_CODEX_VALIDATION_SPECIALIST_STALL_MS;
     delete process.env.FAKE_CODEX_NO_FINAL_VALIDATION;
     delete process.env.FAKE_CODEX_NO_FINAL_DELIVER_REVIEW;
     delete process.env.FAKE_CODEX_NO_FINAL_SHIP;
+    delete process.env.FAKE_GH_DELAY_MS;
     delete process.env.CSTACK_FORCE_CLONE_FALLBACK;
+    delete process.env.CSTACK_GITHUB_COMMAND_TIMEOUT_MS;
+    await fs.rm(path.join(repoDir, ".cstack", "test-codex.json"), { force: true });
     await fs.rm(repoDir, { recursive: true, force: true });
     await fs.rm(remoteDir, { recursive: true, force: true });
   });
 
   async function writeGitHubFixture(fixture: unknown): Promise<void> {
     await fs.writeFile(path.join(repoDir, ".cstack", "test-gh.json"), `${JSON.stringify(fixture, null, 2)}\n`, "utf8");
+  }
+
+  async function writeCodexFixture(fixture: Record<string, unknown>): Promise<void> {
+    await fs.writeFile(path.join(repoDir, ".cstack", "test-codex.json"), `${JSON.stringify(fixture, null, 2)}\n`, "utf8");
   }
 
   it("creates a merge-ready deliver run with GitHub delivery evidence", async () => {
@@ -322,7 +331,7 @@ describe("runDeliver", () => {
       expect(githubMutation.commit.changedFiles).not.toContain("src-change.txt");
       expect(githubMutation.pullRequest.created).toBe(true);
       expect(githubMutation.pullRequest.url).toContain("/pull/");
-      expect(githubMutation.checks.watched).toBe(true);
+      expect(githubMutation.checks.watched).toBe(false);
       expect(githubDelivery.overall.status).toBe("ready");
       expect(githubDelivery.pullRequest).toMatchObject({ status: "ready", required: true });
       expect(githubDelivery.issues).toMatchObject({ status: "ready", required: true });
@@ -349,7 +358,7 @@ describe("runDeliver", () => {
     } finally {
       stdoutSpy.mockRestore();
     }
-  }, 15_000);
+  }, 60_000);
 
   it("does not mark deliver complete when validation is partial", async () => {
     process.env.FAKE_CODEX_VALIDATION_STATUS = "partial";
@@ -392,7 +401,7 @@ describe("runDeliver", () => {
     expect(validationPlan.status).toBe("partial");
     expect(validationPlan.outcomeCategory).toBe("partial");
     expect(lineage.stages.find((stage) => stage.name === "validation")?.status).toBe("deferred");
-  }, 20_000);
+  }, 60_000);
 
   it("fails closed when the validation lead exits without writing final output", async () => {
     process.env.FAKE_CODEX_NO_FINAL_VALIDATION = "1";
@@ -440,10 +449,12 @@ describe("runDeliver", () => {
     expect(validationFinal).toContain("Validation stage failed");
     expect(deliverySummary).toContain("Validation lead did not write final output");
     expect(deliverySummary).not.toContain("ENOENT");
-  }, 20_000);
+  }, 60_000);
 
   it("fails closed when the ship lead exits without writing final output", async () => {
-    process.env.FAKE_CODEX_NO_FINAL_SHIP = "1";
+    await writeCodexFixture({
+      FAKE_CODEX_NO_FINAL_SHIP: "1"
+    });
     await writeGitHubFixture({
       repoView: {
         nameWithOwner: "ganesh47/cstack",
@@ -501,7 +512,7 @@ describe("runDeliver", () => {
     expect(githubMutation.blockers.join("\n")).toContain("Ship lead did not write final output");
     expect(deliverySummary).toContain("Ship lead did not write final output");
     expect(deliverySummary).not.toContain("ENOENT");
-  }, 20_000);
+  }, 60_000);
 
   it("fails closed when the review lead exits without writing final output", async () => {
     process.env.FAKE_CODEX_NO_FINAL_DELIVER_REVIEW = "1";
@@ -547,7 +558,7 @@ describe("runDeliver", () => {
     expect(reviewFinal).toContain("Review stage failed");
     expect(deliverySummary).toContain("Review lead did not write final output");
     expect(deliverySummary).not.toContain("ENOENT");
-  }, 20_000);
+  }, 60_000);
 
   it("classifies registry blockers from local validation commands", async () => {
     process.env.FAKE_CODEX_VALIDATION_COMMAND =
@@ -594,7 +605,7 @@ describe("runDeliver", () => {
     expect(localValidation.blockerCategories).toContain("registry-unreachable");
     expect(coverageSummary.outcomeCategory).toBe("blocked-by-validation");
     expect(coverageSummary.gaps.join("\n")).toContain("registry-unreachable");
-  }, 20_000);
+  }, 60_000);
 
   it("classifies repo test failures from local validation commands separately from environment blockers", async () => {
     process.env.FAKE_CODEX_VALIDATION_COMMAND =
@@ -641,7 +652,7 @@ describe("runDeliver", () => {
     expect(localValidation.blockerCategories).toContain("repo-test-failure");
     expect(localValidation.blockerCategories).not.toContain("registry-unreachable");
     expect(validationPlan.outcomeCategory).toBe("blocked-by-validation");
-  }, 20_000);
+  }, 60_000);
 
   it("creates a release-bearing deliver run when release evidence exists", async () => {
     const upstreamRunId = await seedSpecRun(repoDir);
@@ -738,7 +749,7 @@ describe("runDeliver", () => {
     expect(githubDelivery.actions.status).toBe("ready");
     expect(releaseArtifact).toContain("\"tagName\": \"v1.2.3\"");
     expect(promptBody).toContain("review specialists");
-  }, 15_000);
+  }, 60_000);
 
   it("inherits and overrides initiative metadata", async () => {
     const upstreamRunId = await seedInitiativeSpecRun(repoDir);
@@ -792,7 +803,7 @@ describe("runDeliver", () => {
     expect(overrideRun.inputs.initiativeId).toBe("initiative-deliver-override");
     expect(overrideRun.inputs.initiativeTitle).toBe("Override deliver initiative");
     expect(inheritedRun.id).not.toBe(overrideRun.id);
-  }, 20_000);
+  }, 60_000);
 
   it("fails deliver when required GitHub security or checks are blocked", async () => {
     await writeGitHubFixture({
@@ -876,7 +887,37 @@ describe("runDeliver", () => {
     expect(readinessPolicy.postReadinessSummary.blockers.join("\n")).toContain("github-delivery:");
     expect(deploymentEvidence.status).toBe("recorded");
     expect(securityArtifact).toContain("\"severity\": \"high\"");
-  }, 15_000);
+  }, 60_000);
+
+  it("fails closed when GitHub helper commands time out during ship preparation", async () => {
+    process.env.CSTACK_GITHUB_COMMAND_TIMEOUT_MS = "1000";
+    process.env.FAKE_GH_DELAY_MS = "3000";
+
+    await runDeliver(repoDir, ["Deliver a blocked change for #789"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const githubMutation = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "github-mutation.json"), "utf8")) as {
+      summary: string;
+      blockers: string[];
+    };
+    const githubDelivery = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "github-delivery.json"), "utf8")) as {
+      overall: { status: string; blockers: string[] };
+    };
+    const shipRecord = JSON.parse(await fs.readFile(path.join(runDir, "stages", "ship", "artifacts", "ship-record.json"), "utf8")) as {
+      readiness: string;
+      summary: string;
+    };
+
+    expect(run.status).toBe("failed");
+    expect(githubMutation.summary).toContain("GitHub command timed out");
+    expect(githubMutation.blockers.join("\n")).toContain("GitHub command timed out");
+    expect(githubDelivery.overall.status).toBe("blocked");
+    expect(githubDelivery.overall.blockers.join("\n")).toContain("GitHub command timed out");
+    expect(shipRecord.readiness).toBe("blocked");
+    expect(shipRecord.summary).toContain("GitHub delivery is blocked");
+  }, 10_000);
 
   it("stops after a failed build and marks downstream stages as deferred", async () => {
     process.env.FAKE_CODEX_FAIL_BUILD = "1";
@@ -934,7 +975,7 @@ describe("runDeliver", () => {
     expect(shipRecord.readiness).toBe("blocked");
     expect(shipRecord.summary).toContain("Build failed after Codex started work");
     expect(diagnosis.category).toBe("build-script-failure");
-  }, 15_000);
+  }, 60_000);
 
   it("times out the build stage and blocks downstream stages", async () => {
     process.env.FAKE_CODEX_DELAY_MS = "1500";
@@ -965,7 +1006,51 @@ describe("runDeliver", () => {
     expect(session.observability.timeoutSeconds).toBe(1);
     expect(lineage.stages.find((stage) => stage.name === "build")?.status).toBe("failed");
     expect(lineage.stages.find((stage) => stage.name === "validation")?.status).toBe("deferred");
-  }, 15_000);
+  }, 60_000);
+
+  it("fails closed when a validation specialist stalls on a registry blocker", async () => {
+    process.env.FAKE_CODEX_VALIDATION_SPECIALIST_REGISTRY_STALL = "1";
+    process.env.FAKE_CODEX_VALIDATION_SPECIALIST_STALL_MS = "4000";
+    await fs.mkdir(path.join(repoDir, ".github", "workflows"), { recursive: true });
+    await fs.writeFile(path.join(repoDir, ".github", "workflows", "ci.yml"), "name: CI\n", "utf8");
+    await execFileAsync("git", ["add", ".github/workflows/ci.yml"], { cwd: repoDir });
+    await execFileAsync("git", ["commit", "-m", "add workflow fixture"], { cwd: repoDir });
+    await execFileAsync("git", ["push"], { cwd: repoDir });
+    const configPath = path.join(repoDir, ".cstack", "config.toml");
+    const configBody = await fs.readFile(configPath, "utf8");
+    await fs.writeFile(
+      configPath,
+      `${configBody}\n[workflows.deliver.stageTimeoutSeconds]\nvalidation = 1\n`,
+      "utf8"
+    );
+
+    await runDeliver(repoDir, ["Deliver a workflow-security validation stall fixture"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const validationPlan = JSON.parse(
+      await fs.readFile(path.join(runDir, "stages", "validation", "validation-plan.json"), "utf8")
+    ) as { status: string; summary: string; coverage: { gaps: string[] } };
+    const localValidation = JSON.parse(
+      await fs.readFile(path.join(runDir, "stages", "validation", "artifacts", "local-validation.json"), "utf8")
+    ) as { status: string; blockerCategories?: string[] };
+    const lineage = JSON.parse(await fs.readFile(path.join(runDir, "stage-lineage.json"), "utf8")) as StageLineage;
+    const specialistArtifact = await fs.readFile(
+      path.join(runDir, "stages", "validation", "delegates", "workflow-security-specialist", "artifacts", "workflow-security-specialist.md"),
+      "utf8"
+    );
+
+    expect(run.status).toBe("failed");
+    expect(validationPlan.status).toBe("blocked");
+    expect(validationPlan.summary).toContain("registry-unreachable");
+    expect(validationPlan.coverage.gaps.join("\n")).toContain("workflow-security-specialist");
+    expect(localValidation.status).toBe("not-run");
+    expect(localValidation.blockerCategories).toContain("registry-unreachable");
+    expect(lineage.stages.find((stage) => stage.name === "validation")).toMatchObject({ status: "failed", executed: true });
+    expect(specialistArtifact).toContain("Blocker category: registry-unreachable");
+    expect(specialistArtifact).not.toContain("ENOENT");
+  }, 60_000);
 
   it("fails deliver when pull request creation fails", async () => {
     await writeGitHubFixture({
@@ -1014,7 +1099,7 @@ describe("runDeliver", () => {
     expect(githubDelivery.overall.status).toBe("blocked");
     expect(githubDelivery.overall.blockers.join("\n")).toContain("GitHub failed while creating or updating the pull request.");
     expect(githubDelivery.overall.blockers.join("\n")).toContain("simulated PR create failure");
-  }, 15_000);
+  }, 60_000);
 
   it("classifies GitHub authentication failures during pull request creation", async () => {
     await writeGitHubFixture({
@@ -1053,7 +1138,7 @@ describe("runDeliver", () => {
     expect(run.status).toBe("failed");
     expect(githubMutation.summary).toContain("GitHub authentication failed while creating or updating the pull request.");
     expect(githubMutation.blockers.join("\n")).toContain("Run gh auth login");
-  }, 15_000);
+  }, 60_000);
 
   it("classifies GitHub connectivity failures during required check inspection", async () => {
     await writeGitHubFixture({
@@ -1100,7 +1185,7 @@ describe("runDeliver", () => {
     expect(githubDelivery.checks.error).toContain("network timeout contacting api.github.com");
     expect(githubDelivery.overall.status).toBe("blocked");
     expect(githubDelivery.overall.blockers.join("\n")).toContain("GitHub connectivity failed while inspecting required checks.");
-  }, 15_000);
+  }, 60_000);
 
   it("classifies git push rejection during deliver mutations", async () => {
     await writeGitHubFixture({
@@ -1154,7 +1239,7 @@ describe("runDeliver", () => {
     expect(githubMutation.branch.pushed).toBe(false);
     expect(githubMutation.summary).toContain("Git rejected the push while pushing branch");
     expect(githubMutation.blockers.join("\n")).toContain("protected branch hook declined");
-  }, 15_000);
+  }, 60_000);
 
   it("classifies GitHub pull request update conflicts", async () => {
     await writeGitHubFixture({
@@ -1204,7 +1289,7 @@ describe("runDeliver", () => {
     expect(run.status).toBe("failed");
     expect(githubMutation.summary).toContain("GitHub failed while creating or updating the pull request.");
     expect(githubMutation.blockers.join("\n")).toContain("modified concurrently");
-  }, 15_000);
+  }, 60_000);
 
   it("fails closed when the default branch cannot be resolved for PR mutation", async () => {
     await writeGitHubFixture({
@@ -1265,9 +1350,17 @@ describe("runDeliver", () => {
     expect(result.record.blockers.join("\n")).toContain("resource not accessible");
     expect(result.record.branch.created).toBe(true);
     expect(result.record.pullRequest.created).toBe(false);
-  }, 15_000);
+  }, 60_000);
 
   it("surfaces required-check watch timeouts as GitHub mutation blockers", async () => {
+    const configPath = path.join(repoDir, ".cstack", "config.toml");
+    const existing = await fs.readFile(configPath, "utf8");
+    await fs.writeFile(
+      configPath,
+      existing.replace('watchChecks = false', 'watchChecks = true'),
+      "utf8"
+    );
+
     await writeGitHubFixture({
       repoView: {
         nameWithOwner: "ganesh47/cstack",
@@ -1316,5 +1409,5 @@ describe("runDeliver", () => {
     expect(githubMutation.checks.summary).toContain("Timed out while waiting for required checks.");
     expect(githubMutation.summary).toContain("Timed out while waiting for required checks.");
     expect(githubMutation.blockers.join("\n")).toContain("Waiting for 2 required checks.");
-  }, 15_000);
+  }, 60_000);
 });

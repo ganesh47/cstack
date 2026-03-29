@@ -2,9 +2,9 @@
 
 Historical note:
 
-- This document is a future slice spec, not part of the active shipped contract.
+- This document was originally written as a future slice spec and now records the validation-intelligence workstream that shipped on 2026-03-28.
 - The active shipped contract remains `docs/specs/cstack-spec-v0.1.md`.
-- This slice defines how `deliver` should grow from bounded verification into a repo-aware validation system that can design, implement, and run a strong testing pyramid across product types.
+- This slice records how `deliver` grew from bounded verification into a repo-aware validation system with an explicit validation stage and durable validation artifacts.
 
 ## Thesis
 

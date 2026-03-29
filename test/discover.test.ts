@@ -56,8 +56,11 @@ describe("runDiscover", () => {
   });
 
   afterEach(async () => {
+    delete process.env.CSTACK_DISCOVER_NO_PROGRESS_TIMEOUT_SECONDS;
     delete process.env.FAKE_CODEX_DELAY_MS;
     delete process.env.FAKE_CODEX_DISCOVER_DELAY_MS;
+    delete process.env.FAKE_CODEX_ACTIVITY_AFTER_SESSION;
+    delete process.env.FAKE_CODEX_HANG_AFTER_SESSION_MS;
     delete process.env.FAKE_CODEX_PRINT_BODY;
     delete process.env.FAKE_CODEX_SKIP_FINAL_WRITE;
     delete process.env.FAKE_CODEX_EXIT_CODE;
@@ -127,7 +130,7 @@ describe("runDiscover", () => {
     } finally {
       stdoutSpy.mockRestore();
     }
-  }, 15_000);
+  }, 30_000);
 
   it("writes planning issue lineage artifacts for issue-linked discover runs", async () => {
     await runDiscover(repoDir, ["--issue", "123", "Map the repo constraints for the next slice."]);
@@ -216,7 +219,7 @@ describe("runDiscover", () => {
     });
   });
 
-  it("suppresses repo-explorer-only delegation for broad prompts and keeps discover single-agent", async () => {
+  it("uses bounded repo-explorer delegation for broad gap-remediation prompts", async () => {
     await runDiscover(repoDir, "What are the gaps in the current project and find them and fix them");
 
     const runs = await listRuns(repoDir);
@@ -228,10 +231,12 @@ describe("runDiscover", () => {
       limitations: string[];
     };
 
-    expect(researchPlan.mode).toBe("single-agent");
-    expect(researchPlan.tracks.every((track) => !track.selected)).toBe(true);
-    expect(researchPlan.limitations.join("\n")).toContain("repo-explorer track qualified");
-    await expect(fs.access(path.join(stageDir, "delegates", "repo-explorer", "result.json"))).rejects.toThrow();
+    expect(researchPlan.mode).toBe("research-team");
+    expect(researchPlan.tracks.filter((track) => track.selected).map((track) => track.name)).toEqual(["repo-explorer"]);
+    expect(researchPlan.limitations.join("\n")).not.toContain("repo-explorer track qualified");
+    expect(await fs.readFile(path.join(stageDir, "delegates", "repo-explorer", "result.json"), "utf8")).toContain(
+      "\"track\": \"repo-explorer\""
+    );
   });
 
   it("fails cleanly when a delegated discover track times out before writing a final artifact", async () => {
@@ -281,6 +286,61 @@ describe("runDiscover", () => {
     expect(researchPlan.mode).toBe("single-agent");
     expect(researchPlan.tracks.every((track) => !track.selected)).toBe(true);
     await expect(fs.access(path.join(stageDir, "delegates", "repo-explorer", "result.json"))).rejects.toThrow();
+  }, 15_000);
+
+  it("recovers bounded heuristic findings when a broad discover run stalls after initial activity", async () => {
+    await fs.mkdir(path.join(repoDir, "docker", "api"), { recursive: true });
+    await fs.mkdir(path.join(repoDir, "specs", "001-plan-alignment"), { recursive: true });
+    await fs.writeFile(
+      path.join(repoDir, "docker", "README.md"),
+      [
+        "# Docker Artifacts",
+        "",
+        "Use `docker compose -f docker/api/compose.yml up -d` and then `curl http://localhost:8080/health/ready` for a local smoke test."
+      ].join("\n"),
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(repoDir, "docker", "api", "compose.yml"),
+      [
+        "services:",
+        "  api:",
+        "    command: [\"bash\", \"-lc\", \"echo 'Run pnpm start once Fastify server exists' && tail -f /dev/null\"]"
+      ].join("\n"),
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(repoDir, "docker", "compose.stack.yml"),
+      [
+        "services:",
+        "  cli:",
+        "    command: [\"bash\", \"-lc\", \"echo 'CLI placeholder – ingest logic to be added later' && tail -f /dev/null\"]"
+      ].join("\n"),
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(repoDir, "specs", "001-plan-alignment", "quickstart.md"),
+      "# Quickstart\n\nFollow the documented build -> test -> sign -> push flow.\n",
+      "utf8"
+    );
+
+    process.env.CSTACK_DISCOVER_NO_PROGRESS_TIMEOUT_SECONDS = "1";
+    process.env.FAKE_CODEX_ACTIVITY_AFTER_SESSION = "1";
+    process.env.FAKE_CODEX_HANG_AFTER_SESSION_MS = "2500";
+
+    await runDiscover(repoDir, "What are the gaps in the current project and find them and fix them");
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const findings = await fs.readFile(path.join(runDir, "artifacts", "findings.md"), "utf8");
+    const discoveryReport = await fs.readFile(path.join(runDir, "stages", "discover", "artifacts", "discovery-report.md"), "utf8");
+
+    expect(run.status).toBe("completed");
+    expect(run.lastActivity).toContain("partial artifact");
+    expect(findings).toContain("Docker delivery artifacts drift from the documented runnable flow");
+    expect(findings).toContain("recovered this bounded fallback from representative repo files");
+    expect(discoveryReport).toContain("placeholder commands");
   }, 15_000);
 
   it("respects a shared discover budget instead of giving every delegated track the full timeout", async () => {

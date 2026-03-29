@@ -1,9 +1,32 @@
 #!/usr/bin/env node
 
-import { writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const args = process.argv.slice(2);
+const fixturePath = path.join(process.cwd(), ".cstack", "test-codex.json");
+
+async function loadFixture() {
+  try {
+    return JSON.parse(await readFile(fixturePath, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+const fixture = await loadFixture();
+
+function envValue(name) {
+  const value = fixture[name];
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return process.env[name];
+}
 
 if (args.includes("--version")) {
   await new Promise((resolve) => process.stdout.write("fake-codex 0.0.1\n", resolve));
@@ -31,13 +54,13 @@ for await (const chunk of process.stdin) {
 }
 prompt = prompt.trim() || (promptFromArgs ?? "");
 
-if (prompt.includes("## Build execution contract") && process.env.FAKE_CODEX_EARLY_EXIT_BUILD === "1") {
+if (prompt.includes("## Build execution contract") && envValue("FAKE_CODEX_EARLY_EXIT_BUILD") === "1") {
   process.stderr.write("Interactive codex exited with code 1\n");
   process.exit(1);
 }
 
 await new Promise((resolve) => process.stderr.write("session id: fake-session-123\n", resolve));
-if (process.env.FAKE_CODEX_ACTIVITY_AFTER_SESSION === "1") {
+if (envValue("FAKE_CODEX_ACTIVITY_AFTER_SESSION") === "1") {
   await new Promise((resolve) =>
     process.stderr.write("I'm checking the local repository and the referenced planning documents.\n", resolve)
   );
@@ -45,8 +68,8 @@ if (process.env.FAKE_CODEX_ACTIVITY_AFTER_SESSION === "1") {
     process.stderr.write("exec /bin/zsh -lc pwd in /tmp succeeded in 0ms:\n", resolve)
   );
 }
-if (process.env.FAKE_CODEX_HANG_AFTER_SESSION_MS) {
-  await new Promise((resolve) => setTimeout(resolve, Number.parseInt(process.env.FAKE_CODEX_HANG_AFTER_SESSION_MS, 10)));
+if (envValue("FAKE_CODEX_HANG_AFTER_SESSION_MS")) {
+  await new Promise((resolve) => setTimeout(resolve, Number.parseInt(envValue("FAKE_CODEX_HANG_AFTER_SESSION_MS"), 10)));
 }
 await new Promise((resolve) => process.stdout.write("scanning repository context\n", resolve));
 await new Promise((resolve) => setTimeout(resolve, 25));
@@ -119,7 +142,7 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
     2
   );
 } else if (prompt.includes("## Build execution contract")) {
-  if (process.env.FAKE_CODEX_FAIL_BUILD === "1") {
+  if (envValue("FAKE_CODEX_FAIL_BUILD") === "1") {
     process.stderr.write("fake build failure\n");
     process.exit(1);
   }
@@ -134,12 +157,12 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
       : "Linked context missing."
   ].join("\n");
 } else if (prompt.includes("You are the `Validation Lead` for a bounded `cstack deliver` workflow.")) {
-  if (process.env.FAKE_CODEX_NO_FINAL_VALIDATION === "1") {
+  if (envValue("FAKE_CODEX_NO_FINAL_VALIDATION") === "1") {
     process.stderr.write("synthetic validation failure without final output\n");
     process.exit(1);
   }
-  const validationStatus = process.env.FAKE_CODEX_VALIDATION_STATUS ?? "ready";
-  const validationCommand = process.env.FAKE_CODEX_VALIDATION_COMMAND ?? "node -e \"process.stdout.write('deliver verify ok')\"";
+  const validationStatus = envValue("FAKE_CODEX_VALIDATION_STATUS") ?? "ready";
+  const validationCommand = envValue("FAKE_CODEX_VALIDATION_COMMAND") ?? "node -e \"process.stdout.write('deliver verify ok')\"";
   const validationGap = validationStatus === "partial" ? ["Validation evidence intentionally missing from this fake fixture to force partial workflow handling."] : [];
   body = JSON.stringify(
     {
@@ -241,6 +264,24 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
     2
   );
 } else if (prompt.includes("specialist for the `validation` stage inside `cstack deliver`")) {
+  if (envValue("FAKE_CODEX_VALIDATION_SPECIALIST_REGISTRY_STALL") === "1") {
+    await new Promise((resolve) =>
+      process.stderr.write(
+        "I’m checking current workflow lint output before changing anything so the fixes are tied to real findings rather than generic hardening advice.\n",
+        resolve
+      )
+    );
+    await new Promise((resolve) =>
+      process.stderr.write(
+        "error: Request failed after 3 retries in 12.6s\n  Caused by: Failed to fetch: `https://pypi.org/simple/zizmor/`\n  Caused by: error sending request for url (https://pypi.org/simple/zizmor/)\n  Caused by: client error (Connect)\n  Caused by: dns error\n  Caused by: failed to lookup address information: nodename nor servname provided, or not known\n",
+        resolve
+      )
+    );
+    await new Promise((resolve) =>
+      setTimeout(resolve, Number.parseInt(envValue("FAKE_CODEX_VALIDATION_SPECIALIST_STALL_MS") ?? "5000", 10))
+    );
+    process.exit(1);
+  }
   body = [
     "# Validation Specialist Findings",
     "",
@@ -301,7 +342,7 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
     2
   );
 } else if (prompt.includes("You are the `Review Lead` for a bounded `cstack deliver` workflow.")) {
-  if (process.env.FAKE_CODEX_NO_FINAL_DELIVER_REVIEW === "1") {
+  if (envValue("FAKE_CODEX_NO_FINAL_DELIVER_REVIEW") === "1") {
     process.stderr.write("synthetic deliver review failure without final output\n");
     process.exit(1);
   }
@@ -325,7 +366,7 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
     2
   );
 } else if (prompt.includes("You are the `Ship Lead` for a bounded `cstack deliver` workflow.")) {
-  if (process.env.FAKE_CODEX_NO_FINAL_SHIP === "1") {
+  if (envValue("FAKE_CODEX_NO_FINAL_SHIP") === "1") {
     process.stderr.write("synthetic ship failure without final output\n");
     process.exit(1);
   }
@@ -352,6 +393,50 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
     "",
     "Concrete follow-up recorded."
   ].join("\n");
+} else if (envValue("FAKE_CODEX_SPEC_TOO_BROAD") === "1") {
+  body = [
+    "# Fake Spec",
+    "",
+    "## Summary",
+    "This plan spans multiple workstreams across the repository.",
+    "",
+    "## Workstreams",
+    "- Align every API contract and connector in one pass.",
+    "- Rebuild validation across Java, Python, and Node simultaneously.",
+    "- Rewrite release automation and docs.",
+    "",
+    "## Roadmap",
+    "1. Audit everything.",
+    "2. Implement the platform-wide changes.",
+    "3. Revisit any remaining drift."
+  ].join("\n");
+} else if (envValue("FAKE_CODEX_SPEC_BOUNDED") === "1" || prompt.includes("## Required output headings")) {
+  body = [
+    "# Fake Spec",
+    "",
+    "## Gap Clusters",
+    "- API contract drift between implementation and documented behavior.",
+    "- Missing runnable validation for the main metadata ingest path.",
+    "",
+    "## Selected First Slice",
+    "Add one bounded contract-validation slice for the metadata ingest endpoint and stop after the narrowest implementation-ready plan.",
+    "",
+    "## Files In Scope",
+    "- specs/001-plan-alignment/contracts/api.yaml",
+    "- packages/api/src/routes/connectors.ts",
+    "- packages/connectors/java/integration-tests/src/test/java/com/sqlite/metadata/integration/ApiContractTest.java",
+    "",
+    "## Validation",
+    "- Run the contract integration test for the ingest endpoint.",
+    "- Verify the documented route and implementation semantics match.",
+    "",
+    "## Out Of Scope",
+    "- Do not redesign unrelated connector flows.",
+    "- Do not rewrite the release pipeline in this slice.",
+    "",
+    "## Open Questions",
+    "- Confirm whether Python connector parity belongs in a follow-up slice."
+  ].join("\n");
 } else {
   body = [
     "# Fake Spec",
@@ -364,10 +449,10 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
   ].join("\n");
 }
 
-if (process.env.FAKE_CODEX_DISCOVER_DELAY_MS && prompt.includes("cstack discover")) {
-  await new Promise((resolve) => setTimeout(resolve, Number.parseInt(process.env.FAKE_CODEX_DISCOVER_DELAY_MS, 10)));
-} else if (process.env.FAKE_CODEX_DELAY_MS) {
-  await new Promise((resolve) => setTimeout(resolve, Number.parseInt(process.env.FAKE_CODEX_DELAY_MS, 10)));
+if (envValue("FAKE_CODEX_DISCOVER_DELAY_MS") && prompt.includes("cstack discover")) {
+  await new Promise((resolve) => setTimeout(resolve, Number.parseInt(envValue("FAKE_CODEX_DISCOVER_DELAY_MS"), 10)));
+} else if (envValue("FAKE_CODEX_DELAY_MS")) {
+  await new Promise((resolve) => setTimeout(resolve, Number.parseInt(envValue("FAKE_CODEX_DELAY_MS"), 10)));
 }
 
 const resolvedFinalPath =
@@ -379,21 +464,30 @@ if (!resolvedFinalPath) {
   process.exit(2);
 }
 
-if (process.env.FAKE_CODEX_PRINT_BODY === "1" || process.env.FAKE_CODEX_STALL_AFTER_OUTPUT_MS) {
+if (envValue("FAKE_CODEX_PRINT_BODY") === "1" || envValue("FAKE_CODEX_STALL_AFTER_OUTPUT_MS")) {
   await new Promise((resolve) => process.stdout.write(`${body}\n`, resolve));
 }
 
-if (process.env.FAKE_CODEX_SKIP_FINAL_WRITE !== "1") {
+if (envValue("FAKE_CODEX_SKIP_FINAL_WRITE") !== "1") {
   await writeFile(resolvedFinalPath, `${body}\n`, "utf8");
 }
 
 await new Promise((resolve) => process.stdout.write("writing final output\n", resolve));
 process.stdout.write("completed\n");
 
-if (process.env.FAKE_CODEX_STALL_AFTER_OUTPUT_MS) {
-  await new Promise((resolve) => setTimeout(resolve, Number.parseInt(process.env.FAKE_CODEX_STALL_AFTER_OUTPUT_MS, 10)));
+if (envValue("FAKE_CODEX_KEEP_STDIO_OPEN_MS")) {
+  const holdOpenMs = Number.parseInt(envValue("FAKE_CODEX_KEEP_STDIO_OPEN_MS"), 10);
+  const sidecar = spawn(process.execPath, ["-e", `setTimeout(() => {}, ${holdOpenMs})`], {
+    stdio: "inherit",
+    detached: true
+  });
+  sidecar.unref();
 }
 
-if (process.env.FAKE_CODEX_EXIT_CODE) {
-  process.exit(Number.parseInt(process.env.FAKE_CODEX_EXIT_CODE, 10));
+if (envValue("FAKE_CODEX_STALL_AFTER_OUTPUT_MS")) {
+  await new Promise((resolve) => setTimeout(resolve, Number.parseInt(envValue("FAKE_CODEX_STALL_AFTER_OUTPUT_MS"), 10)));
+}
+
+if (envValue("FAKE_CODEX_EXIT_CODE")) {
+  process.exit(Number.parseInt(envValue("FAKE_CODEX_EXIT_CODE"), 10));
 }

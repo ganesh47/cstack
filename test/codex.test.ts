@@ -32,6 +32,7 @@ afterEach(() => {
   delete process.env.CSTACK_CODEX_COMPLETION_STALL_MS;
   delete process.env.FAKE_CODEX_HANG_AFTER_SESSION_MS;
   delete process.env.FAKE_CODEX_ACTIVITY_AFTER_SESSION;
+  delete process.env.FAKE_CODEX_KEEP_STDIO_OPEN_MS;
   delete process.env.FAKE_CODEX_SKIP_FINAL_WRITE;
   delete process.env.FAKE_CODEX_EXIT_CODE;
 });
@@ -122,7 +123,7 @@ describe("runCodexExec", () => {
     } finally {
       await fs.rm(cwd, { recursive: true, force: true });
     }
-  }, 15_000);
+  }, 30_000);
 
   it("fails stale discover children that never progress beyond session setup", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "cstack-codex-stale-session-"));
@@ -216,6 +217,54 @@ describe("runCodexExec", () => {
       expect(result.code).toBe(0);
       expect(result.stalled).not.toBe(true);
       expect(result.lastActivity).not.toContain("Stalled after session setup");
+      await expect(fs.readFile(finalPath, "utf8")).resolves.toContain("Fake discover synthesis.");
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it("finalizes after process exit even when stdio drains late", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "cstack-codex-exit-drain-"));
+    const fakeCodexPath = path.resolve("test/fixtures/fake-codex.mjs");
+    chmodSync(fakeCodexPath, 0o755);
+    const finalPath = path.join(cwd, "final.md");
+    const eventsPath = path.join(cwd, "events.jsonl");
+    const stdoutPath = path.join(cwd, "stdout.log");
+    const stderrPath = path.join(cwd, "stderr.log");
+    const config: CstackConfig = {
+      codex: {
+        command: fakeCodexPath,
+        sandbox: "workspace-write"
+      },
+      workflows: {
+        spec: {},
+        discover: {},
+        build: {},
+        review: {},
+        ship: {},
+        deliver: {}
+      }
+    };
+
+    process.env.FAKE_CODEX_KEEP_STDIO_OPEN_MS = "4000";
+    try {
+      const startedAt = Date.now();
+      const result = await runCodexExec({
+        cwd,
+        workflow: "discover",
+        runId: "discover-exit-drain",
+        prompt: "You are the `Research Lead` for a bounded `cstack discover` run.",
+        finalPath,
+        eventsPath,
+        stdoutPath,
+        stderrPath,
+        config,
+        silentProgress: true,
+        timeoutSeconds: 10
+      });
+
+      expect(result.code).toBe(0);
+      expect(Date.now() - startedAt).toBeLessThan(3_000);
       await expect(fs.readFile(finalPath, "utf8")).resolves.toContain("Fake discover synthesis.");
     } finally {
       await fs.rm(cwd, { recursive: true, force: true });

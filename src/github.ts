@@ -22,6 +22,7 @@ import type {
 const execFileAsync = promisify(execFile);
 const INTERNAL_RUN_ARTIFACT_PREFIX = ".cstack/runs/";
 const GIT_STATUS_PORCELAIN_ARGS = ["status", "--porcelain", "--untracked-files=all"] as const;
+const DEFAULT_GITHUB_COMMAND_TIMEOUT_MS = 10_000;
 
 function isInternalRunArtifactPath(filePath: string): boolean {
   const normalized = filePath.replace(/\\/g, "/").replace(/^\.?\//, "");
@@ -105,7 +106,8 @@ async function runCommand(command: string, args: string[], cwd: string): Promise
   const invocation = resolveCommand(command, args);
   const result = await execFileAsync(invocation.file, invocation.args, {
     cwd,
-    maxBuffer: 10 * 1024 * 1024
+    maxBuffer: 10 * 1024 * 1024,
+    timeout: Number.parseInt(process.env.CSTACK_GITHUB_COMMAND_TIMEOUT_MS ?? "", 10) || DEFAULT_GITHUB_COMMAND_TIMEOUT_MS
   });
   return {
     stdout: result.stdout,
@@ -143,6 +145,13 @@ function commandFailureDetails(error: unknown): CommandFailureDetails {
 function classifyGitHubFailure(action: string, error: unknown): { summary: string; detail: string } {
   const detail = commandFailureDetails(error).combined;
   const normalized = detail.toLowerCase();
+
+  if (/\b(etimedout|timed out|timeout exceeded)\b/.test(normalized)) {
+    return {
+      summary: `GitHub command timed out while ${action}.`,
+      detail
+    };
+  }
 
   if (
     /\b(auth|authenticate|authentication|not logged in|login)\b/.test(normalized) ||
@@ -249,6 +258,13 @@ async function resolveDefaultBranch(options: {
 function classifyGitFailure(action: string, error: unknown): { summary: string; detail: string } {
   const detail = commandFailureDetails(error).combined;
   const normalized = detail.toLowerCase();
+
+  if (/\b(etimedout|timed out|timeout exceeded)\b/.test(normalized)) {
+    return {
+      summary: `Git timed out while ${action}.`,
+      detail
+    };
+  }
 
   if (/\b(rejected|non-fast-forward|failed to push some refs|protected branch)\b/.test(normalized)) {
     return {

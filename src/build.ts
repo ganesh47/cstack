@@ -533,6 +533,12 @@ function classifyBuildFailure(options: {
       ? { category: failedVerification.blockerCategory, detail: failedVerification.blockerDetail ?? renderVerificationSummary(options.verificationRecord) }
       : classifyExecutionBlocker("codex build", [options.stderrTail, options.finalBody, ...options.assessment.notes].join("\n"));
   const missingRequiredTool = options.assessment.notes.find((note) => /Required tool not currently available/i.test(note));
+  const opaqueEarlyExit =
+    !options.sessionRecord.observability.sessionIdObserved &&
+    (!options.sessionRecord.observability.transcriptObserved || /interactive codex exited with code/i.test(options.stderrTail)) &&
+    (!options.sessionRecord.observability.finalArtifactObserved ||
+      options.result.synthesizedFinalArtifact ||
+      /interactive codex exited with code/i.test(options.stderrTail));
 
   const failedBootstrap = [...options.recoveryAttempts].reverse().find((attempt) => attempt.kind === "bootstrap" && attempt.status === "failed");
   if ((options.result.timedOut || options.result.stalled) && options.result.timeoutSeconds) {
@@ -572,9 +578,10 @@ function classifyBuildFailure(options: {
         : "Fix the failing verification command and rerun build."
     );
   } else if (
+    opaqueEarlyExit ||
     !options.sessionRecord.observability.sessionIdObserved &&
     !options.sessionRecord.observability.transcriptObserved &&
-    !options.sessionRecord.observability.finalArtifactObserved
+    (!options.sessionRecord.observability.finalArtifactObserved || options.result.synthesizedFinalArtifact)
   ) {
     category = "codex-process-failure";
     blockerCategory = inferredBlocker?.category;
@@ -886,7 +893,10 @@ function shouldRetryCodexAttempt(outcome: CodexAttemptOutcome, attemptNumber: nu
   if (outcome.transcriptBody.trim()) {
     return false;
   }
-  const finalBodyUsable = outcome.finalBody.trim() && !outcome.result.synthesizedFinalArtifact;
+  if (outcome.result.synthesizedFinalArtifact) {
+    return true;
+  }
+  const finalBodyUsable = Boolean(outcome.finalBody.trim());
   const stderrTail = outcome.stderrTail.trim();
   if (!finalBodyUsable && !stderrTail) {
     return true;

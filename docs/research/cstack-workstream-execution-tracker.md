@@ -2,9 +2,15 @@
 
 Historical note:
 
-- This document is a forward-looking execution tracker, not part of the active shipped contract.
+- This document started as a forward-looking execution tracker and now serves as the execution record for the six workstreams completed on 2026-03-28.
 - The active shipped contract remains `docs/specs/cstack-spec-v0.1.md`.
-- The purpose of this document is to map each independent workstream to concrete code touchpoints, first shippable scope, and test additions.
+- The purpose of this document is to map each independent workstream to concrete code touchpoints, shipped scope, and test coverage.
+
+## Completion Summary
+
+- verification status: `npm run typecheck && npm test` passing on the completion branch
+- umbrella issue updated: [#32](https://github.com/ganesh47/cstack/issues/32)
+- child implementation updates posted: [#33](https://github.com/ganesh47/cstack/issues/33) through [#38](https://github.com/ganesh47/cstack/issues/38)
 
 ## Active Threads
 

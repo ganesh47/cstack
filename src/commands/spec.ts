@@ -4,6 +4,7 @@ import { loadConfig } from "../config.js";
 import { runCodexExec } from "../codex.js";
 import { maybeOfferInteractiveInspect } from "../inspector.js";
 import { buildSpecPrompt, excerpt } from "../prompt.js";
+import { buildBoundedSpecInput, buildSpecContractError, deriveSpecPlanArtifact, validateSpecOutput } from "../spec-contract.js";
 import { detectCodexVersion, detectGitBranch, ensureRunDir, listRuns, makeRunId, writeRunRecord } from "../run.js";
 import { resolveLinkedBuildContext } from "../build.js";
 import type { InitiativeGraphRecord, PlanningIssueLineageRecord, RunRecord } from "../types.js";
@@ -69,21 +70,6 @@ function parseSpecArgs(args: string[]): { prompt: string; options: SpecCliOption
   };
 }
 
-function derivePlanArtifact(finalBody: string): Record<string, unknown> {
-  const lines = finalBody
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const bullets = lines.filter((line) => line.startsWith("- ") || /^[0-9]+\.\s/.test(line)).slice(0, 12);
-  const questions = lines.filter((line) => line.includes("?"));
-
-  return {
-    summary: lines.find((line) => !line.startsWith("#")) ?? "",
-    steps: bullets.map((line) => line.replace(/^-\s+/, "").replace(/^[0-9]+\.\s+/, "")),
-    openQuestions: questions
-  };
-}
-
 function deriveOpenQuestions(finalBody: string): string {
   const questions = finalBody
     .split("\n")
@@ -98,9 +84,11 @@ function deriveIssueDraft(options: {
   planningIssueNumber: number;
   linkedContext?: { run: { id: string; workflow: string } };
 }): string {
-  const plan = derivePlanArtifact(options.finalBody);
-  const steps = Array.isArray(plan.steps) ? plan.steps.map((step) => String(step)) : [];
-  const openQuestions = Array.isArray(plan.openQuestions) ? plan.openQuestions.map((item) => String(item)) : [];
+  const plan = deriveSpecPlanArtifact(options.finalBody, validateSpecOutput(options.prompt, options.finalBody));
+  const steps = Array.isArray(plan.steps) ? plan.steps.map((step: unknown) => String(step)) : [];
+  const openQuestions = Array.isArray(plan.openQuestions)
+    ? plan.openQuestions.map((item: unknown) => String(item))
+    : [];
 
   return [
     `# Planning Issue Draft: #${options.planningIssueNumber}`,
@@ -117,7 +105,7 @@ function deriveIssueDraft(options: {
     ...(steps.length > 0 ? steps.map((step) => `- ${step}`) : ["- refine the implementation slice from the saved spec output"]),
     "",
     "## Open questions",
-    ...(openQuestions.length > 0 ? openQuestions.map((question) => `- ${question}`) : ["- none recorded"]),
+    ...(openQuestions.length > 0 ? openQuestions.map((question: string) => `- ${question}`) : ["- none recorded"]),
     "",
     "## Lineage",
     options.linkedContext ? `- upstream run: ${options.linkedContext.run.id} (${options.linkedContext.run.workflow})` : "- upstream run: none"
@@ -150,8 +138,14 @@ export async function runSpec(cwd: string, input: string | string[]): Promise<st
     typeof parsed.options.planningIssueNumber === "number"
       ? parsed.options.planningIssueNumber
       : linkedContext?.run.inputs.planningIssueNumber;
+  const narrowedLinkedDiscoverInput =
+    linkedContext?.run.workflow === "discover" && resolvedPrompt
+      ? buildBoundedSpecInput(resolvedPrompt, linkedContext.artifactBody)
+      : null;
   const specInput =
-    linkedContext && resolvedPrompt
+    narrowedLinkedDiscoverInput
+      ? narrowedLinkedDiscoverInput
+      : linkedContext && resolvedPrompt
       ? `${resolvedPrompt}\n\n## Linked upstream run\n- run: ${linkedContext.run.id}\n- workflow: ${linkedContext.run.workflow}\n\n## Linked artifact excerpt\n${excerpt(linkedContext.artifactBody, 40)}`
       : linkedContext
         ? `Design the next implementation-ready spec from upstream run ${linkedContext.run.id}.\n\n## Linked artifact excerpt\n${excerpt(linkedContext.artifactBody, 40)}`
@@ -164,6 +158,7 @@ export async function runSpec(cwd: string, input: string | string[]): Promise<st
   const artifactPath = path.join(runDir, "artifacts", "spec.md");
   const planPath = path.join(runDir, "artifacts", "plan.json");
   const openQuestionsPath = path.join(runDir, "artifacts", "open-questions.md");
+  const specContractPath = path.join(runDir, "artifacts", "spec-contract.json");
   const issueDraftPath = path.join(runDir, "artifacts", "issue-draft.md");
   const issueLineagePath = path.join(runDir, "artifacts", "issue-lineage.json");
   const initiativeGraphPath = path.join(runDir, "artifacts", "initiative-graph.json");
@@ -223,6 +218,7 @@ export async function runSpec(cwd: string, input: string | string[]): Promise<st
   };
 
   await writeRunRecord(runDir, runRecord);
+  let specContract = validateSpecOutput("", "");
 
   try {
     const result = await runCodexExec({
@@ -252,9 +248,16 @@ export async function runSpec(cwd: string, input: string | string[]): Promise<st
     }
     if (result.code === 0) {
       const finalBody = await fs.readFile(finalPath, "utf8");
+      specContract = validateSpecOutput(resolvedPrompt || specInput, finalBody);
       await fs.writeFile(artifactPath, finalBody, "utf8");
-      await fs.writeFile(planPath, `${JSON.stringify(derivePlanArtifact(finalBody), null, 2)}\n`, "utf8");
+      await fs.writeFile(planPath, `${JSON.stringify(deriveSpecPlanArtifact(finalBody, specContract), null, 2)}\n`, "utf8");
       await fs.writeFile(openQuestionsPath, deriveOpenQuestions(finalBody), "utf8");
+      if (specContract.required) {
+        await fs.writeFile(specContractPath, `${JSON.stringify(specContract, null, 2)}\n`, "utf8");
+      }
+      if (specContract.status === "invalid") {
+        throw new Error(buildSpecContractError(specContract));
+      }
       if (resolvedInitiativeId) {
         const relatedRuns = priorInitiativeRuns
           .filter((run) => run.inputs?.initiativeId === resolvedInitiativeId)
@@ -343,6 +346,7 @@ export async function runSpec(cwd: string, input: string | string[]): Promise<st
         `  ${path.relative(cwd, artifactPath)}`,
         `  ${path.relative(cwd, planPath)}`,
         `  ${path.relative(cwd, openQuestionsPath)}`,
+        ...(specContract.required ? [`  ${path.relative(cwd, specContractPath)}`] : []),
         ...(typeof resolvedPlanningIssueNumber === "number"
           ? [`  ${path.relative(cwd, issueDraftPath)}`, `  ${path.relative(cwd, issueLineagePath)}`]
           : []),

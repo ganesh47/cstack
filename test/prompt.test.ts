@@ -56,9 +56,15 @@ describe("prompt builders", () => {
   it("adds explicit narrowing rules for broad gap-remediation spec prompts", async () => {
     const { prompt } = await buildSpecPrompt(repoDir, "What are the gaps in the current project and find them and fix them", config);
 
+    expect(prompt).toContain("planning-only");
     expect(prompt).toContain("select exactly one slice to implement first");
     expect(prompt).toContain("one bounded change set");
     expect(prompt).toContain("avoid multi-epic roadmaps");
+    expect(prompt).toContain("inspect at most 8 additional files");
+    expect(prompt).toContain("run at most 6 shell commands");
+    expect(prompt).toContain("## Required output headings");
+    expect(prompt).toContain("## Selected First Slice");
+    expect(prompt).toContain("## Files In Scope");
   });
 
   it("records linked planning issue context in spec prompts", async () => {
@@ -118,11 +124,42 @@ describe("prompt builders", () => {
     expect(trackPrompt.prompt).toContain(path.join(repoDir, "README.md"));
     expect(trackPrompt.prompt).toContain("inspect representative files only");
     expect(trackPrompt.prompt).toContain("top 3 gaps or first remediation candidates");
-    expect(trackPrompt.prompt).toContain("at most 8 commands");
+    expect(trackPrompt.prompt).toContain("after the first credible implementation-ready gap is supported by evidence");
+    expect(trackPrompt.prompt).toContain("at most 6 commands");
+    expect(trackPrompt.prompt).toContain("at most 8 files inspected");
     expect(trackPrompt.prompt).toContain("\"requestedCapabilities\"");
     expect(trackPrompt.prompt).toContain("\"availableCapabilities\"");
     expect(leadPrompt.prompt).not.toContain("docs/research/gstack-codex-interaction-model.md");
     expect(leadPrompt.prompt).toContain(path.join(repoDir, "specs", "001-plan-alignment", "research.md"));
     expect(leadPrompt.prompt).toContain("\"topFindings\"");
+  });
+
+  it("bounds single-agent discover lead prompts when no delegates are available", async () => {
+    const plan: DiscoverResearchPlan = {
+      prompt: "Map the repo",
+      decidedAt: new Date().toISOString(),
+      mode: "single-agent",
+      delegationEnabled: true,
+      maxTracks: 2,
+      webResearchAllowed: false,
+      requestedCapabilities: ["shell"],
+      availableCapabilities: ["shell"],
+      summary: "Research Lead only; delegated tracks suppressed",
+      tracks: [{ name: "repo-explorer", reason: "Inspect repo.", selected: false, requiresWeb: false }],
+      limitations: ["Delegated research was suppressed."]
+    };
+
+    const leadPrompt = await buildDiscoverLeadPrompt({
+      cwd: repoDir,
+      input: "Map the repo",
+      plan,
+      delegateResults: []
+    });
+
+    expect(leadPrompt.prompt).toContain("bounded first-pass discover sweep");
+    expect(leadPrompt.prompt).toContain("top 3 gaps or first remediation candidates");
+    expect(leadPrompt.prompt).toContain("after the first credible implementation-ready gap is supported by evidence");
+    expect(leadPrompt.prompt).toContain("at most 6 commands");
+    expect(leadPrompt.prompt).toContain("at most 8 files inspected");
   });
 });

@@ -287,25 +287,23 @@ async function ensureFinalArtifact(options: {
     }
   } catch {}
 
-  const recoveredBody =
-    extractFallbackArtifactBody(options.stdoutPreview) ||
-    extractFallbackArtifactBody(options.stderrPreview) ||
-    [
-      "# Codex Fallback Artifact",
-      "",
-      `Codex exited with code ${options.exitCode} before writing the expected final artifact.`,
-      "",
-      `Last activity: ${options.lastActivity}`
-    ].join("\n") + "\n";
+  const stdoutRecovered = extractFallbackArtifactBody(options.stdoutPreview);
+  const stderrRecovered = extractFallbackArtifactBody(options.stderrPreview);
+  const recoveredBody = looksLikeCompletedPayload(stdoutRecovered)
+    ? stdoutRecovered
+    : looksLikeCompletedPayload(stderrRecovered)
+      ? stderrRecovered
+      : "";
+
+  if (!recoveredBody) {
+    return { synthesized: false };
+  }
 
   await fs.mkdir(path.dirname(path.resolve(options.finalPath)), { recursive: true });
   await fs.writeFile(path.resolve(options.finalPath), recoveredBody, "utf8");
   return {
     synthesized: true,
-    reason:
-      recoveredBody.startsWith("# Codex Fallback Artifact")
-        ? "Codex exited without writing a final artifact; cstack synthesized a fallback artifact from execution status."
-        : "Codex exited without writing a final artifact; cstack synthesized a fallback artifact from captured output."
+    reason: "Codex exited without writing a final artifact; cstack synthesized a fallback artifact from captured output."
   };
 }
 
@@ -350,6 +348,10 @@ function compactSnippet(input: string, limit = 320): string {
   return `${normalized.slice(0, limit - 1)}...`;
 }
 
+function normalizeArtifactText(input: string): string {
+  return input.replace(/\s+/g, " ").trim();
+}
+
 export async function readCodexFinalOutput(options: {
   context: string;
   finalPath: string;
@@ -367,13 +369,30 @@ export async function readCodexFinalOutput(options: {
     | "synthesizedFinalArtifact"
     | "synthesizedFinalReason"
   >;
+  acceptSynthesizedFinalArtifact?: boolean;
 }): Promise<string> {
   const finalBody = await readTextFromPath(options.finalPath);
   if (options.result.synthesizedFinalArtifact || /synthesized a fallback artifact/i.test(finalBody)) {
     throw new Error(`${options.context} did not write final output.`);
   }
   if (finalBody.trim()) {
-    return finalBody;
+    const normalizedFinalBody = normalizeArtifactText(finalBody);
+    const stdoutBody = await readTextFromPath(options.stdoutPath);
+    const stderrBody = await readTextFromPath(options.stderrPath);
+    const synthesizedFromCapturedOutput =
+      !options.acceptSynthesizedFinalArtifact &&
+      options.result.code !== 0 &&
+      normalizedFinalBody.length > 0 &&
+      [stdoutBody, stderrBody]
+        .map((body) => normalizeArtifactText(body))
+        .some((body) => body.length > 0 && body.includes(normalizedFinalBody));
+
+    if (
+      (!options.result.synthesizedFinalArtifact || options.acceptSynthesizedFinalArtifact) &&
+      !synthesizedFromCapturedOutput
+    ) {
+      return finalBody;
+    }
   }
 
   const details: string[] = [];
@@ -387,6 +406,9 @@ export async function readCodexFinalOutput(options: {
   }
   if (options.result.lastActivity) {
     details.push(`last activity: ${options.result.lastActivity}`);
+  }
+  if (options.result.synthesizedFinalArtifact && options.result.synthesizedFinalReason) {
+    details.push(options.result.synthesizedFinalReason);
   }
 
   const stderrTail = compactSnippet(await tailTextFromPath(options.stderrPath, 12));
@@ -474,24 +496,41 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
   const timeoutSeconds = resolveWorkflowTimeoutSeconds(options);
 
   return new Promise<CodexRunResult>((resolve, reject) => {
-    const closeStreams = async (): Promise<void> =>
+    const closeStream = async (stream: NodeJS.WritableStream & { destroy?: (error?: Error) => void }): Promise<void> =>
       await new Promise<void>((resolveClose) => {
-        let pending = 3;
-        const done = () => {
-          pending -= 1;
-          if (pending === 0) {
-            resolveClose();
+        let resolved = false;
+        const finish = () => {
+          if (resolved) {
+            return;
           }
+          resolved = true;
+          resolveClose();
         };
-        stdout.end(done);
-        stderr.end(done);
-        events.end(done);
+
+        const timer = setTimeout(() => {
+          stream.destroy?.();
+          finish();
+        }, 250);
+        timer.unref?.();
+
+        if ("once" in stream && typeof stream.once === "function") {
+          stream.once("finish", finish);
+          stream.once("close", finish);
+          stream.once("error", finish);
+        }
+
+        stream.end();
       });
+
+    const closeStreams = async (): Promise<void> => {
+      await Promise.all([closeStream(stdout), closeStream(stderr), closeStream(events)]);
+    };
 
     const child = spawn(invocation.file, invocation.args, {
       cwd: options.cwd,
       stdio: ["pipe", "pipe", "pipe"]
     });
+    let detachStdinError = () => {};
 
     let sessionId: string | undefined;
     let lastActivity = "Codex process launched";
@@ -517,6 +556,9 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
     let stallReason: string | undefined;
     let forcedSignal: NodeJS.Signals | null = null;
     let killTimer: NodeJS.Timeout | undefined;
+    let exitDrainTimer: NodeJS.Timeout | undefined;
+    let finalized = false;
+    let closeObserved = false;
     const completionStallMs = Number.parseInt(process.env.CSTACK_CODEX_COMPLETION_STALL_MS ?? "", 10);
     const postOutputStallMs =
       Number.isFinite(completionStallMs) && completionStallMs > 0 ? completionStallMs : DEFAULT_COMPLETION_STALL_MS;
@@ -650,70 +692,17 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
         clearTimeout(killTimer);
         killTimer = undefined;
       }
+      if (exitDrainTimer) {
+        clearTimeout(exitDrainTimer);
+        exitDrainTimer = undefined;
+      }
     };
 
-    emit("starting", `Running codex exec in ${options.cwd}`);
-    const detachStdinError = writePromptToChildStdin(child.stdin, options.prompt, (error) => {
-      clearInterval(heartbeat);
-      reporter?.close();
-      void closeStreams().finally(() => reject(error));
-    });
-
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout.write(chunk);
-      const text = chunk.toString("utf8");
-      lastRawOutputAt = Date.now();
-      const match = text.match(/session id:\s*([^\s]+)/i);
-      if (match?.[1]) {
-        sessionId = match[1];
-        emit("session", sessionId);
+    const finalize = async (code: number | null, signal: NodeJS.Signals | null): Promise<void> => {
+      if (finalized) {
+        return;
       }
-      stdoutBuffer += text;
-      stdoutPreview = appendPreview(stdoutPreview, text);
-      flushLines("stdout");
-    });
-
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr.write(chunk);
-      const text = chunk.toString("utf8");
-      lastRawOutputAt = Date.now();
-      const match = text.match(/session id:\s*([^\s]+)/i);
-      if (match?.[1]) {
-        sessionId = match[1];
-        emit("session", sessionId);
-      }
-      stderrBuffer += text;
-      stderrPreview = appendPreview(stderrPreview, text);
-      flushLines("stderr");
-    });
-
-    if (timeoutSeconds && timeoutSeconds > 0) {
-      killTimer = setTimeout(() => {
-        timedOut = true;
-        forcedSignal = "SIGTERM";
-        lastActivity = `Timed out after ${timeoutSeconds}s`;
-        emit("failed", `Timed out after ${timeoutSeconds}s`);
-        stderr.write(`cstack: stage timed out after ${timeoutSeconds}s\n`);
-        child.kill("SIGTERM");
-        setTimeout(() => {
-          if (child.exitCode === null) {
-            forcedSignal = "SIGKILL";
-            child.kill("SIGKILL");
-          }
-        }, 2_000).unref?.();
-      }, timeoutSeconds * 1000);
-      killTimer.unref?.();
-    }
-
-    child.on("error", (error) => {
-      detachStdinError();
-      clearInterval(heartbeat);
-      stopTimeouts();
-      reporter?.close();
-      void closeStreams().finally(() => reject(error));
-    });
-
-    child.on("close", async (code, signal) => {
+      finalized = true;
       detachStdinError();
       clearInterval(heartbeat);
       stopTimeouts();
@@ -772,6 +761,90 @@ export async function runCodexExec(options: CodexRunOptions): Promise<CodexRunRe
       reporter?.close();
       await closeStreams();
       resolve(result);
+    };
+
+    emit("starting", `Running codex exec in ${options.cwd}`);
+    detachStdinError = writePromptToChildStdin(child.stdin, options.prompt, (error) => {
+      if (finalized) {
+        return;
+      }
+      clearInterval(heartbeat);
+      stopTimeouts();
+      reporter?.close();
+      void closeStreams().finally(() => reject(error));
+    });
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout.write(chunk);
+      const text = chunk.toString("utf8");
+      lastRawOutputAt = Date.now();
+      const match = text.match(/session id:\s*([^\s]+)/i);
+      if (match?.[1]) {
+        sessionId = match[1];
+        emit("session", sessionId);
+      }
+      stdoutBuffer += text;
+      stdoutPreview = appendPreview(stdoutPreview, text);
+      flushLines("stdout");
+    });
+
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr.write(chunk);
+      const text = chunk.toString("utf8");
+      lastRawOutputAt = Date.now();
+      const match = text.match(/session id:\s*([^\s]+)/i);
+      if (match?.[1]) {
+        sessionId = match[1];
+        emit("session", sessionId);
+      }
+      stderrBuffer += text;
+      stderrPreview = appendPreview(stderrPreview, text);
+      flushLines("stderr");
+    });
+
+    if (timeoutSeconds && timeoutSeconds > 0) {
+      killTimer = setTimeout(() => {
+        timedOut = true;
+        forcedSignal = "SIGTERM";
+        lastActivity = `Timed out after ${timeoutSeconds}s`;
+        emit("failed", `Timed out after ${timeoutSeconds}s`);
+        stderr.write(`cstack: stage timed out after ${timeoutSeconds}s\n`);
+        child.kill("SIGTERM");
+        setTimeout(() => {
+          if (child.exitCode === null) {
+            forcedSignal = "SIGKILL";
+            child.kill("SIGKILL");
+          }
+        }, 2_000).unref?.();
+      }, timeoutSeconds * 1000);
+      killTimer.unref?.();
+    }
+
+    child.on("error", (error) => {
+      if (finalized) {
+        return;
+      }
+      detachStdinError();
+      clearInterval(heartbeat);
+      stopTimeouts();
+      reporter?.close();
+      void closeStreams().finally(() => reject(error));
+    });
+
+    child.on("exit", (code, signal) => {
+      if (finalized || closeObserved || exitDrainTimer) {
+        return;
+      }
+      exitDrainTimer = setTimeout(() => {
+        exitDrainTimer = undefined;
+        void finalize(code, signal);
+      }, 250);
+      exitDrainTimer.unref?.();
+    });
+
+    child.on("close", (code, signal) => {
+      closeObserved = true;
+      void finalize(code, signal);
     });
   });
 }

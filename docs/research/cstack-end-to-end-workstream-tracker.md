@@ -7,6 +7,11 @@ Historical note:
 - This tracker is operational planning only.
 - It does not change the active shipped contract in `docs/specs/cstack-spec-v0.1.md`.
 
+Completion note:
+
+- all six workstreams are implemented on the current branch
+- verification checkpoint: `npm run typecheck && npm test`
+
 ## Umbrella
 
 - umbrella issue: [#32](https://github.com/ganesh47/cstack/issues/32) `Spec: end-to-end product delivery workstreams beyond gstack`
