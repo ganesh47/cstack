@@ -144,9 +144,9 @@ function commandFailureDetails(error: unknown): CommandFailureDetails {
     stderr,
     stdout,
     combined: combined || message,
-    code: typeof candidate?.code === "number" || candidate?.code === null ? candidate.code : undefined,
-    signal: typeof candidate?.signal === "string" || candidate?.signal === null ? candidate.signal : undefined,
-    killed: typeof candidate?.killed === "boolean" ? candidate.killed : undefined
+    ...(typeof candidate?.code === "number" || candidate?.code === null ? { code: candidate.code } : {}),
+    ...(typeof candidate?.signal === "string" || candidate?.signal === null ? { signal: candidate.signal } : {}),
+    ...(typeof candidate?.killed === "boolean" ? { killed: candidate.killed } : {})
   };
 }
 

@@ -45,13 +45,13 @@ function activeFixture(base, state) {
   return state ? { ...base, ...state } : base;
 }
 
-const baseFixture = await loadFixture();
-const state = await loadState();
-const fixture = activeFixture(baseFixture, state);
-
 if (process.env.FAKE_GH_DELAY_MS) {
   await new Promise((resolve) => setTimeout(resolve, Number.parseInt(process.env.FAKE_GH_DELAY_MS, 10)));
 }
+
+const baseFixture = await loadFixture();
+const state = await loadState();
+const fixture = activeFixture(baseFixture, state);
 
 if (args[0] === "repo" && args[1] === "view") {
   printJson(fixture.repoView ?? { nameWithOwner: "ganesh47/cstack", defaultBranchRef: { name: "main" } });
