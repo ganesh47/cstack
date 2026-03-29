@@ -80,6 +80,25 @@ describe("execution checkout", () => {
     expect(result.record.cleanup.status).toBe("retained");
   });
 
+  it("copies local test fixtures into isolated execution checkouts", async () => {
+    const id = runId("fixtures");
+    const checkoutRoot = path.join(os.tmpdir(), "cstack-execution", id);
+    cleanupRoots.push(checkoutRoot);
+
+    await fs.mkdir(path.join(sourceDir, ".cstack"), { recursive: true });
+    await fs.writeFile(path.join(sourceDir, ".cstack", "test-gh.json"), '{"fixture":"gh"}\n', "utf8");
+    await fs.writeFile(path.join(sourceDir, ".cstack", "test-codex.json"), '{"fixture":"codex"}\n', "utf8");
+
+    await prepareExecutionCheckout({
+      sourceCwd: sourceDir,
+      runId: id,
+      workflow: "deliver"
+    });
+
+    await expect(fs.readFile(path.join(checkoutRoot, ".cstack", "test-gh.json"), "utf8")).resolves.toContain('"fixture":"gh"');
+    await expect(fs.readFile(path.join(checkoutRoot, ".cstack", "test-codex.json"), "utf8")).resolves.toContain('"fixture":"codex"');
+  });
+
   it("falls back to temporary clone when worktree execution is forced", async () => {
     const id = runId("temp-clone");
     const checkoutRoot = path.join(os.tmpdir(), "cstack-execution", id);

@@ -39,6 +39,9 @@ interface CommandFailureDetails {
   stderr: string;
   stdout: string;
   combined: string;
+  code?: number | null;
+  signal?: string | null;
+  killed?: boolean;
 }
 
 export interface CollectGitHubDeliveryOptions {
@@ -129,6 +132,8 @@ function commandFailureDetails(error: unknown): CommandFailureDetails {
     stderr?: unknown;
     stdout?: unknown;
     code?: unknown;
+    signal?: unknown;
+    killed?: unknown;
   };
   const message = typeof candidate?.message === "string" ? candidate.message.trim() : String(error);
   const stderr = typeof candidate?.stderr === "string" ? candidate.stderr.trim() : "";
@@ -138,15 +143,22 @@ function commandFailureDetails(error: unknown): CommandFailureDetails {
     message,
     stderr,
     stdout,
-    combined: combined || message
+    combined: combined || message,
+    code: typeof candidate?.code === "number" || candidate?.code === null ? candidate.code : undefined,
+    signal: typeof candidate?.signal === "string" || candidate?.signal === null ? candidate.signal : undefined,
+    killed: typeof candidate?.killed === "boolean" ? candidate.killed : undefined
   };
 }
 
 function classifyGitHubFailure(action: string, error: unknown): { summary: string; detail: string } {
-  const detail = commandFailureDetails(error).combined;
+  const failure = commandFailureDetails(error);
+  const detail = failure.combined;
   const normalized = detail.toLowerCase();
 
-  if (/\b(etimedout|timed out|timeout exceeded)\b/.test(normalized)) {
+  if (
+    /\b(etimedout|timed out|timeout exceeded)\b/.test(normalized) ||
+    (failure.killed === true && failure.signal === "SIGTERM" && failure.code === null)
+  ) {
     return {
       summary: `GitHub command timed out while ${action}.`,
       detail

@@ -62,7 +62,7 @@ async function copyGitIdentity(sourceCwd: string, targetCwd: string): Promise<vo
 }
 
 async function copyLocalTestFixtures(sourceCwd: string, targetCwd: string): Promise<void> {
-  const fixtureNames = ["test-gh.json"] as const;
+  const fixtureNames = ["test-gh.json", "test-codex.json"] as const;
   for (const fixtureName of fixtureNames) {
     const sourcePath = path.join(sourceCwd, ".cstack", fixtureName);
     const targetPath = path.join(targetCwd, ".cstack", fixtureName);
