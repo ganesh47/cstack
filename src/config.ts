@@ -2,12 +2,12 @@ import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import * as TOML from "@iarna/toml";
-import type { CstackConfig } from "./types.js";
+import type { ConfigProvenance, ConfigValueSource, CstackConfig } from "./types.js";
 
 const DEFAULT_CONFIG: CstackConfig = {
   codex: {
     command: process.env.CSTACK_CODEX_BIN || "codex",
-    sandbox: "workspace-write",
+    sandbox: "danger-full-access",
     extraArgs: []
   },
   workflows: {
@@ -40,7 +40,7 @@ const DEFAULT_CONFIG: CstackConfig = {
     build: {
       mode: "interactive",
       verificationCommands: [],
-      allowDirty: false,
+      allowDirty: true,
       timeoutSeconds: 900,
       capabilities: {
         allowed: ["shell", "github"],
@@ -68,7 +68,7 @@ const DEFAULT_CONFIG: CstackConfig = {
     ship: {
       mode: "exec",
       verificationCommands: [],
-      allowDirty: false,
+      allowDirty: true,
       timeoutSeconds: 600,
       capabilities: {
         allowed: ["shell", "github"],
@@ -82,7 +82,7 @@ const DEFAULT_CONFIG: CstackConfig = {
     deliver: {
       mode: "interactive",
       verificationCommands: [],
-      allowDirty: false,
+      allowDirty: true,
       timeoutSeconds: 900,
       capabilities: {
         allowed: ["shell", "github", "browser"],
@@ -154,6 +154,17 @@ const DEFAULT_CONFIG: CstackConfig = {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasConfigPath(value: unknown, pathParts: string[]): boolean {
+  let current = value;
+  for (const pathPart of pathParts) {
+    if (!isObject(current) || !(pathPart in current)) {
+      return false;
+    }
+    current = current[pathPart];
+  }
+  return true;
 }
 
 function mergeObjects<T>(base: T, update: unknown): T {
@@ -498,17 +509,49 @@ function validateConfigDocument(source: string, value: unknown): void {
   }
 }
 
-export async function loadConfig(cwd: string): Promise<{ config: CstackConfig; sources: string[] }> {
+function createDefaultProvenance(): ConfigProvenance {
+  return {
+    codexSandbox: { source: "default" },
+    workflowAllowDirty: {
+      build: { source: "default" },
+      ship: { source: "default" },
+      deliver: { source: "default" }
+    }
+  };
+}
+
+function updateProvenanceFromDocument(
+  provenance: ConfigProvenance,
+  parsed: unknown,
+  sourceKind: ConfigValueSource,
+  sourcePath: string
+): void {
+  if (hasConfigPath(parsed, ["codex", "sandbox"])) {
+    provenance.codexSandbox = { source: sourceKind, sourcePath };
+  }
+  for (const workflowName of ["build", "ship", "deliver"] as const) {
+    if (hasConfigPath(parsed, ["workflows", workflowName, "allowDirty"])) {
+      provenance.workflowAllowDirty[workflowName] = { source: sourceKind, sourcePath };
+    }
+  }
+}
+
+export async function loadConfig(cwd: string): Promise<{ config: CstackConfig; sources: string[]; provenance: ConfigProvenance }> {
   const repoPath = path.join(cwd, ".cstack", "config.toml");
   const userPath = path.join(os.homedir(), ".config", "cstack", "config.toml");
   let config = structuredClone(DEFAULT_CONFIG);
   const sources: string[] = [];
+  const provenance = createDefaultProvenance();
 
-  for (const source of [userPath, repoPath]) {
+  for (const [source, sourceKind] of [
+    [userPath, "user"],
+    [repoPath, "repo"]
+  ] as const) {
     try {
       const raw = await fs.readFile(source, "utf8");
       const parsed = TOML.parse(raw) as unknown;
       validateConfigDocument(source, parsed);
+      updateProvenanceFromDocument(provenance, parsed, sourceKind, source);
       config = mergeObjects(config, parsed);
       sources.push(source);
     } catch (error) {
@@ -522,5 +565,5 @@ export async function loadConfig(cwd: string): Promise<{ config: CstackConfig; s
     }
   }
 
-  return { config, sources };
+  return { config, sources, provenance };
 }

@@ -3,7 +3,8 @@ import { promises as fs } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { runsRoot } from "./paths.js";
-import type { RunLedgerEntry, RunRecord, StageLineage, WorkflowName } from "./types.js";
+import { currentStageFromSnapshot, projectStageLineage } from "./workflow-machine.js";
+import type { RunLedgerEntry, RunRecord, StageLineage, WorkflowMachineSnapshot, WorkflowName } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -102,14 +103,24 @@ function summarizeRun(run: RunRecord): string {
 }
 
 export async function readStageLineage(cwd: string, runId: string): Promise<StageLineage | null> {
+  const machine = await readWorkflowMachineState(cwd, runId);
+  if (machine) {
+    return projectStageLineage(machine);
+  }
   return readJsonFile<StageLineage>(path.join(runDirForId(cwd, runId), "stage-lineage.json"));
 }
 
+export async function readWorkflowMachineState(cwd: string, runId: string): Promise<WorkflowMachineSnapshot | null> {
+  return readJsonFile<WorkflowMachineSnapshot>(path.join(runDirForId(cwd, runId), "machine-state.json"));
+}
+
 export async function buildRunLedgerEntry(cwd: string, run: RunRecord): Promise<RunLedgerEntry> {
-  const stageLineage = await readStageLineage(cwd, run.id);
+  const machine = await readWorkflowMachineState(cwd, run.id);
+  const stageLineage = machine ? projectStageLineage(machine) : await readStageLineage(cwd, run.id);
   const runningStage = stageLineage?.stages.find((stage) => stage.status === "running");
-  const activeSpecialists =
-    run.activeSpecialists && run.activeSpecialists.length > 0
+  const activeSpecialists = machine
+    ? machine.activeSpecialists
+    : run.activeSpecialists && run.activeSpecialists.length > 0
       ? run.activeSpecialists
       : (stageLineage?.specialists
           .filter((specialist) => specialist.status === "running")
@@ -122,7 +133,7 @@ export async function buildRunLedgerEntry(cwd: string, run: RunRecord): Promise<
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,
     summary: summarizeRun(run),
-    currentStage: run.currentStage ?? runningStage?.name,
+    currentStage: machine ? currentStageFromSnapshot(machine) ?? runningStage?.name : run.currentStage ?? runningStage?.name,
     activeSpecialists,
     finalPath: run.finalPath,
     ...(typeof run.inputs?.planningIssueNumber === "number" ? { planningIssueNumber: run.inputs.planningIssueNumber } : {}),

@@ -2,9 +2,11 @@ import path from "node:path";
 import { loadConfig } from "../config.js";
 import { prepareExecutionCheckout, writeExecutionContext } from "../execution-checkout.js";
 import { maybeOfferInteractiveInspect } from "../inspector.js";
+import { emitDeprecatedAllowAllWarning, resolveRunPolicy, resolveSourceExecutionReason } from "../runtime-config.js";
 import { resolveLinkedBuildContext, runDeliverExecution } from "../deliver.js";
-import { detectCodexVersion, detectGitBranch, ensureRunDir, makeRunId, writeRunRecord } from "../run.js";
+import { detectCodexVersion, detectGitBranch, ensureRunDir, makeRunId } from "../run.js";
 import type { DeliverTargetMode, RunRecord, WorkflowMode } from "../types.js";
+import { getWorkflowMachineDefinition, WorkflowController } from "../workflow-machine.js";
 
 export interface DeliverCliOptions {
   fromRunId?: string;
@@ -14,6 +16,8 @@ export interface DeliverCliOptions {
   initiativeId?: string;
   initiativeTitle?: string;
   allowDirty?: boolean;
+  safe?: boolean;
+  allowAll?: boolean;
 }
 
 export interface DeliverRunHooks {
@@ -87,6 +91,14 @@ export function parseDeliverArgs(args: string[]): { prompt: string; options: Del
       options.allowDirty = true;
       continue;
     }
+    if (arg === "--safe") {
+      options.safe = true;
+      continue;
+    }
+    if (arg === "--allow-all") {
+      options.allowAll = true;
+      continue;
+    }
     if (arg.startsWith("-")) {
       throw new Error(`Unknown deliver option: ${arg}`);
     }
@@ -111,8 +123,13 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
     throw new Error("`cstack deliver` requires a prompt or `--from-run <run-id>`.");
   }
 
-  const { config, sources } = await loadConfig(cwd);
-  const allowDirty = parsed.options.allowDirty ?? config.workflows.deliver.allowDirty ?? false;
+  const { config, sources, provenance } = await loadConfig(cwd);
+  if (parsed.options.allowAll) {
+    emitDeprecatedAllowAllWarning("deliver");
+  }
+  const policy = resolveRunPolicy({ config, provenance, ...(parsed.options.safe !== undefined ? { safe: parsed.options.safe } : {}) });
+  const effectiveConfig = policy.config;
+  const allowDirty = parsed.options.allowDirty ?? effectiveConfig.workflows.deliver.allowDirty ?? false;
   const linkedContext = parsed.options.fromRunId ? await resolveLinkedBuildContext(cwd, parsed.options.fromRunId) : undefined;
   const resolvedInitiativeId = parsed.options.initiativeId ?? linkedContext?.run.inputs.initiativeId;
   const resolvedInitiativeTitle = parsed.options.initiativeTitle ?? linkedContext?.run.inputs.initiativeTitle;
@@ -165,7 +182,6 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
     stdoutPath,
     stderrPath,
     configSources: sources,
-    currentStage: "build",
     summary: resolvedPrompt,
     inputs: {
       userPrompt: resolvedPrompt,
@@ -175,6 +191,7 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
       verificationCommands,
       deliveryMode,
       allowDirty,
+      ...(policy.safe ? { safe: true } : {}),
       ...(resolvedInitiativeId ? { initiativeId: resolvedInitiativeId } : {}),
       ...(resolvedInitiativeTitle ? { initiativeTitle: resolvedInitiativeTitle } : {}),
       ...(buildTimeoutSeconds ? { timeoutSeconds: buildTimeoutSeconds } : {}),
@@ -182,15 +199,54 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
     }
   };
 
-  await writeRunRecord(runDir, runRecord);
-  await hooks.onRunCreated?.(runRecord);
+  const controller = await WorkflowController.create({
+    definition: getWorkflowMachineDefinition("deliver"),
+    runDir,
+    runRecord,
+    intent: resolvedPrompt,
+    stages: [
+      {
+        name: "build",
+        rationale: "Implement the approved change and capture verification evidence.",
+        status: "planned",
+        executed: false
+      },
+      {
+        name: "validation",
+        rationale: "Profile the repo, design the validation pyramid, and execute selected validation commands.",
+        status: "planned",
+        executed: false
+      },
+      {
+        name: "review",
+        rationale: "Challenge correctness, security, and release risk using bounded specialist reviews plus validation evidence.",
+        status: "planned",
+        executed: false
+      },
+      {
+        name: "ship",
+        rationale: "Prepare release-readiness artifacts and explicit next actions.",
+        status: "planned",
+        executed: false
+      }
+    ]
+  });
+  await hooks.onRunCreated?.(controller.currentRunRecord);
 
   try {
+    const sourceExecutionReason = resolveSourceExecutionReason({
+      workflow: "deliver",
+      allowDirty,
+      safe: policy.safe,
+      requestedAllowDirty: parsed.options.allowDirty === true,
+      configuredAllowDirtySource: provenance.workflowAllowDirty.deliver.source
+    });
     const executionCheckout = await prepareExecutionCheckout({
       sourceCwd: cwd,
       runId,
       workflow: "deliver",
-      allowDirtySourceExecution: allowDirty
+      allowDirtySourceExecution: allowDirty,
+      ...(sourceExecutionReason ? { sourceExecutionReason } : {})
     });
     await writeExecutionContext(executionContextPath, executionCheckout.record);
     const execution = await runDeliverExecution({
@@ -198,7 +254,7 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
       gitBranch,
       runId,
       input: resolvedPrompt,
-      config,
+      config: effectiveConfig,
       paths: {
         runDir,
         promptPath,
@@ -210,6 +266,7 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
         stderrPath,
         stageLineagePath
       },
+      controller,
       requestedMode,
       verificationCommands,
       deliveryMode,
@@ -221,67 +278,29 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
       ...(linkedContext ? { linkedContext } : {})
     });
 
-    const isDeliverCompleted =
-      execution.buildExecution.result.code === 0 &&
-      execution.validationExecution.validationPlan.status === "ready" &&
-      execution.reviewVerdict.status === "ready" &&
-      execution.shipRecord.readiness === "ready" &&
-      execution.githubDeliveryRecord.overall.status === "ready";
-
     const buildSession = execution.buildExecution.sessionRecord;
-    runRecord.status = isDeliverCompleted ? "completed" : "failed";
-    runRecord.updatedAt = new Date().toISOString();
-    delete runRecord.currentStage;
-    runRecord.gitBranch = execution.githubMutationRecord.branch.current || gitBranch;
-    runRecord.codexCommand = buildSession.codexCommand;
-    if (buildSession.sessionId) {
-      runRecord.sessionId = buildSession.sessionId;
-    }
-    runRecord.lastActivity =
-      execution.buildExecution.result.code !== 0
-        ? `${execution.buildExecution.failureDiagnosis?.summary ?? (execution.buildExecution.result.timedOut ? `Build timed out after ${execution.buildExecution.result.timeoutSeconds}s` : `Build failed with exit code ${execution.buildExecution.result.code}`)}; downstream stages blocked`
-        : `Validation: ${execution.validationExecution.validationPlan.status} (${execution.validationExecution.validationPlan.outcomeCategory}); Ship readiness: ${execution.shipRecord.readiness}; GitHub delivery: ${execution.githubDeliveryRecord.overall.status}`;
-    runRecord.inputs.observedMode = execution.buildExecution.observedMode;
-    runRecord.inputs.selectedSpecialists = execution.selectedSpecialists.map((specialist) => specialist.name);
-    runRecord.inputs.deliveryMode = deliveryMode;
-    if (execution.githubDeliveryRecord.issueReferences.length > 0) {
-      runRecord.inputs.issueNumbers = execution.githubDeliveryRecord.issueReferences;
-    }
-    if (runRecord.status !== "completed") {
-      runRecord.error =
-        execution.buildExecution.result.code !== 0
-          ? [
-              execution.buildExecution.failureDiagnosis?.summary ??
-                (execution.buildExecution.result.timedOut
-                  ? `build timed out after ${execution.buildExecution.result.timeoutSeconds}s`
-                  : `build exited with code ${execution.buildExecution.result.code}`),
-              "downstream validation/review/ship blocked"
-            ].join("; ")
-          : [
-              execution.validationExecution.validationPlan.status === "blocked"
-                ? `validation blocked via ${execution.validationExecution.validationPlan.outcomeCategory}`
-                : null,
-              execution.validationExecution.validationPlan.status === "partial"
-                ? `validation partial: ${execution.validationExecution.validationPlan.summary}`
-                : null,
-              execution.reviewVerdict.status !== "ready" ? `review status: ${execution.reviewVerdict.status}` : null,
-              execution.shipRecord.readiness === "blocked" ? "ship stage blocked release readiness" : null,
-              execution.githubDeliveryRecord.overall.status === "blocked"
-                ? `github delivery blocked: ${execution.githubDeliveryRecord.overall.blockers.join("; ")}`
-                : null
-            ]
-              .filter(Boolean)
-              .join("; ");
-    }
-    await writeRunRecord(runDir, runRecord);
+    await controller.patchRun({
+      gitBranch: execution.githubMutationRecord.branch.current || gitBranch,
+      codexCommand: buildSession.codexCommand,
+      ...(buildSession.sessionId ? { sessionId: buildSession.sessionId } : {}),
+      inputs: {
+        userPrompt: resolvedPrompt,
+        observedMode: execution.buildExecution.observedMode,
+        selectedSpecialists: execution.selectedSpecialists.map((specialist) => specialist.name),
+        deliveryMode,
+        ...(execution.githubDeliveryRecord.issueReferences.length > 0 ? { issueNumbers: execution.githubDeliveryRecord.issueReferences } : {})
+      }
+    });
+    const finalRunRecord = controller.currentRunRecord;
 
     process.stdout.write(
       [
         `Run: ${runId}`,
         "Workflow: deliver",
         `Mode: requested=${requestedMode} observed=${execution.buildExecution.observedMode}`,
-        `Status: ${runRecord.status}`,
+        `Status: ${finalRunRecord.status}`,
         buildSession.sessionId ? `Build session: ${buildSession.sessionId}` : "Build session: not observed",
+        `Execution policy: ${policy.safe ? "dangerous default disabled via --safe" : "default dangerous execution"}`,
         `Execution checkout: ${executionCheckout.record.execution.kind} @ ${executionCheckout.record.execution.cwd}`,
         `Source snapshot: ${executionCheckout.record.source.branch} ${executionCheckout.record.source.commit}`,
         executionCheckout.record.source.dirtyFiles.length > 0 && !allowDirty
@@ -320,11 +339,15 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
     }
     return runId;
   } catch (error) {
-    runRecord.status = "failed";
-    runRecord.updatedAt = new Date().toISOString();
-    delete runRecord.currentStage;
-    runRecord.error = error instanceof Error ? error.message : String(error);
-    await writeRunRecord(runDir, runRecord);
+    await controller.send({
+      type: "DELIVER_FINALIZED",
+      buildSucceeded: false,
+      validationStatus: "blocked",
+      reviewStatus: "blocked",
+      shipReadiness: "blocked",
+      githubDeliveryStatus: "blocked",
+      summary: error instanceof Error ? error.message : String(error)
+    });
     throw error;
   }
 }

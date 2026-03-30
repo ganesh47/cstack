@@ -114,7 +114,7 @@ blockSeverities = ["medium", "high", "critical"]
 `
     );
 
-    const { config, sources } = await loadConfig(repoDir);
+    const { config, sources, provenance } = await loadConfig(repoDir);
     expect(config.codex.model).toBe("gpt-5");
     expect(config.codex.sandbox).toBe("workspace-write");
     expect(config.workflows.spec.delegation?.enabled).toBe(true);
@@ -155,23 +155,29 @@ blockSeverities = ["medium", "high", "critical"]
     expect(config.workflows.deliver.github?.changelogPaths).toEqual(["README.md", "CHANGELOG.md"]);
     expect(config.workflows.deliver.github?.security?.requireDependabot).toBe(true);
     expect(config.workflows.deliver.github?.security?.blockSeverities).toEqual(["medium", "high", "critical"]);
+    expect(provenance.codexSandbox.source).toBe("repo");
+    expect(provenance.workflowAllowDirty.build.source).toBe("repo");
+    expect(provenance.workflowAllowDirty.ship.source).toBe("repo");
+    expect(provenance.workflowAllowDirty.deliver.source).toBe("default");
     expect(sources).toHaveLength(2);
   });
 
   it("provides stable deliver GitHub defaults when no config is present", async () => {
-    const { config, sources } = await loadConfig(repoDir);
+    const { config, sources, provenance } = await loadConfig(repoDir);
 
     expect(sources).toHaveLength(0);
+    expect(config.codex.sandbox).toBe("danger-full-access");
     expect(config.workflows.spec.timeoutSeconds).toBe(600);
     expect(config.workflows.discover.timeoutSeconds).toBe(600);
-    expect(config.workflows.build.allowDirty).toBe(false);
+    expect(config.workflows.build.allowDirty).toBe(true);
     expect(config.workflows.build.timeoutSeconds).toBe(900);
     expect(config.workflows.review.mode).toBe("exec");
     expect(config.workflows.review.allowDirty).toBe(true);
     expect(config.workflows.review.timeoutSeconds).toBe(600);
     expect(config.workflows.ship.mode).toBe("exec");
-    expect(config.workflows.ship.allowDirty).toBe(false);
+    expect(config.workflows.ship.allowDirty).toBe(true);
     expect(config.workflows.ship.timeoutSeconds).toBe(600);
+    expect(config.workflows.deliver.allowDirty).toBe(true);
     expect(config.workflows.deliver.timeoutSeconds).toBe(900);
     expect(config.workflows.deliver.stageTimeoutSeconds?.build).toBe(900);
     expect(config.workflows.deliver.stageTimeoutSeconds?.validation).toBe(300);
@@ -198,6 +204,10 @@ blockSeverities = ["medium", "high", "critical"]
     expect(config.workflows.deliver.github?.security?.requireDependabot).toBe(false);
     expect(config.workflows.deliver.github?.security?.requireCodeScanning).toBe(false);
     expect(config.workflows.deliver.github?.security?.blockSeverities).toEqual(["high", "critical"]);
+    expect(provenance.codexSandbox.source).toBe("default");
+    expect(provenance.workflowAllowDirty.build.source).toBe("default");
+    expect(provenance.workflowAllowDirty.ship.source).toBe("default");
+    expect(provenance.workflowAllowDirty.deliver.source).toBe("default");
   });
 
   it("rejects invalid workflow mode enums with the exact config path", async () => {

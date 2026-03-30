@@ -4,6 +4,7 @@ import { readCodexFinalOutput, runCodexExec } from "./codex.js";
 import { resolveLinkedBuildContext } from "./build.js";
 import { buildDeliverReviewLeadPrompt, buildDeliverSpecialistPrompt } from "./prompt.js";
 import { inferRoutingPlan } from "./intent.js";
+import { WorkflowController } from "./workflow-machine.js";
 import type {
   BuildVerificationRecord,
   CstackConfig,
@@ -50,6 +51,7 @@ export interface ReviewExecutionOptions {
   input: string;
   config: CstackConfig;
   paths: ReviewPaths;
+  controller: WorkflowController;
   linkedContext?: LinkedReviewContext;
 }
 
@@ -329,25 +331,34 @@ export async function runReviewExecution(options: ReviewExecutionOptions): Promi
   const selectedSpecialists = selectedSpecialistsForInput(options.input);
   const reviewMode = inferReviewMode(options.input, options.linkedContext);
   const linkedContext = options.linkedContext;
-  const stageLineage: StageLineage = {
-    intent: options.input,
-    stages: [
-      {
-        name: "review",
-        rationale: "Critique the current change, risks, and next actions.",
-        status: "running",
-        executed: false
-      }
-    ],
-    specialists: []
-  };
-  await writeJson(options.paths.stageLineagePath, stageLineage);
+  await options.controller.send({
+    type: "SET_CONTEXT",
+    patch: {
+      reviewMode
+    }
+  });
+  await options.controller.send({
+    type: "SET_ACTIVE_SPECIALISTS",
+    names: selectedSpecialists.map((specialist) => specialist.name)
+  });
+  await options.controller.send({
+    type: "SET_STAGE_STATUS",
+    stageName: "review",
+    status: "running",
+    executed: false,
+    stageDir: options.paths.runDir,
+    artifactPath: options.paths.findingsPath
+  });
 
   const buildSummary = linkedContext?.buildSummary ?? linkedContext?.artifactBody ?? options.input;
   const verificationRecord = linkedContext?.verificationRecord ?? notRunVerificationRecord();
   const specialistResults: Array<{ name: SpecialistSelection["name"]; reason: string; finalBody: string }> = [];
 
   for (const specialist of selectedSpecialists) {
+    await options.controller.send({
+      type: "SET_ACTIVE_SPECIALISTS",
+      names: [specialist.name]
+    });
     const result = await runReviewSpecialist({
       cwd: options.cwd,
       runId: options.runId,
@@ -358,7 +369,10 @@ export async function runReviewExecution(options: ReviewExecutionOptions): Promi
       buildSummary,
       verificationRecord
     });
-    stageLineage.specialists.push(result.execution);
+    await options.controller.send({
+      type: "UPSERT_SPECIALIST",
+      specialist: result.execution
+    });
     specialistResults.push({
       name: specialist.name,
       reason: specialist.reason,
@@ -408,30 +422,34 @@ export async function runReviewExecution(options: ReviewExecutionOptions): Promi
   await writeJson(options.paths.verdictPath, reviewVerdict);
 
   const acceptedByName = new Map(reviewVerdict.acceptedSpecialists.map((entry) => [entry.name, entry]));
-  stageLineage.specialists = stageLineage.specialists.map((execution) => {
+  for (const execution of options.controller.currentStageLineage.specialists) {
     const accepted = acceptedByName.get(execution.name);
-    return accepted
-      ? {
-          ...execution,
-          disposition: accepted.disposition,
-          notes: accepted.reason
-        }
-      : {
-          ...execution,
-          disposition: "discarded",
-          notes: execution.notes ?? "The review lead did not rely on this specialist output."
-        };
+    await options.controller.send({
+      type: "UPDATE_SPECIALIST",
+      name: execution.name,
+      patch: accepted
+        ? {
+            disposition: accepted.disposition,
+            notes: accepted.reason
+          }
+        : {
+            disposition: "discarded",
+            notes: execution.notes ?? "The review lead did not rely on this specialist output."
+          }
+    });
+  }
+  await options.controller.send({
+    type: "SET_ACTIVE_SPECIALISTS",
+    names: []
+  });
+  await options.controller.send({
+    type: "REVIEW_FINALIZED",
+    executionSucceeded: reviewResult.code === 0,
+    verdictStatus: reviewVerdict.status,
+    summary: reviewVerdict.summary
   });
 
-  stageLineage.stages[0] = {
-    ...stageLineage.stages[0]!,
-    status: reviewResult.code === 0 ? "completed" : "failed",
-    executed: true,
-    stageDir: options.paths.runDir,
-    artifactPath: options.paths.findingsPath,
-    notes: reviewVerdict.summary
-  };
-  await writeJson(options.paths.stageLineagePath, stageLineage);
+  const stageLineage = options.controller.currentStageLineage;
 
   const finalBody = buildFinalSummary({
     input: options.input,

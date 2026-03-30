@@ -153,7 +153,7 @@ What it does today:
 
 - accepts a natural-language task
 - infers an internal stage plan
-- persists `routing-plan.json` and `stage-lineage.json`
+- persists `routing-plan.json`, canonical `machine-state.json`, and derived `stage-lineage.json`
 - auto-executes downstream `review`, `ship`, or `deliver` when the inferred plan warrants it
 - keeps bounded specialist reviews inside the intent run only when the router stops after planning
 
@@ -180,9 +180,9 @@ cstack run "Plan a compliance-safe billing migration" --dry-run
 
 How to inspect it:
 
-- `cstack inspect <run-id>` now shows the routing plan, stage lineage, specialist dispositions, and recent activity for intent runs
+- `cstack inspect <run-id>` now shows the routing plan, machine-derived stage lineage, specialist dispositions, and recent activity for intent runs
 - `cstack inspect <run-id> --interactive` opens an artifact-grounded console for follow-up questions
-- the run directory includes `routing-plan.json`, `stage-lineage.json`, and specialist artifacts under `delegates/`
+- the run directory includes `routing-plan.json`, `machine-state.json`, derived `stage-lineage.json`, and specialist artifacts under `delegates/`
 
 ## Isolated Execution Checkouts
 
@@ -383,7 +383,6 @@ mkdir -p .cstack/prompts
 cat > .cstack/config.toml <<'EOF'
 [codex]
 command = "codex"
-sandbox = "workspace-write"
 
 [workflows.spec.delegation]
 enabled = false
@@ -392,7 +391,6 @@ maxAgents = 0
 [workflows.build]
 mode = "interactive"
 verificationCommands = ["npm test"]
-allowDirty = false
 timeoutSeconds = 900
 
 [workflows.review]
@@ -400,7 +398,6 @@ mode = "exec"
 
 [workflows.ship]
 mode = "exec"
-allowDirty = false
 
 [workflows.deliver.validation]
 enabled = true
@@ -440,6 +437,8 @@ cstack runs
 cstack inspect
 cstack inspect <run-id> --interactive
 ```
+
+By default, `cstack` uses `danger-full-access` and allows direct source execution for `build`, `ship`, and `deliver`. Use `--safe` on a run when you want that invocation to fall back to `workspace-write` plus clean-worktree execution for defaulted dirty-worktree settings.
 
 While a run is active in a normal terminal, `cstack` renders a bounded ANSI dashboard instead of endlessly appending log lines.
 
@@ -493,7 +492,6 @@ Current supported settings:
 ```toml
 [codex]
 command = "codex"
-sandbox = "workspace-write"
 profile = "default"
 model = "gpt-5.4"
 
@@ -504,14 +502,12 @@ maxAgents = 0
 [workflows.build]
 mode = "interactive"
 verificationCommands = ["npm test"]
-allowDirty = false
 
 [workflows.review]
 mode = "exec"
 
 [workflows.ship]
 mode = "exec"
-allowDirty = false
 
 [workflows.deliver.validation]
 enabled = true
@@ -533,6 +529,10 @@ Notes:
 
 - `command` can point at the installed `codex` binary or a script path for testing.
 - `sandbox`, `profile`, `model`, and `extraArgs` are passed through to Codex launches.
+- By default, `sandbox` resolves to `danger-full-access`, and `workflows.build.allowDirty`, `workflows.ship.allowDirty`, and `workflows.deliver.allowDirty` resolve to `true`.
+- Use `--safe` when you want one run to fall back to `workspace-write` and clean-worktree execution for defaulted `allowDirty` values.
+- If repo or user config explicitly sets `sandbox` or `allowDirty`, that explicit config wins over `--safe`.
+- `--allow-all` is deprecated and currently accepted as a temporary no-op.
 - `workflows.build.mode` selects `interactive` or `exec`; interactive is the default for build runs.
 - `workflows.build.verificationCommands` provides default verification commands recorded into build artifacts.
 - `workflows.build.timeoutSeconds` time-boxes the Codex-backed build stage.
@@ -553,8 +553,9 @@ Current artifact set:
 - `final.md`
 - `stdout.log`
 - `stderr.log`
+- `machine-state.json` for machine-backed workflows; this is the canonical runtime snapshot for new `review`, `ship`, `deliver`, and `intent` runs
 - `routing-plan.json` for intent runs
-- `stage-lineage.json` for intent runs
+- `stage-lineage.json` as a compatibility projection for stage-oriented workflows
 - `execution-context.json` for `build` and `deliver` source-vs-execution lineage
 - `session.json` for build runs and any workflow with recorded interactive session lineage
 - `artifacts-index.json` or equivalent artifact inventory derived by the inspector
@@ -582,6 +583,8 @@ Current artifact set:
 - `stages/discover/delegates/<track>/sources.json` for discover-team source provenance
 - `delegates/<specialist>/request.md` for specialist reviews in intent runs
 - `delegates/<specialist>/result.json` for specialist reviews in intent runs
+
+For machine-backed workflows, `run.json.currentStage`, `run.json.status`, and `run.json.activeSpecialists` are derived from `machine-state.json` rather than being mutated independently.
 
 `events.jsonl` records the live progress feed so `cstack inspect` can show recent activity after the run has finished. The interactive inspector also derives its artifact inventory from the saved run directory.
 

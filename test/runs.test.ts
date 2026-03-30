@@ -3,15 +3,18 @@ import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { runRuns } from "../src/commands/runs.js";
-import type { RunRecord, StageLineage } from "../src/types.js";
+import type { RunRecord, StageLineage, WorkflowMachineSnapshot } from "../src/types.js";
 
-async function writeRun(repoDir: string, run: RunRecord, stageLineage?: StageLineage): Promise<void> {
+async function writeRun(repoDir: string, run: RunRecord, stageLineage?: StageLineage, machineState?: WorkflowMachineSnapshot): Promise<void> {
   const runDir = path.join(repoDir, ".cstack", "runs", run.id);
   await fs.mkdir(runDir, { recursive: true });
   await fs.writeFile(path.join(runDir, "run.json"), `${JSON.stringify(run, null, 2)}\n`, "utf8");
   await fs.writeFile(path.join(runDir, "final.md"), "# final\n", "utf8");
   if (stageLineage) {
     await fs.writeFile(path.join(runDir, "stage-lineage.json"), `${JSON.stringify(stageLineage, null, 2)}\n`, "utf8");
+  }
+  if (machineState) {
+    await fs.writeFile(path.join(runDir, "machine-state.json"), `${JSON.stringify(machineState, null, 2)}\n`, "utf8");
   }
 }
 
@@ -169,6 +172,87 @@ describe("runRuns", () => {
       expect(entries[0]?.id).toContain("intent-broad-task");
       expect(entries[0]?.currentStage).toBe("spec");
       expect(entries[0]?.activeSpecialists).toEqual(["audit-review"]);
+    } finally {
+      stdoutSpy.mockRestore();
+    }
+  });
+
+  it("prefers machine-state metadata for current stage and active specialists when present", async () => {
+    await writeRun(
+      repoDir,
+      {
+        id: "2026-03-13T18-30-00-intent-machine-backed",
+        workflow: "intent",
+        createdAt: "2026-03-13T18:30:00.000Z",
+        updatedAt: "2026-03-13T18:30:05.000Z",
+        status: "running",
+        cwd: repoDir,
+        gitBranch: "main",
+        codexVersion: "fake",
+        codexCommand: ["codex", "exec"],
+        promptPath: path.join(repoDir, ".cstack", "runs", "2026-03-13T18-30-00-intent-machine-backed", "prompt.md"),
+        finalPath: path.join(repoDir, ".cstack", "runs", "2026-03-13T18-30-00-intent-machine-backed", "final.md"),
+        contextPath: path.join(repoDir, ".cstack", "runs", "2026-03-13T18-30-00-intent-machine-backed", "context.md"),
+        stdoutPath: path.join(repoDir, ".cstack", "runs", "2026-03-13T18-30-00-intent-machine-backed", "stdout.log"),
+        stderrPath: path.join(repoDir, ".cstack", "runs", "2026-03-13T18-30-00-intent-machine-backed", "stderr.log"),
+        configSources: [],
+        currentStage: "stale-stage",
+        activeSpecialists: ["stale-specialist"],
+        summary: "Machine-backed intent run",
+        inputs: {
+          userPrompt: "Machine-backed intent run"
+        }
+      },
+      undefined,
+      {
+        version: 1,
+        workflow: "intent",
+        intent: "Machine-backed intent run",
+        activePath: ["intent", "child", "review", "running"],
+        runStatus: "running",
+        visibleStages: [
+          {
+            name: "review",
+            rationale: "review rationale",
+            status: "running",
+            executed: true,
+            childRunId: "review-run-1",
+            statePath: ["intent", "child", "review", "running"]
+          }
+        ],
+        specialists: [],
+        activeSpecialists: ["audit-review"],
+        childWorkflows: [
+          {
+            stageName: "review",
+            runId: "review-run-1",
+            workflow: "review",
+            status: "running",
+            currentStage: "review"
+          }
+        ],
+        transitions: [
+          {
+            at: "2026-03-13T18:30:00.000Z",
+            event: "INIT",
+            fromPath: ["intent", "stage", "review", "planned"],
+            toPath: ["intent", "child", "review", "running"]
+          }
+        ],
+        context: {},
+        lastActivity: "Downstream review in progress"
+      }
+    );
+
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      await runRuns(repoDir, ["--active", "--json"]);
+      const output = stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join("");
+      const entries = JSON.parse(output) as Array<{ id: string; currentStage?: string; activeSpecialists: string[] }>;
+      const machineEntry = entries.find((entry) => entry.id.includes("intent-machine-backed"));
+
+      expect(machineEntry?.currentStage).toBe("review");
+      expect(machineEntry?.activeSpecialists).toEqual(["audit-review"]);
     } finally {
       stdoutSpy.mockRestore();
     }

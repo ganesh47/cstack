@@ -133,6 +133,7 @@ describe("runBuild", () => {
         "",
         "[workflows.build]",
         'mode = "interactive"',
+        "allowDirty = false",
         'verificationCommands = ["node -e \\"process.stdout.write(\'verify ok\')\\""]',
         ""
       ].join("\n"),
@@ -287,6 +288,72 @@ describe("runBuild", () => {
     expect(executionContext.execution.kind).toBe("git-worktree");
     await expect(fs.access(path.join(repoDir, "codex-generated-change.txt"))).rejects.toThrow();
     expect(await fs.readFile(path.join(executionContext.execution.cwd, "codex-generated-change.txt"), "utf8")).toContain("generated");
+  }, 60_000);
+
+  it("uses the source checkout and danger-full-access by default when sandbox and allowDirty are not configured", async () => {
+    await fs.writeFile(path.join(repoDir, "local-only.txt"), "uncommitted\n", "utf8");
+    const configPath = path.join(repoDir, ".cstack", "config.toml");
+    await fs.writeFile(
+      configPath,
+      [
+        "[codex]",
+        `command = "${path.resolve("test/fixtures/fake-codex.mjs").replaceAll("\\", "\\\\")}"`,
+        "",
+        "[workflows.build]",
+        'mode = "interactive"',
+        'verificationCommands = ["node -e \\"process.stdout.write(\'verify ok\')\\""]',
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    await runBuild(repoDir, ["--exec", "Implement the queued billing retry cleanup"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const executionContext = JSON.parse(await fs.readFile(path.join(runDir, "execution-context.json"), "utf8")) as {
+      source: { dirtyFiles: string[]; localChangesIgnored: boolean };
+      execution: { kind: string; cwd: string; notes: string[] };
+    };
+    const session = JSON.parse(await fs.readFile(path.join(runDir, "session.json"), "utf8")) as {
+      codexCommand: string[];
+    };
+
+    expect(run.inputs.allowDirty).toBe(true);
+    expect(executionContext.source.dirtyFiles).toContain("local-only.txt");
+    expect(executionContext.source.localChangesIgnored).toBe(false);
+    expect(executionContext.execution.kind).toBe("source");
+    expect(executionContext.execution.cwd).toBe(repoDir);
+    expect(executionContext.execution.notes.join(" ")).toContain("default dangerous execution policy");
+    expect(session.codexCommand).toContain("--sandbox");
+    expect(session.codexCommand).toContain("danger-full-access");
+    expect(await fs.readFile(path.join(repoDir, "codex-generated-change.txt"), "utf8")).toContain("generated");
+  }, 60_000);
+
+  it("treats --allow-all as a deprecated no-op", async () => {
+    await fs.writeFile(path.join(repoDir, "local-only.txt"), "uncommitted\n", "utf8");
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      await runBuild(repoDir, ["--allow-all", "--exec", "Implement the queued billing retry cleanup"]);
+
+      const runs = await listRuns(repoDir);
+      const run = await readRun(repoDir, runs[0]!.id);
+      const runDir = path.dirname(run.finalPath);
+      const executionContext = JSON.parse(await fs.readFile(path.join(runDir, "execution-context.json"), "utf8")) as {
+        source: { localChangesIgnored: boolean };
+        execution: { kind: string };
+      };
+
+      expect(run.inputs.allowAll).toBeUndefined();
+      expect(run.inputs.allowDirty).toBe(false);
+      expect(executionContext.source.localChangesIgnored).toBe(true);
+      expect(executionContext.execution.kind).toBe("git-worktree");
+      expect(stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join("")).toContain("`--allow-all` is deprecated");
+    } finally {
+      stderrSpy.mockRestore();
+    }
   }, 60_000);
 
   it("falls back to a temporary clone when worktree creation fails", async () => {

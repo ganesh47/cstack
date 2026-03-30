@@ -14,6 +14,7 @@ import {
 } from "./prompt.js";
 import { inferRoutingPlan } from "./intent.js";
 import { runDeliverValidationExecution, type DeliverValidationExecutionResult } from "./validation.js";
+import { WorkflowController } from "./workflow-machine.js";
 import type {
   CstackConfig,
   DeliveryReadinessPolicyRecord,
@@ -23,7 +24,6 @@ import type {
   DeliverShipRecord,
   GitHubDeliveryRecord,
   GitHubMutationRecord,
-  RoutingStagePlan,
   RunEvent,
   SpecialistExecution,
   SpecialistSelection,
@@ -51,6 +51,7 @@ export interface DeliverExecutionOptions {
   input: string;
   config: CstackConfig;
   paths: DeliverPaths;
+  controller: WorkflowController;
   requestedMode: WorkflowMode;
   linkedContext?: LinkedBuildContext | undefined;
   verificationCommands: string[];
@@ -72,35 +73,6 @@ export interface DeliverExecutionResult {
   stageLineage: StageLineage;
   selectedSpecialists: SpecialistSelection[];
   finalBody: string;
-}
-
-function buildDeliverStages(): RoutingStagePlan[] {
-  return [
-    {
-      name: "build",
-      rationale: "Implement the approved change and capture verification evidence.",
-      status: "planned",
-      executed: false
-    },
-    {
-      name: "validation",
-      rationale: "Profile the repo, design the validation pyramid, and execute selected validation commands.",
-      status: "planned",
-      executed: false
-    },
-    {
-      name: "review",
-      rationale: "Challenge correctness, security, and release risk using bounded specialist reviews plus validation evidence.",
-      status: "planned",
-      executed: false
-    },
-    {
-      name: "ship",
-      rationale: "Prepare release-readiness artifacts and explicit next actions.",
-      status: "planned",
-      executed: false
-    }
-  ];
 }
 
 function selectDeliverSpecialists(input: string): SpecialistSelection[] {
@@ -724,14 +696,6 @@ function createFailedShipRecord(error: string, readynessMessage: string): Delive
   };
 }
 
-function stageByName(stageLineage: StageLineage, name: RoutingStagePlan["name"]): RoutingStagePlan {
-  const stage = stageLineage.stages.find((entry) => entry.name === name);
-  if (!stage) {
-    throw new Error(`Stage not found in deliver lineage: ${name}`);
-  }
-  return stage;
-}
-
 async function writeValidationArtifacts({
   validationStageDir,
   validationExecution
@@ -925,6 +889,7 @@ function createBlockedReadinessPolicyRecord(options: {
 
 export async function runDeliverExecution(options: DeliverExecutionOptions): Promise<DeliverExecutionResult> {
   const selectedSpecialists = selectDeliverSpecialists(options.input);
+  let stageLineage = options.controller.currentStageLineage;
   const { prompt, context } = await buildDeliverPrompt({
     cwd: options.cwd,
     input: options.input,
@@ -943,18 +908,20 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
   await fs.writeFile(options.paths.stdoutPath, "", "utf8");
   await fs.writeFile(options.paths.stderrPath, "", "utf8");
   await fs.writeFile(options.paths.eventsPath, "", "utf8");
-
-  const stageLineage: StageLineage = {
-    intent: options.input,
-    stages: buildDeliverStages(),
-    specialists: []
-  };
-  await writeJson(options.paths.stageLineagePath, stageLineage);
+  await options.controller.send({
+    type: "SET_ACTIVE_SPECIALISTS",
+    names: selectedSpecialists.map((specialist) => specialist.name)
+  });
+  await options.controller.send({
+    type: "SET_CONTEXT",
+    patch: {
+      selectedSpecialists: selectedSpecialists.map((specialist) => specialist.name)
+    }
+  });
 
   const events = createDeliverEventRecorder(options.runId, options.paths.eventsPath);
   events.setSpecialists(selectedSpecialists.map((specialist) => specialist.name));
   await events.emit("starting", "Running deliver workflow across build -> validation -> review -> ship");
-  const persistLineage = async (): Promise<void> => writeJson(options.paths.stageLineagePath, stageLineage);
   const buildStageDir = deliverStageDir(options.paths.runDir, "build");
   const validationStageDir = deliverStageDir(options.paths.runDir, "validation");
   const reviewStageDir = deliverStageDir(options.paths.runDir, "review");
@@ -964,9 +931,14 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
   await fs.mkdir(path.join(reviewStageDir, "artifacts"), { recursive: true });
   await fs.mkdir(path.join(shipStageDir, "artifacts"), { recursive: true });
   try {
-  const buildStage = stageLineage.stages.find((stage) => stage.name === "build")!;
-  buildStage.status = "running";
-  await persistLineage();
+  await options.controller.send({
+    type: "SET_STAGE_STATUS",
+    stageName: "build",
+    status: "running",
+    executed: false,
+    stageDir: buildStageDir,
+    artifactPath: path.join(buildStageDir, "artifacts", "change-summary.md")
+  });
   events.markStage("build", "running");
 
   const buildExecution = await runBuildExecution({
@@ -996,16 +968,15 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
     ...(typeof options.buildTimeoutSeconds === "number" ? { timeoutSeconds: options.buildTimeoutSeconds } : {})
   });
 
-  buildStage.status = buildExecution.result.code === 0 ? "completed" : "failed";
-  buildStage.executed = true;
-  buildStage.stageDir = buildStageDir;
-  buildStage.artifactPath = path.join(buildStageDir, "artifacts", "change-summary.md");
-  if (buildExecution.result.code !== 0) {
-    buildStage.notes = summarizeBuildFailure(buildExecution);
-  } else {
-    delete buildStage.notes;
-  }
-  await persistLineage();
+  await options.controller.send({
+    type: "SET_STAGE_STATUS",
+    stageName: "build",
+    status: buildExecution.result.code === 0 ? "completed" : "failed",
+    executed: true,
+    stageDir: buildStageDir,
+    artifactPath: path.join(buildStageDir, "artifacts", "change-summary.md"),
+    notes: buildExecution.result.code !== 0 ? summarizeBuildFailure(buildExecution) : undefined
+  });
   events.markStage("build", buildExecution.result.code === 0 ? "completed" : "failed");
 
   if (buildExecution.result.code !== 0) {
@@ -1038,27 +1009,33 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
       githubDeliveryRecord
     });
 
-    const validationStage = stageByName(stageLineage, "validation");
-    validationStage.status = "deferred";
-    validationStage.executed = false;
-    validationStage.stageDir = validationStageDir;
-    validationStage.artifactPath = path.join(validationStageDir, "artifacts", "test-pyramid.md");
-    validationStage.notes = `Blocked because build failed. ${buildFailureSummary}`;
-
-    const reviewStage = stageByName(stageLineage, "review");
-    reviewStage.status = "deferred";
-    reviewStage.executed = false;
-    reviewStage.stageDir = reviewStageDir;
-    reviewStage.artifactPath = path.join(reviewStageDir, "artifacts", "findings.md");
-    reviewStage.notes = `Blocked because build failed. ${buildFailureSummary}`;
-
-    const shipStage = stageByName(stageLineage, "ship");
-    shipStage.status = "deferred";
-    shipStage.executed = false;
-    shipStage.stageDir = shipStageDir;
-    shipStage.artifactPath = path.join(shipStageDir, "artifacts", "ship-summary.md");
-    shipStage.notes = `Blocked because build failed. ${buildFailureSummary}`;
-    await persistLineage();
+    await options.controller.send({
+      type: "SET_STAGE_STATUS",
+      stageName: "validation",
+      status: "deferred",
+      executed: false,
+      stageDir: validationStageDir,
+      artifactPath: path.join(validationStageDir, "artifacts", "test-pyramid.md"),
+      notes: `Blocked because build failed. ${buildFailureSummary}`
+    });
+    await options.controller.send({
+      type: "SET_STAGE_STATUS",
+      stageName: "review",
+      status: "deferred",
+      executed: false,
+      stageDir: reviewStageDir,
+      artifactPath: path.join(reviewStageDir, "artifacts", "findings.md"),
+      notes: `Blocked because build failed. ${buildFailureSummary}`
+    });
+    await options.controller.send({
+      type: "SET_STAGE_STATUS",
+      stageName: "ship",
+      status: "deferred",
+      executed: false,
+      stageDir: shipStageDir,
+      artifactPath: path.join(shipStageDir, "artifacts", "ship-summary.md"),
+      notes: `Blocked because build failed. ${buildFailureSummary}`
+    });
 
     events.markStage("validation", "deferred");
     events.markStage("review", "deferred");
@@ -1095,6 +1072,16 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
       followUpRecord: postShipArtifacts.followUpRecord
     });
     await events.emit("failed", `Build failed; downstream stages blocked. ${buildFailureSummary}`);
+    await options.controller.send({
+      type: "DELIVER_FINALIZED",
+      buildSucceeded: false,
+      validationStatus: validationExecution.validationPlan.status,
+      reviewStatus: reviewVerdict.status,
+      shipReadiness: shipRecord.readiness,
+      githubDeliveryStatus: githubDeliveryRecord.overall.status,
+      summary: `${buildFailureSummary}; downstream stages blocked`
+    });
+    stageLineage = options.controller.currentStageLineage;
 
     const finalBody = buildDeliverFinalSummary({
       input: options.input,
@@ -1123,12 +1110,13 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
     };
   }
   await events.emit("activity", "Build stage finished, starting validation synthesis");
-
-  const validationStage = stageByName(stageLineage, "validation");
-  validationStage.status = "running";
-  validationStage.stageDir = validationStageDir;
-  validationStage.artifactPath = path.join(validationStageDir, "artifacts", "test-pyramid.md");
-  await persistLineage();
+  await options.controller.send({
+    type: "SET_STAGE_STATUS",
+    stageName: "validation",
+    status: "running",
+    stageDir: validationStageDir,
+    artifactPath: path.join(validationStageDir, "artifacts", "test-pyramid.md")
+  });
   events.markStage("validation", "running");
 
   let validationExecution = createFailedValidationExecution("Validation stage did not run.");
@@ -1167,41 +1155,50 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
     await events.emit("failed", `Validation stage failed. ${message}`);
   }
 
-  if (validationExecution) {
-    validationStage.status =
-      validationExecution.validationPlan.status === "ready"
-        ? "completed"
-        : validationExecution.validationPlan.status === "partial"
-          ? "deferred"
-          : "failed";
-    validationStage.executed = true;
-    validationStage.notes = `${validationExecution.validationPlan.outcomeCategory}: ${validationExecution.validationPlan.summary}`;
-    stageLineage.specialists.push(...validationExecution.specialistExecutions);
-  } else {
-    validationStage.status = "failed";
-    validationStage.executed = true;
-    validationStage.notes = "Validation stage did not produce a record.";
+  const validationStatus =
+    validationExecution.validationPlan.status === "ready"
+      ? "completed"
+      : validationExecution.validationPlan.status === "partial"
+        ? "deferred"
+        : "failed";
+  await options.controller.send({
+    type: "SET_STAGE_STATUS",
+    stageName: "validation",
+    status: validationStatus,
+    executed: true,
+    stageDir: validationStageDir,
+    artifactPath: path.join(validationStageDir, "artifacts", "test-pyramid.md"),
+    notes: `${validationExecution.validationPlan.outcomeCategory}: ${validationExecution.validationPlan.summary}`
+  });
+  for (const execution of validationExecution.specialistExecutions) {
+    await options.controller.send({
+      type: "UPSERT_SPECIALIST",
+      specialist: execution
+    });
   }
-  await persistLineage();
   events.markStage(
     "validation",
-    validationStage.status === "completed" ? "completed" : validationStage.status === "deferred" ? "deferred" : "failed"
+    validationStatus === "completed" ? "completed" : validationStatus === "deferred" ? "deferred" : "failed"
   );
   await writeValidationArtifacts({ validationStageDir, validationExecution });
   await events.emit("activity", "Validation stage finished, starting review synthesis");
-
-  const reviewStage = stageByName(stageLineage, "review");
-  reviewStage.status = "running";
-  reviewStage.stageDir = reviewStageDir;
-  reviewStage.artifactPath = path.join(reviewStageDir, "artifacts", "findings.md");
-  await persistLineage();
+  await options.controller.send({
+    type: "SET_STAGE_STATUS",
+    stageName: "review",
+    status: "running",
+    stageDir: reviewStageDir,
+    artifactPath: path.join(reviewStageDir, "artifacts", "findings.md")
+  });
   events.markStage("review", "running");
 
   const specialistResults: Array<{ name: SpecialistSelection["name"]; reason: string; finalBody: string }> = [];
   let reviewVerdict = createFailedReviewVerdict("Review stage did not run.");
   try {
-    let reviewResultCode = 1;
     for (const specialist of selectedSpecialists) {
+      await options.controller.send({
+        type: "SET_ACTIVE_SPECIALISTS",
+        names: [specialist.name]
+      });
       events.markSpecialist(specialist.name, "running");
       const result = await runDeliverSpecialist({
         cwd: options.cwd,
@@ -1213,7 +1210,10 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
         buildSummary: buildExecution.finalBody,
         verificationRecord: buildExecution.verificationRecord
       });
-      stageLineage.specialists.push(result.execution);
+      await options.controller.send({
+        type: "UPSERT_SPECIALIST",
+        specialist: result.execution
+      });
       specialistResults.push({
         name: specialist.name,
         reason: specialist.reason,
@@ -1247,7 +1247,6 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
       config: options.config,
       ...(typeof options.reviewTimeoutSeconds === "number" ? { timeoutSeconds: options.reviewTimeoutSeconds } : {})
     });
-    reviewResultCode = reviewResult.code;
     const reviewRaw = await readCodexFinalOutput({
       context: "Review lead",
       finalPath: path.join(reviewStageDir, "final.md"),
@@ -1258,38 +1257,50 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
     reviewVerdict = parseJson<DeliverReviewVerdict>(reviewRaw, "Review lead");
 
     const acceptedByName = new Map(reviewVerdict.acceptedSpecialists.map((entry) => [entry.name, entry]));
-    stageLineage.specialists = stageLineage.specialists.map((execution) => {
+    for (const execution of options.controller.currentStageLineage.specialists) {
       const accepted = acceptedByName.get(execution.name);
-      return accepted
-        ? {
-            ...execution,
-            disposition: accepted.disposition,
-            notes: accepted.reason
-          }
-        : {
-            ...execution,
-            disposition: "discarded",
-            notes: execution.notes ?? "The review lead did not rely on this specialist output."
-          };
-    });
+      await options.controller.send({
+        type: "UPDATE_SPECIALIST",
+        name: execution.name,
+        patch: accepted
+          ? {
+              disposition: accepted.disposition,
+              notes: accepted.reason
+            }
+          : {
+              disposition: "discarded",
+              notes: execution.notes ?? "The review lead did not rely on this specialist output."
+            }
+      });
+    }
   } catch (error) {
     reviewVerdict = createFailedReviewVerdict(summarizeFailureStageError(error));
     await events.emit("failed", `Review stage failed. ${reviewVerdict.summary}`);
   }
-
-  reviewStage.status = reviewVerdict.status === "ready" ? "completed" : "failed";
-  reviewStage.executed = true;
-  reviewStage.notes = reviewVerdict.summary;
-  await persistLineage();
+  await options.controller.send({
+    type: "SET_ACTIVE_SPECIALISTS",
+    names: []
+  });
+  const reviewStageStatus = reviewVerdict.status === "ready" ? "completed" : "failed";
+  await options.controller.send({
+    type: "SET_STAGE_STATUS",
+    stageName: "review",
+    status: reviewStageStatus,
+    executed: true,
+    stageDir: reviewStageDir,
+    artifactPath: path.join(reviewStageDir, "artifacts", "findings.md"),
+    notes: reviewVerdict.summary
+  });
   await writeReviewArtifacts({ reviewStageDir, reviewVerdict });
-  events.markStage("review", reviewStage.status === "completed" ? "completed" : "failed");
+  events.markStage("review", reviewStageStatus === "completed" ? "completed" : "failed");
   await events.emit("activity", "Review stage finished, preparing ship readiness artifacts");
-
-  const shipStage = stageByName(stageLineage, "ship");
-  shipStage.status = "running";
-  shipStage.stageDir = shipStageDir;
-  shipStage.artifactPath = path.join(shipStageDir, "artifacts", "ship-summary.md");
-  await persistLineage();
+  await options.controller.send({
+    type: "SET_STAGE_STATUS",
+    stageName: "ship",
+    status: "running",
+    stageDir: shipStageDir,
+    artifactPath: path.join(shipStageDir, "artifacts", "ship-summary.md")
+  });
   events.markStage("ship", "running");
 
   let githubMutation = createBlockedGitHubMutationRecord();
@@ -1522,15 +1533,33 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
     followUpDraftMarkdown: postShipArtifacts.followUpDraftMarkdown,
     followUpRecord: postShipArtifacts.followUpRecord
   });
-
-  shipStage.status =
+  const shipStageStatus =
     shipRecord.readiness === "ready" && githubMutationResult.record.blockers.length === 0 && githubDeliveryRecord.overall.status === "ready"
       ? "completed"
       : "failed";
-  shipStage.executed = true;
-  shipStage.notes = shipRecord.summary;
-  await persistLineage();
-  events.markStage("ship", shipStage.status === "completed" ? "completed" : "failed");
+  await options.controller.send({
+    type: "SET_STAGE_STATUS",
+    stageName: "ship",
+    status: shipStageStatus,
+    executed: true,
+    stageDir: shipStageDir,
+    artifactPath: path.join(shipStageDir, "artifacts", "ship-summary.md"),
+    notes: shipRecord.summary
+  });
+  await options.controller.send({
+    type: "DELIVER_FINALIZED",
+    buildSucceeded: buildExecution.result.code === 0,
+    validationStatus: validationExecution.validationPlan.status,
+    reviewStatus: reviewVerdict.status,
+    shipReadiness: shipRecord.readiness,
+    githubDeliveryStatus: githubDeliveryRecord.overall.status,
+    summary:
+      buildExecution.result.code !== 0
+        ? `${summarizeBuildFailure(buildExecution)}; downstream stages blocked`
+        : `Validation: ${validationExecution.validationPlan.status} (${validationExecution.validationPlan.outcomeCategory}); Ship readiness: ${shipRecord.readiness}; GitHub delivery: ${githubDeliveryRecord.overall.status}`
+  });
+  stageLineage = options.controller.currentStageLineage;
+  events.markStage("ship", shipStageStatus === "completed" ? "completed" : "failed");
 
   const finalBody = buildDeliverFinalSummary({
     input: options.input,

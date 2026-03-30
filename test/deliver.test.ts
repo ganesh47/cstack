@@ -403,6 +403,118 @@ describe("runDeliver", () => {
     expect(lineage.stages.find((stage) => stage.name === "validation")?.status).toBe("deferred");
   }, 60_000);
 
+  it("uses the source checkout and danger-full-access by default when sandbox and allowDirty are not configured", async () => {
+    const configPath = path.join(repoDir, ".cstack", "config.toml");
+    const configBody = await fs.readFile(configPath, "utf8");
+    await fs.writeFile(
+      configPath,
+      configBody.replace('sandbox = "workspace-write"\n', "").replace("allowDirty = false\n", ""),
+      "utf8"
+    );
+    await writeGitHubFixture({
+      repoView: {
+        nameWithOwner: "ganesh47/cstack",
+        defaultBranchRef: { name: "main" }
+      },
+      createdPullRequest: {
+        reviewDecision: "APPROVED",
+        mergeStateStatus: "CLEAN"
+      },
+      issues: [],
+      prChecks: [
+        { name: "deliver/test", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/28" },
+        { name: "deliver/typecheck", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/29" }
+      ],
+      actions: [
+        { databaseId: 5, workflowName: "Release", status: "completed", conclusion: "success", url: "https://github.com/ganesh47/cstack/actions/runs/5" }
+      ],
+      security: {
+        dependabot: [],
+        codeScanning: []
+      }
+    });
+    await fs.writeFile(path.join(repoDir, "src-change.txt"), "deliver change\n", "utf8");
+
+    await runDeliver(repoDir, ["--exec", "Deliver a bounded source-checkout release"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const executionContext = JSON.parse(await fs.readFile(path.join(runDir, "execution-context.json"), "utf8")) as {
+      source: { dirtyFiles: string[]; localChangesIgnored: boolean };
+      execution: { kind: string; cwd: string; notes: string[] };
+    };
+    const buildSession = JSON.parse(await fs.readFile(path.join(runDir, "stages", "build", "session.json"), "utf8")) as {
+      codexCommand: string[];
+    };
+
+    expect(run.inputs.allowDirty).toBe(true);
+    expect(executionContext.source.dirtyFiles).toContain("src-change.txt");
+    expect(executionContext.source.localChangesIgnored).toBe(false);
+    expect(executionContext.execution.kind).toBe("source");
+    expect(executionContext.execution.cwd).toBe(repoDir);
+    expect(executionContext.execution.notes.join(" ")).toContain("default dangerous execution policy");
+    expect(buildSession.codexCommand).toContain("--sandbox");
+    expect(buildSession.codexCommand).toContain("danger-full-access");
+    expect(await fs.readFile(path.join(repoDir, "codex-generated-change.txt"), "utf8")).toContain("generated");
+  }, 60_000);
+
+  it("treats --allow-all as a deprecated no-op when source execution is otherwise disabled", async () => {
+    await writeGitHubFixture({
+      repoView: {
+        nameWithOwner: "ganesh47/cstack",
+        defaultBranchRef: { name: "main" }
+      },
+      createdPullRequest: {
+        reviewDecision: "APPROVED",
+        mergeStateStatus: "CLEAN"
+      },
+      issues: [],
+      prChecks: [
+        { name: "deliver/test", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/30" },
+        { name: "deliver/typecheck", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/31" }
+      ],
+      actions: [
+        { databaseId: 6, workflowName: "Release", status: "completed", conclusion: "success", url: "https://github.com/ganesh47/cstack/actions/runs/6" }
+      ],
+      security: {
+        dependabot: [],
+        codeScanning: []
+      }
+    });
+    await fs.writeFile(path.join(repoDir, "src-change.txt"), "deliver change\n", "utf8");
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      await runDeliver(repoDir, ["--allow-all", "--exec", "Deliver a bounded source-checkout release"]);
+
+      const runs = await listRuns(repoDir);
+      const run = await readRun(repoDir, runs[0]!.id);
+      const runDir = path.dirname(run.finalPath);
+      const executionContext = JSON.parse(await fs.readFile(path.join(runDir, "execution-context.json"), "utf8")) as {
+        source: { dirtyFiles: string[]; localChangesIgnored: boolean };
+        execution: { kind: string; cwd: string; notes: string[] };
+      };
+      const buildSession = JSON.parse(await fs.readFile(path.join(runDir, "stages", "build", "session.json"), "utf8")) as {
+        codexCommand: string[];
+      };
+
+      expect(run.inputs.allowAll).toBeUndefined();
+      expect(run.inputs.allowDirty).toBe(false);
+      expect(executionContext.source.dirtyFiles).toContain("src-change.txt");
+      expect(executionContext.source.localChangesIgnored).toBe(true);
+      expect(executionContext.execution.kind).toBe("git-worktree");
+      expect(executionContext.execution.cwd).not.toBe(repoDir);
+      expect(executionContext.execution.notes.join(" ")).not.toContain("--allow-all");
+      expect(buildSession.codexCommand).toContain("--sandbox");
+      expect(buildSession.codexCommand).toContain("workspace-write");
+      expect(stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join("")).toContain("`--allow-all` is deprecated");
+      expect(await fs.readFile(path.join(executionContext.execution.cwd, "codex-generated-change.txt"), "utf8")).toContain("generated");
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  }, 60_000);
+
   it("fails closed when the validation lead exits without writing final output", async () => {
     process.env.FAKE_CODEX_NO_FINAL_VALIDATION = "1";
     await writeGitHubFixture({

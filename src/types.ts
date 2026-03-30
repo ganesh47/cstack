@@ -105,10 +105,16 @@ export interface RoutingStagePlan {
   rationale: string;
   status: StageStatus;
   executed: boolean;
-  notes?: string;
-  stageDir?: string;
-  artifactPath?: string;
-  childRunId?: string;
+  notes?: string | undefined;
+  stageDir?: string | undefined;
+  artifactPath?: string | undefined;
+  childRunId?: string | undefined;
+}
+
+export type MachineStatePath = string[];
+
+export interface VisibleStageRecord extends RoutingStagePlan {
+  statePath: MachineStatePath;
 }
 
 export interface SpecialistSelection {
@@ -156,6 +162,132 @@ export interface StageLineage {
   intent: string;
   stages: RoutingStagePlan[];
   specialists: SpecialistExecution[];
+}
+
+export interface ChildWorkflowLink {
+  stageName: StageName;
+  runId: string;
+  workflow: WorkflowName;
+  status: RunStatus;
+  currentStage?: string | undefined;
+}
+
+export interface WorkflowTransitionRecord {
+  at: string;
+  event: string;
+  fromPath: MachineStatePath;
+  toPath: MachineStatePath;
+  notes?: string | undefined;
+}
+
+export type WorkflowEvent =
+  | {
+      type: "SET_STAGE_STATUS";
+      stageName: StageName;
+      status: StageStatus;
+      executed?: boolean;
+      notes?: string | undefined;
+      stageDir?: string | undefined;
+      artifactPath?: string | undefined;
+      childRunId?: string | undefined;
+      statePath?: MachineStatePath | undefined;
+      note?: string | undefined;
+    }
+  | {
+      type: "SET_SPECIALISTS";
+      names: string[];
+      note?: string | undefined;
+    }
+  | {
+      type: "SET_ACTIVE_SPECIALISTS";
+      names: string[];
+      note?: string | undefined;
+    }
+  | {
+      type: "UPSERT_SPECIALIST";
+      specialist: SpecialistExecution;
+      note?: string | undefined;
+    }
+  | {
+      type: "UPDATE_SPECIALIST";
+      name: SpecialistExecution["name"];
+      patch: Partial<SpecialistExecution>;
+      note?: string | undefined;
+    }
+  | {
+      type: "LINK_CHILD";
+      link: ChildWorkflowLink;
+      note?: string | undefined;
+    }
+  | {
+      type: "SYNC_CHILD";
+      stageName: StageName;
+      child: ChildWorkflowLink;
+      childStageLineage?: StageLineage | null | undefined;
+      childActiveSpecialists?: string[] | undefined;
+      note?: string | undefined;
+    }
+  | {
+      type: "SET_CONTEXT";
+      patch: Record<string, unknown>;
+      note?: string | undefined;
+    }
+  | {
+      type: "SET_LAST_ACTIVITY";
+      message: string;
+      note?: string | undefined;
+    }
+  | {
+      type: "SET_ERROR";
+      error?: string | undefined;
+      note?: string | undefined;
+    }
+  | {
+      type: "REVIEW_FINALIZED";
+      executionSucceeded: boolean;
+      verdictStatus: string;
+      summary: string;
+      note?: string | undefined;
+    }
+  | {
+      type: "SHIP_FINALIZED";
+      readiness: string;
+      githubDeliveryStatus: string;
+      hasMutationBlockers: boolean;
+      summary: string;
+      note?: string | undefined;
+    }
+  | {
+      type: "DELIVER_FINALIZED";
+      buildSucceeded: boolean;
+      validationStatus: string;
+      reviewStatus: string;
+      shipReadiness: string;
+      githubDeliveryStatus: string;
+      summary: string;
+      note?: string | undefined;
+    }
+  | {
+      type: "INTENT_FINALIZED";
+      summary: string;
+      error?: string | undefined;
+      note?: string | undefined;
+    };
+
+export interface WorkflowMachineSnapshot {
+  version: 1;
+  workflow: WorkflowName;
+  intent: string;
+  activePath: MachineStatePath;
+  runStatus: RunStatus;
+  visibleStages: VisibleStageRecord[];
+  specialists: SpecialistExecution[];
+  activeSpecialists: string[];
+  childWorkflows: ChildWorkflowLink[];
+  transitions: WorkflowTransitionRecord[];
+  context: Record<string, unknown>;
+  lastActivity?: string | undefined;
+  error?: string | undefined;
 }
 
 export interface ArtifactEntry {
@@ -297,6 +429,22 @@ export interface CodexConfig {
   profile?: string;
   sandbox?: "read-only" | "workspace-write" | "danger-full-access";
   extraArgs?: string[];
+}
+
+export type ConfigValueSource = "default" | "user" | "repo";
+
+export interface ConfigValueProvenance {
+  source: ConfigValueSource;
+  sourcePath?: string;
+}
+
+export interface ConfigProvenance {
+  codexSandbox: ConfigValueProvenance;
+  workflowAllowDirty: {
+    build: ConfigValueProvenance;
+    ship: ConfigValueProvenance;
+    deliver: ConfigValueProvenance;
+  };
 }
 
 export interface WorkflowConfig {
@@ -983,6 +1131,8 @@ export interface RunRecord {
     issueNumbers?: number[];
     dryRun?: boolean;
     allowDirty?: boolean;
+    allowAll?: boolean;
+    safe?: boolean;
     timeoutSeconds?: number;
   };
 }

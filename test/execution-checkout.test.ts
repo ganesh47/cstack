@@ -59,7 +59,7 @@ describe("execution checkout", () => {
     expect(result.executionCwd).toBe(sourceDir);
     expect(result.record.execution.kind).toBe("source");
     expect(result.record.execution.notes).toEqual(["Dirty source execution was explicitly allowed."]);
-    expect(result.record.source.localChangesIgnored).toBe(true);
+    expect(result.record.source.localChangesIgnored).toBe(false);
   });
 
   it("prepares an isolated git worktree checkout by default", async () => {

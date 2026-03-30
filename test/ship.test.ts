@@ -388,4 +388,41 @@ describe("runShip", () => {
     expect(overrideRun.inputs.initiativeTitle).toBe("Override ship initiative");
     expect(inheritedRun.id).not.toBe(overrideRun.id);
   }, 15_000);
+
+  it("bypasses clean-worktree enforcement when --allow-dirty is set", async () => {
+    const configPath = path.join(repoDir, ".cstack", "config.toml");
+    const configBody = await fs.readFile(configPath, "utf8");
+    await fs.writeFile(configPath, configBody.replace("allowDirty = true", "allowDirty = false"), "utf8");
+
+    const buildRunId = await seedBuildRun(repoDir);
+    const reviewRunId = await seedReviewRun(repoDir, buildRunId);
+    await writeGitHubFixture({
+      createdPullRequest: {
+        reviewDecision: "APPROVED",
+        mergeStateStatus: "CLEAN"
+      },
+      issues: [],
+      prChecks: [
+        { name: "deliver/test", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/50" },
+        { name: "deliver/typecheck", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/51" }
+      ],
+      actions: [
+        { databaseId: 8, workflowName: "Release", status: "completed", conclusion: "success", url: "https://github.com/ganesh47/cstack/actions/runs/8" }
+      ],
+      security: {
+        dependabot: [],
+        codeScanning: []
+      }
+    });
+    await fs.writeFile(path.join(repoDir, "ship-change.txt"), "ship change\n", "utf8");
+
+    await runShip(repoDir, ["--allow-dirty", "--from-run", reviewRunId, "Ship billing cleanup"]);
+
+    const shipRun = (await listRuns(repoDir)).find((entry) => entry.workflow === "ship");
+    expect(shipRun).toBeTruthy();
+
+    const run = await readRun(repoDir, shipRun!.id);
+    expect(run.inputs.allowDirty).toBe(true);
+    expect(run.inputs.linkedRunId).toBe(reviewRunId);
+  }, 15_000);
 });

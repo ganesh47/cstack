@@ -2,6 +2,7 @@ import path from "node:path";
 import { loadConfig } from "../config.js";
 import { prepareExecutionCheckout, writeExecutionContext } from "../execution-checkout.js";
 import { maybeOfferInteractiveInspect } from "../inspector.js";
+import { emitDeprecatedAllowAllWarning, resolveRunPolicy, resolveSourceExecutionReason } from "../runtime-config.js";
 import {
   resolveLinkedBuildContext,
   runBuildExecution
@@ -15,6 +16,8 @@ export interface BuildCliOptions {
   initiativeId?: string;
   initiativeTitle?: string;
   allowDirty?: boolean;
+  safe?: boolean;
+  allowAll?: boolean;
 }
 
 async function readPromptFromStdin(): Promise<string> {
@@ -70,6 +73,14 @@ export function parseBuildArgs(args: string[]): { prompt: string; options: Build
       options.allowDirty = true;
       continue;
     }
+    if (arg === "--safe") {
+      options.safe = true;
+      continue;
+    }
+    if (arg === "--allow-all") {
+      options.allowAll = true;
+      continue;
+    }
     if (arg.startsWith("-")) {
       throw new Error(`Unknown build option: ${arg}`);
     }
@@ -96,8 +107,13 @@ export async function runBuild(cwd: string, args: string[] = []): Promise<string
     throw new Error("`cstack build` requires a prompt or `--from-run <run-id>`.");
   }
 
-  const { config, sources } = await loadConfig(cwd);
-  const allowDirty = parsed.options.allowDirty ?? config.workflows.build.allowDirty ?? false;
+  const { config, sources, provenance } = await loadConfig(cwd);
+  if (parsed.options.allowAll) {
+    emitDeprecatedAllowAllWarning("build");
+  }
+  const policy = resolveRunPolicy({ config, provenance, ...(parsed.options.safe !== undefined ? { safe: parsed.options.safe } : {}) });
+  const effectiveConfig = policy.config;
+  const allowDirty = parsed.options.allowDirty ?? effectiveConfig.workflows.build.allowDirty ?? false;
   const linkedContext = parsed.options.fromRunId ? await resolveLinkedBuildContext(cwd, parsed.options.fromRunId) : undefined;
   const resolvedInitiativeId = parsed.options.initiativeId ?? linkedContext?.run.inputs.initiativeId;
   const resolvedInitiativeTitle = parsed.options.initiativeTitle ?? linkedContext?.run.inputs.initiativeTitle;
@@ -158,6 +174,7 @@ export async function runBuild(cwd: string, args: string[] = []): Promise<string
       requestedMode,
       verificationCommands,
       allowDirty,
+      ...(policy.safe ? { safe: true } : {}),
       ...(timeoutSeconds ? { timeoutSeconds } : {})
     }
   };
@@ -165,11 +182,19 @@ export async function runBuild(cwd: string, args: string[] = []): Promise<string
   await writeRunRecord(runDir, runRecord);
 
   try {
+    const sourceExecutionReason = resolveSourceExecutionReason({
+      workflow: "build",
+      allowDirty,
+      safe: policy.safe,
+      requestedAllowDirty: parsed.options.allowDirty === true,
+      configuredAllowDirtySource: provenance.workflowAllowDirty.build.source
+    });
     const executionCheckout = await prepareExecutionCheckout({
       sourceCwd: cwd,
       runId,
       workflow: "build",
-      allowDirtySourceExecution: allowDirty
+      allowDirtySourceExecution: allowDirty,
+      ...(sourceExecutionReason ? { sourceExecutionReason } : {})
     });
     await writeExecutionContext(executionContextPath, executionCheckout.record);
     const execution = await runBuildExecution({
@@ -177,7 +202,7 @@ export async function runBuild(cwd: string, args: string[] = []): Promise<string
       executionCwd: executionCheckout.executionCwd,
       runId,
       input: resolvedPrompt,
-      config,
+      config: effectiveConfig,
       paths: {
         runDir,
         promptPath,
@@ -232,6 +257,7 @@ export async function runBuild(cwd: string, args: string[] = []): Promise<string
         `Mode: requested=${requestedMode} observed=${execution.observedMode}`,
         `Status: ${runRecord.status}`,
         execution.result.sessionId ? `Session: ${execution.result.sessionId}` : "Session: not observed",
+        `Execution policy: ${policy.safe ? "dangerous default disabled via --safe" : "default dangerous execution"}`,
         `Execution checkout: ${executionCheckout.record.execution.kind} @ ${executionCheckout.record.execution.cwd}`,
         `Source snapshot: ${executionCheckout.record.source.branch} ${executionCheckout.record.source.commit}`,
         executionCheckout.record.source.dirtyFiles.length > 0 && !allowDirty

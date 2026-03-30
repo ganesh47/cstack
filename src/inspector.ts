@@ -33,7 +33,7 @@ import type {
   ValidationRepoProfile,
   ValidationToolResearch
 } from "./types.js";
-import { listRunLedger, listRuns, readRun, runDirForId } from "./run.js";
+import { listRunLedger, listRuns, readRun, readStageLineage, runDirForId } from "./run.js";
 import type { WorkflowName } from "./types.js";
 
 interface InspectorCommandResponse {
@@ -421,7 +421,7 @@ async function loadChildRuns(cwd: string, stageLineage: StageLineage | null): Pr
           fs.readFile(run.finalPath, "utf8").catch(() => ""),
           readRecentEvents(run.eventsPath),
           walkArtifacts(runDir),
-          readJsonFile<StageLineage>(path.join(runDir, "stage-lineage.json")),
+          readStageLineage(cwd, run.id),
           readJsonFile<BuildSessionRecord>(buildSessionPath ?? ""),
           readJsonFile<BuildVerificationRecord>(buildVerificationPath ?? ""),
           readTextFile(buildFinalPath),
@@ -900,7 +900,10 @@ async function startMitigationWorkflow(cwd: string, inspection: RunInspection, t
 
   const prompt = buildMitigationPrompt(inspection, workflow, selectedActions);
   const args: string[] = ["--from-run", inspection.run.id];
-  if (workflow === "build" || workflow === "ship" || workflow === "deliver") {
+  if (inspection.run.inputs.safe) {
+    args.push("--safe");
+  }
+  if ((workflow === "build" || workflow === "ship" || workflow === "deliver") && inspection.run.inputs.safe && inspection.run.inputs.allowDirty) {
     args.push("--allow-dirty");
   }
   if ((workflow === "deliver" || workflow === "ship") && inspection.run.inputs.deliveryMode === "release") {
@@ -1013,7 +1016,7 @@ export async function loadRunInspection(cwd: string, runId?: string): Promise<Ru
   ] = await Promise.all([
     readRecentEvents(run.eventsPath),
     readJsonFile<RoutingPlan>(path.join(runDir, "routing-plan.json")),
-    readJsonFile<StageLineage>(path.join(runDir, "stage-lineage.json")),
+    readStageLineage(cwd, run.id),
     readJsonFile<PlanningIssueLineageRecord>(planningIssueLineagePath),
     readJsonFile<CapabilityUsageRecord>(discoverCapabilitiesPath),
     readJsonFile<CapabilityUsageRecord>(validationCapabilitiesPath),
@@ -1216,6 +1219,9 @@ export function renderInspectionSummary(cwd: string, inspection: RunInspection):
         : undefined,
       inspection.executionContext
         ? `- source snapshot: ${inspection.executionContext.source.branch} ${inspection.executionContext.source.commit}`
+        : undefined,
+      inspection.executionContext
+        ? `- execution policy: ${run.inputs.safe ? "dangerous default disabled via --safe" : "default dangerous execution"}`
         : undefined,
       inspection.executionContext?.source.localChangesIgnored
         ? "- local dirty changes: ignored by default; execution used committed HEAD"

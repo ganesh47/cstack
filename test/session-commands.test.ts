@@ -28,7 +28,7 @@ async function initGitRepo(repoDir: string): Promise<string> {
   return remoteDir;
 }
 
-async function seedBuildRun(repoDir: string): Promise<string> {
+async function seedBuildRun(repoDir: string, options: { allowAll?: boolean } = {}): Promise<string> {
   const runId = "2026-03-14T11-00-00-build-billing-cleanup";
   const runDir = path.join(repoDir, ".cstack", "runs", runId);
   await fs.mkdir(path.join(runDir, "artifacts"), { recursive: true });
@@ -54,7 +54,8 @@ async function seedBuildRun(repoDir: string): Promise<string> {
     inputs: {
       userPrompt: "Implement billing cleanup",
       requestedMode: "exec",
-      observedMode: "exec"
+      observedMode: "exec",
+      ...(options.allowAll ? { allowAll: true, allowDirty: true } : {})
     }
   };
 
@@ -174,5 +175,22 @@ describe("session support commands", () => {
 
     const runs = await listRuns(repoDir);
     expect(runs.filter((run) => run.workflow === "build")).toHaveLength(2);
+  });
+
+  it("replays a legacy --allow-all run through the new default-dangerous policy", async () => {
+    const runId = await seedBuildRun(repoDir, { allowAll: true });
+
+    const rerunId = await runRerun(repoDir, [runId]);
+    const rerun = await readRun(repoDir, rerunId);
+    const executionContext = JSON.parse(
+      await fs.readFile(path.join(repoDir, ".cstack", "runs", rerunId, "execution-context.json"), "utf8")
+    ) as {
+      execution: { kind: string; cwd: string };
+    };
+
+    expect(rerun.inputs.allowAll).toBeUndefined();
+    expect(rerun.inputs.allowDirty).toBe(true);
+    expect(executionContext.execution.kind).toBe("source");
+    expect(executionContext.execution.cwd).toBe(repoDir);
   });
 });

@@ -1,10 +1,12 @@
 import path from "node:path";
 import { loadConfig } from "../config.js";
 import { maybeOfferInteractiveInspect } from "../inspector.js";
-import { detectGitBranch, detectCodexVersion, ensureRunDir, makeRunId, writeRunRecord } from "../run.js";
+import { emitDeprecatedAllowAllWarning, resolveRunPolicy } from "../runtime-config.js";
+import { detectGitBranch, detectCodexVersion, ensureRunDir, makeRunId } from "../run.js";
 import { ensureCleanWorktreeForWorkflow } from "../build.js";
 import { resolveLinkedShipContext, runShipExecution } from "../ship.js";
 import type { DeliverTargetMode, RunRecord } from "../types.js";
+import { getWorkflowMachineDefinition, WorkflowController } from "../workflow-machine.js";
 
 export interface ShipCliOptions {
   fromRunId?: string;
@@ -13,6 +15,8 @@ export interface ShipCliOptions {
   initiativeId?: string;
   initiativeTitle?: string;
   allowDirty?: boolean;
+  safe?: boolean;
+  allowAll?: boolean;
 }
 
 export interface ShipRunHooks {
@@ -82,6 +86,14 @@ export function parseShipArgs(args: string[]): { prompt: string; options: ShipCl
       options.allowDirty = true;
       continue;
     }
+    if (arg === "--safe") {
+      options.safe = true;
+      continue;
+    }
+    if (arg === "--allow-all") {
+      options.allowAll = true;
+      continue;
+    }
     if (arg.startsWith("-")) {
       throw new Error(`Unknown ship option: ${arg}`);
     }
@@ -106,8 +118,13 @@ export async function runShip(cwd: string, args: string[] = [], hooks: ShipRunHo
     throw new Error("`cstack ship` requires a prompt or `--from-run <run-id>`.");
   }
 
-  const { config, sources } = await loadConfig(cwd);
-  const allowDirty = parsed.options.allowDirty ?? config.workflows.ship.allowDirty ?? config.workflows.deliver.allowDirty ?? false;
+  const { config, sources, provenance } = await loadConfig(cwd);
+  if (parsed.options.allowAll) {
+    emitDeprecatedAllowAllWarning("ship");
+  }
+  const policy = resolveRunPolicy({ config, provenance, ...(parsed.options.safe !== undefined ? { safe: parsed.options.safe } : {}) });
+  const effectiveConfig = policy.config;
+  const allowDirty = parsed.options.allowDirty ?? effectiveConfig.workflows.ship.allowDirty ?? effectiveConfig.workflows.deliver.allowDirty ?? false;
   await ensureCleanWorktreeForWorkflow(cwd, "ship", allowDirty);
 
   const linkedContext = parsed.options.fromRunId ? await resolveLinkedShipContext(cwd, parsed.options.fromRunId) : undefined;
@@ -160,7 +177,6 @@ export async function runShip(cwd: string, args: string[] = [], hooks: ShipRunHo
     stdoutPath,
     stderrPath,
     configSources: sources,
-    currentStage: "ship",
     summary: resolvedPrompt,
     inputs: {
       userPrompt: resolvedPrompt,
@@ -170,11 +186,25 @@ export async function runShip(cwd: string, args: string[] = [], hooks: ShipRunHo
       ...(resolvedInitiativeTitle ? { initiativeTitle: resolvedInitiativeTitle } : {}),
       deliveryMode,
       issueNumbers,
-      allowDirty
+      allowDirty,
+      ...(policy.safe ? { safe: true } : {})
     }
   };
-  await writeRunRecord(runDir, runRecord);
-  await hooks.onRunCreated?.(runRecord);
+  const controller = await WorkflowController.create({
+    definition: getWorkflowMachineDefinition("ship"),
+    runDir,
+    runRecord,
+    intent: resolvedPrompt,
+    stages: [
+      {
+        name: "ship",
+        rationale: "Prepare handoff or release artifacts and evaluate GitHub delivery policy.",
+        status: "planned",
+        executed: false
+      }
+    ]
+  });
+  await hooks.onRunCreated?.(controller.currentRunRecord);
 
   try {
     const execution = await runShipExecution({
@@ -182,7 +212,7 @@ export async function runShip(cwd: string, args: string[] = [], hooks: ShipRunHo
       gitBranch,
       runId,
       input: resolvedPrompt,
-      config,
+      config: effectiveConfig,
       paths: {
         runDir,
         promptPath,
@@ -206,31 +236,23 @@ export async function runShip(cwd: string, args: string[] = [], hooks: ShipRunHo
         stageLineagePath,
         pullRequestBodyPath
       },
+      controller,
       deliveryMode,
       issueNumbers,
       ...(linkedContext ? { linkedContext } : {})
     });
 
-    runRecord.status =
-      execution.shipRecord.readiness === "ready" &&
-      execution.githubMutationRecord.blockers.length === 0 &&
-      execution.githubDeliveryRecord.overall.status === "ready"
-        ? "completed"
-        : "failed";
-    runRecord.updatedAt = new Date().toISOString();
-    delete runRecord.currentStage;
-    runRecord.gitBranch = execution.githubMutationRecord.branch.current || gitBranch;
-    runRecord.lastActivity = execution.shipRecord.summary;
-    if (runRecord.status !== "completed") {
-      runRecord.error = execution.githubDeliveryRecord.overall.blockers.join("; ") || execution.shipRecord.summary;
-    }
-    await writeRunRecord(runDir, runRecord);
+    await controller.patchRun({
+      gitBranch: execution.githubMutationRecord.branch.current || gitBranch
+    });
+    const finalRunRecord = controller.currentRunRecord;
 
     process.stdout.write(
       [
         `Run: ${runId}`,
         "Workflow: ship",
-        `Status: ${runRecord.status}`,
+        `Status: ${finalRunRecord.status}`,
+        `Execution policy: ${policy.safe ? "dangerous default disabled via --safe" : "default dangerous execution"}`,
         `Ship readiness: ${execution.shipRecord.readiness}`,
         `GitHub mutation: ${execution.githubMutationRecord.summary}`,
         `GitHub delivery: ${execution.githubDeliveryRecord.overall.status}`,
@@ -256,11 +278,13 @@ export async function runShip(cwd: string, args: string[] = [], hooks: ShipRunHo
     }
     return runId;
   } catch (error) {
-    runRecord.status = "failed";
-    runRecord.updatedAt = new Date().toISOString();
-    delete runRecord.currentStage;
-    runRecord.error = error instanceof Error ? error.message : String(error);
-    await writeRunRecord(runDir, runRecord);
+    await controller.send({
+      type: "SHIP_FINALIZED",
+      readiness: "blocked",
+      githubDeliveryStatus: "blocked",
+      hasMutationBlockers: true,
+      summary: error instanceof Error ? error.message : String(error)
+    });
     throw error;
   }
 }

@@ -3,6 +3,8 @@ import { runIntent } from "../intent.js";
 export interface IntentCliOptions {
   dryRun: boolean;
   entrypoint: "bare" | "run";
+  safe?: boolean;
+  allowAll?: boolean;
 }
 
 function parseIntentArgs(args: string[], entrypoint: "bare" | "run"): { intent: string; options: IntentCliOptions } {
@@ -16,6 +18,14 @@ function parseIntentArgs(args: string[], entrypoint: "bare" | "run"): { intent: 
     const arg = args[index]!;
     if (arg === "--dry-run") {
       options.dryRun = true;
+      continue;
+    }
+    if (arg === "--safe") {
+      options.safe = true;
+      continue;
+    }
+    if (arg === "--allow-all") {
+      options.allowAll = true;
       continue;
     }
     if (arg.startsWith("-")) {

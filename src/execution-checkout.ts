@@ -151,23 +151,33 @@ export async function prepareExecutionCheckout(options: {
   runId: string;
   workflow: "build" | "deliver";
   allowDirtySourceExecution?: boolean;
+  sourceExecutionReason?: string;
 }): Promise<PreparedExecutionCheckout> {
   const source = await detectSourceSnapshot(options.sourceCwd);
 
   if (options.allowDirtySourceExecution) {
+    const notes = options.sourceExecutionReason
+      ? [options.sourceExecutionReason]
+      : source.dirtyFiles.length > 0
+        ? ["Dirty source execution was explicitly allowed."]
+        : [];
+    const sourceRecord = {
+      ...source,
+      localChangesIgnored: false
+    };
     return {
       executionCwd: options.sourceCwd,
       record: {
         workflow: options.workflow,
         preparedAt: new Date().toISOString(),
-        source,
+        source: sourceRecord,
         execution: {
           kind: "source",
           cwd: options.sourceCwd,
-          branch: source.branch,
-          commit: source.commit,
+          branch: sourceRecord.branch,
+          commit: sourceRecord.commit,
           isolated: false,
-          notes: source.dirtyFiles.length > 0 ? ["Dirty source execution was explicitly allowed."] : []
+          notes
         },
         cleanup: {
           policy: "retain",

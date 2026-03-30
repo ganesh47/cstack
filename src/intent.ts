@@ -6,8 +6,10 @@ import { runCodexExec } from "./codex.js";
 import { runDiscoverExecution } from "./discover.js";
 import { maybeOfferInteractiveInspect } from "./inspector.js";
 import { buildSpecPrompt, buildSpecialistPrompt, excerpt } from "./prompt.js";
-import { detectCodexVersion, detectGitBranch, ensureRunDir, makeRunId, readRun, writeRunRecord } from "./run.js";
+import { emitDeprecatedAllowAllWarning, resolveRunPolicy } from "./runtime-config.js";
+import { detectCodexVersion, detectGitBranch, ensureRunDir, makeRunId, readRun, readStageLineage } from "./run.js";
 import { buildBoundedSpecInput, buildSpecContractError, deriveSpecPlanArtifact, validateSpecOutput } from "./spec-contract.js";
+import { getWorkflowMachineDefinition, WorkflowController } from "./workflow-machine.js";
 import type {
   CstackConfig,
   RoutingDecision,
@@ -36,6 +38,8 @@ const DIRECT_EXECUTABLE_STAGES: StageName[] = ["discover", "spec"];
 export interface IntentCommandOptions {
   dryRun: boolean;
   entrypoint: "bare" | "run";
+  safe?: boolean;
+  allowAll?: boolean;
 }
 
 interface StageExecutionResult {
@@ -543,8 +547,11 @@ async function executeSpecialist(options: {
   }
 }
 
-function buildWorkflowArgs(intent: string, fromRunId: string, workflow: IntentAutoWorkflow): string[] {
+function buildWorkflowArgs(intent: string, fromRunId: string, workflow: IntentAutoWorkflow, safe = false): string[] {
   const args = ["--from-run", fromRunId];
+  if (safe) {
+    args.push("--safe");
+  }
   if ((workflow === "ship" || workflow === "deliver") && inferReleaseMode(intent)) {
     args.push("--release");
   }
@@ -558,22 +565,7 @@ function buildWorkflowArgs(intent: string, fromRunId: string, workflow: IntentAu
 }
 
 async function loadStageLineageForRun(cwd: string, runId: string): Promise<StageLineage | null> {
-  const run = await readRun(cwd, runId);
-  const runDir = path.dirname(run.finalPath);
-  try {
-    const body = await fs.readFile(path.join(runDir, "stage-lineage.json"), "utf8");
-    return JSON.parse(body) as StageLineage;
-  } catch {
-    return null;
-  }
-}
-
-function updateLineageStage(stageLineage: StageLineage, stageName: StageName, update: Partial<RoutingStagePlan>): void {
-  const stage = stageLineage.stages.find((entry) => entry.name === stageName);
-  if (!stage) {
-    return;
-  }
-  Object.assign(stage, update);
+  return readStageLineage(cwd, runId);
 }
 
 async function executeAutoWorkflow(options: {
@@ -581,64 +573,22 @@ async function executeAutoWorkflow(options: {
   intent: string;
   runId: string;
   workflow: IntentAutoWorkflow;
-  stageLineage: StageLineage;
+  safe?: boolean;
   hooks?: AutoWorkflowHooks;
 }): Promise<string> {
-  const args = buildWorkflowArgs(options.intent, options.runId, options.workflow);
+  const args = buildWorkflowArgs(options.intent, options.runId, options.workflow, options.safe);
   switch (options.workflow) {
     case "deliver": {
       const { runDeliver } = await import("./commands/deliver.js");
-      const childRunId = await runDeliver(options.cwd, args, options.hooks);
-      const childRun = await readRun(options.cwd, childRunId);
-      const childStageLineage = await loadStageLineageForRun(options.cwd, childRunId);
-      const childRunDir = path.dirname(childRun.finalPath);
-      for (const stageName of ["build", "review", "ship"] as const) {
-        const childStage = childStageLineage?.stages.find((entry) => entry.name === stageName);
-        updateLineageStage(options.stageLineage, stageName, {
-          status: childStage?.status ?? (childRun.status === "completed" ? "completed" : "failed"),
-          executed: childStage?.executed ?? stageName === "build",
-          childRunId,
-          stageDir: path.join(childRunDir, "stages", stageName),
-          artifactPath:
-            stageName === "build"
-              ? path.join(childRunDir, "stages", "build", "artifacts", "change-summary.md")
-              : stageName === "review"
-                ? path.join(childRunDir, "stages", "review", "artifacts", "verdict.json")
-                : path.join(childRunDir, "stages", "ship", "artifacts", "ship-summary.md"),
-          notes: `Executed through downstream deliver run ${childRunId}. ${childStage?.notes ?? summarizeChildRunOutcome(childRun)}`
-        });
-      }
-      return childRunId;
+      return runDeliver(options.cwd, args, options.hooks);
     }
     case "review": {
       const { runReview } = await import("./commands/review.js");
-      const childRunId = await runReview(options.cwd, args, options.hooks);
-      const childRun = await readRun(options.cwd, childRunId);
-      const childRunDir = path.dirname(childRun.finalPath);
-      updateLineageStage(options.stageLineage, "review", {
-        status: childRun.status === "completed" ? "completed" : "failed",
-        executed: true,
-        childRunId,
-        stageDir: childRunDir,
-        artifactPath: path.join(childRunDir, "artifacts", "verdict.json"),
-        notes: `Executed through downstream review run ${childRunId}. ${summarizeChildRunOutcome(childRun)}`
-      });
-      return childRunId;
+      return runReview(options.cwd, args, options.hooks);
     }
     case "ship": {
       const { runShip } = await import("./commands/ship.js");
-      const childRunId = await runShip(options.cwd, args, options.hooks);
-      const childRun = await readRun(options.cwd, childRunId);
-      const childRunDir = path.dirname(childRun.finalPath);
-      updateLineageStage(options.stageLineage, "ship", {
-        status: childRun.status === "completed" ? "completed" : "failed",
-        executed: true,
-        childRunId,
-        stageDir: childRunDir,
-        artifactPath: path.join(childRunDir, "artifacts", "ship-summary.md"),
-        notes: `Executed through downstream ship run ${childRunId}. ${summarizeChildRunOutcome(childRun)}`
-      });
-      return childRunId;
+      return runShip(options.cwd, args, options.hooks);
     }
   }
 }
@@ -647,12 +597,9 @@ function startChildRunTracker(options: {
   cwd: string;
   workflow: IntentAutoWorkflow;
   childRunId: string;
-  runDir: string;
-  runRecord: RunRecord;
-  stageLineage: StageLineage;
-  stageLineagePath: string;
+  controller: WorkflowController;
   events: ReturnType<typeof createEventRecorder>;
-}): () => void {
+}): { sync: () => Promise<void>; stop: () => void } {
   const progressStage: StageName = options.workflow === "deliver" ? "build" : options.workflow;
   let stopped = false;
   let syncing = false;
@@ -673,28 +620,20 @@ function startChildRunTracker(options: {
         return;
       }
 
-      let runRecordChanged = false;
-      let lineageChanged = false;
-
       if (childRun.sessionId && childRun.sessionId !== lastMirroredSessionId) {
-        options.runRecord.sessionId = childRun.sessionId;
         lastMirroredSessionId = childRun.sessionId;
-        runRecordChanged = true;
+        await options.controller.patchRun({ sessionId: childRun.sessionId });
       }
 
       const childCurrentStage = childRun.currentStage ?? options.workflow;
       if (childCurrentStage !== lastMirroredStage) {
         lastMirroredStage = childCurrentStage;
-        options.runRecord.currentStage = childCurrentStage;
-        runRecordChanged = true;
         await options.events.emit("activity", `Downstream ${options.workflow} stage: ${childCurrentStage}`);
       }
 
       const childSpecialists = (childRun.activeSpecialists ?? []).join(",");
       if (childSpecialists !== lastMirroredSpecialists) {
         lastMirroredSpecialists = childSpecialists;
-        options.runRecord.activeSpecialists = childRun.activeSpecialists ?? [];
-        runRecordChanged = true;
       }
 
       if (childRun.lastActivity && childRun.lastActivity !== lastMirroredActivity) {
@@ -703,67 +642,35 @@ function startChildRunTracker(options: {
       }
 
       const childStageLineage = await loadStageLineageForRun(options.cwd, options.childRunId);
+      await options.controller.send({
+        type: "SYNC_CHILD",
+        stageName: progressStage,
+        child: {
+          stageName: progressStage,
+          runId: options.childRunId,
+          workflow: childRun.workflow,
+          status: childRun.status,
+          currentStage: childCurrentStage
+        },
+        childStageLineage,
+        childActiveSpecialists: childRun.activeSpecialists ?? [],
+        note: `Executing through downstream ${options.workflow} run ${options.childRunId}.`
+      });
+
       if (childStageLineage) {
-        if (options.workflow === "deliver") {
-          for (const stageName of ["build", "review", "ship"] as const) {
-            const childStage = childStageLineage.stages.find((entry) => entry.name === stageName);
-            if (!childStage) {
-              continue;
-            }
-            const stageUpdate: Partial<RoutingStagePlan> = {
-              status: childStage.status,
-              executed: childStage.executed,
-              childRunId: options.childRunId,
-              notes: `Executing through downstream deliver run ${options.childRunId}.`
-            };
-            if (childStage.stageDir) {
-              stageUpdate.stageDir = childStage.stageDir;
-            }
-            if (childStage.artifactPath) {
-              stageUpdate.artifactPath = childStage.artifactPath;
-            }
-            updateLineageStage(options.stageLineage, stageName, stageUpdate);
-            lineageChanged = true;
-            options.events.markStage(stageName, childStage.status === "planned" ? "pending" : childStage.status);
+        for (const stage of childStageLineage.stages) {
+          if (stage.name === "validation" && options.workflow !== "deliver") {
+            continue;
           }
-        } else {
-          const childStage = childStageLineage.stages.find((entry) => entry.name === options.workflow);
-          if (childStage) {
-            const stageUpdate: Partial<RoutingStagePlan> = {
-              status: childStage.status,
-              executed: childStage.executed,
-              childRunId: options.childRunId,
-              notes: `Executing through downstream ${options.workflow} run ${options.childRunId}.`
-            };
-            if (childStage.stageDir) {
-              stageUpdate.stageDir = childStage.stageDir;
-            }
-            if (childStage.artifactPath) {
-              stageUpdate.artifactPath = childStage.artifactPath;
-            }
-            updateLineageStage(options.stageLineage, options.workflow, stageUpdate);
-            lineageChanged = true;
-            options.events.markStage(options.workflow, childStage.status === "planned" ? "pending" : childStage.status);
+          if (stage.name === "validation" && !options.controller.currentStageLineage.stages.some((entry) => entry.name === stage.name)) {
+            continue;
+          }
+          if (options.workflow === "deliver" || stage.name === options.workflow) {
+            options.events.markStage(stage.name, stage.status === "planned" ? "pending" : stage.status);
           }
         }
       } else {
-        updateLineageStage(options.stageLineage, progressStage, {
-          status: childRun.status === "running" ? "running" : childRun.status === "completed" ? "completed" : "failed",
-          executed: true,
-          childRunId: options.childRunId,
-          notes: `Executing through downstream ${options.workflow} run ${options.childRunId}.`
-        });
-        lineageChanged = true;
         options.events.markStage(progressStage, childRun.status === "completed" ? "completed" : childRun.status === "failed" ? "failed" : "running");
-      }
-
-      if (lineageChanged) {
-        await writeJson(options.stageLineagePath, options.stageLineage);
-      }
-
-      if (runRecordChanged) {
-        options.runRecord.updatedAt = new Date().toISOString();
-        await writeRunRecord(options.runDir, options.runRecord);
       }
     } finally {
       syncing = false;
@@ -776,9 +683,12 @@ function startChildRunTracker(options: {
   interval.unref?.();
   void sync();
 
-  return () => {
-    stopped = true;
-    clearInterval(interval);
+  return {
+    sync,
+    stop: () => {
+      stopped = true;
+      clearInterval(interval);
+    }
   };
 }
 
@@ -825,7 +735,12 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
     throw new Error("`cstack <intent>` requires a task description.");
   }
 
-  const { config, sources } = await loadConfig(cwd);
+  const { config, sources, provenance } = await loadConfig(cwd);
+  if (options.allowAll) {
+    emitDeprecatedAllowAllWarning("intent");
+  }
+  const policy = resolveRunPolicy({ config, provenance, ...(options.safe !== undefined ? { safe: options.safe } : {}) });
+  const effectiveConfig = policy.config;
   const runId = makeRunId("intent", resolvedIntent);
   const runDir = await ensureRunDir(cwd, runId);
   const promptPath = path.join(runDir, "prompt.md");
@@ -838,22 +753,16 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
   const stageLineagePath = path.join(runDir, "stage-lineage.json");
   const [gitBranch, codexVersion] = await Promise.all([
     detectGitBranch(cwd),
-    detectCodexVersion(cwd, config.codex.command)
+    detectCodexVersion(cwd, effectiveConfig.codex.command)
   ]);
 
   const routingPlan = inferRoutingPlan(resolvedIntent, options.entrypoint);
-  const stageLineage: StageLineage = {
-    intent: resolvedIntent,
-    stages: structuredClone(routingPlan.stages),
-    specialists: []
-  };
 
   await fs.writeFile(promptPath, buildIntentPrompt(resolvedIntent, routingPlan), "utf8");
   await fs.writeFile(contextPath, `${buildIntentContext(routingPlan)}\n`, "utf8");
   await fs.writeFile(stdoutPath, "", "utf8");
   await fs.writeFile(stderrPath, "", "utf8");
   await writeJson(routingPlanPath, routingPlan);
-  await writeJson(stageLineagePath, stageLineage);
 
   const createdAt = new Date().toISOString();
   const runRecord: RunRecord = {
@@ -873,19 +782,26 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
     stdoutPath,
     stderrPath,
     configSources: sources,
-    currentStage: "routing",
-    activeSpecialists: [],
     summary: resolvedIntent,
     inputs: {
       userPrompt: resolvedIntent,
       entrypoint: "intent",
       plannedStages: routingPlan.stages.map((stage) => stage.name),
       selectedSpecialists: routingPlan.specialists.filter((specialist) => specialist.selected).map((specialist) => specialist.name),
-      dryRun: options.dryRun
+      dryRun: options.dryRun,
+      ...(policy.safe ? { safe: true } : {})
     }
   };
-
-  await writeRunRecord(runDir, runRecord);
+  const controller = await WorkflowController.create({
+    definition: getWorkflowMachineDefinition("intent"),
+    runDir,
+    runRecord,
+    intent: resolvedIntent,
+    stages: structuredClone(routingPlan.stages),
+    activeSpecialists: [],
+    specialists: []
+  });
+  let stageLineage = controller.currentStageLineage;
   const events = createEventRecorder(runId, eventsPath);
   events.setStages(routingPlan.stages.map((stage) => stage.name));
   events.setSpecialists(routingPlan.specialists.filter((specialist) => specialist.selected).map((specialist) => specialist.name));
@@ -903,25 +819,26 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
     );
 
     if (options.dryRun) {
-      stageLineage.stages = stageLineage.stages.map((stage) => ({
-        ...stage,
-        status: "skipped",
-        notes: "Dry run: no stage execution performed."
-      }));
-      for (const stage of stageLineage.stages) {
+      for (const stage of routingPlan.stages) {
+        await controller.send({
+          type: "SET_STAGE_STATUS",
+          stageName: stage.name,
+          status: "skipped",
+          executed: false,
+          notes: "Dry run: no stage execution performed."
+        });
         events.markStage(stage.name, "skipped");
       }
       for (const specialist of routingPlan.specialists.filter((entry) => entry.selected)) {
         events.markSpecialist(specialist.name, "skipped");
       }
-      await writeJson(stageLineagePath, stageLineage);
+      await controller.send({
+        type: "INTENT_FINALIZED",
+        summary: "Dry run completed"
+      });
+      stageLineage = controller.currentStageLineage;
       const finalSummary = buildFinalSummary(resolvedIntent, routingPlan, stageLineage);
       await fs.writeFile(finalPath, finalSummary, "utf8");
-      runRecord.status = "completed";
-      runRecord.updatedAt = new Date().toISOString();
-      delete runRecord.currentStage;
-      runRecord.lastActivity = "Dry run completed";
-      await writeRunRecord(runDir, runRecord);
       await events.emit("completed", "Dry run completed");
       process.stdout.write(
         [
@@ -943,7 +860,8 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
     let specOutput = "";
 
     for (const stageName of routingPlan.stages.map((stage) => stage.name)) {
-      const lineageStage = stageLineage.stages.find((stage) => stage.name === stageName);
+          stageLineage = controller.currentStageLineage;
+          const lineageStage = stageLineage.stages.find((stage) => stage.name === stageName);
       if (!lineageStage) {
         continue;
       }
@@ -952,12 +870,13 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
         continue;
       }
 
-      lineageStage.status = "running";
+      await controller.send({
+        type: "SET_STAGE_STATUS",
+        stageName,
+        status: "running",
+        executed: false
+      });
       events.markStage(stageName, "running");
-      runRecord.currentStage = stageName;
-      runRecord.updatedAt = new Date().toISOString();
-      await writeRunRecord(runDir, runRecord);
-      await writeJson(stageLineagePath, stageLineage);
       await events.emit("activity", `Running ${stageName} stage`);
 
       if (stageName === "discover") {
@@ -967,7 +886,7 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
           cwd,
           runId: `${runId}-discover`,
           input: resolvedIntent,
-          config,
+          config: effectiveConfig,
           paths: {
             runDir,
             stageDir,
@@ -984,22 +903,23 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
         if (discoverResult.status === "failed") {
           throw new Error(discoverResult.notes[0] ?? `Discover failed closed with exit code ${discoverResult.leadResult.code}`);
         }
-        lineageStage.status = "completed";
-        lineageStage.executed = true;
-        lineageStage.stageDir = stageDir;
-        lineageStage.artifactPath = path.join(stageDir, "artifacts", "findings.md");
-        if (discoverResult.status === "partial") {
-          lineageStage.notes = discoverResult.notes[0] ?? "Discover recovered a partial artifact after a non-zero lead exit.";
-        }
+        await controller.send({
+          type: "SET_STAGE_STATUS",
+          stageName,
+          status: "completed",
+          executed: true,
+          stageDir,
+          artifactPath: path.join(stageDir, "artifacts", "findings.md"),
+          notes: discoverResult.status === "partial" ? discoverResult.notes[0] ?? "Discover recovered a partial artifact after a non-zero lead exit." : undefined
+        });
         events.markStage(stageName, "completed");
-        await writeJson(stageLineagePath, stageLineage);
         continue;
       }
 
       const specInput =
         buildBoundedSpecInput(resolvedIntent, discoverFindings) ??
         (discoverFindings ? `${resolvedIntent}\n\n## Linked discover findings\n${excerpt(discoverFindings, 40)}` : resolvedIntent);
-      const { prompt, context } = await buildSpecPrompt(cwd, specInput, config);
+      const { prompt, context } = await buildSpecPrompt(cwd, specInput, effectiveConfig);
       const result = await executeStage({
         cwd,
         runId,
@@ -1008,77 +928,83 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
         contractInput: resolvedIntent,
         prompt,
         context,
-        config,
+        config: effectiveConfig,
         artifactName: "spec.md"
       });
       specOutput = await fs.readFile(result.artifactPath, "utf8");
-      lineageStage.status = "completed";
-      lineageStage.executed = true;
-      lineageStage.stageDir = result.stageDir;
-      lineageStage.artifactPath = result.artifactPath;
+      await controller.send({
+        type: "SET_STAGE_STATUS",
+        stageName,
+        status: "completed",
+        executed: true,
+        stageDir: result.stageDir,
+        artifactPath: result.artifactPath
+      });
       events.markStage(stageName, "completed");
-      await writeJson(stageLineagePath, stageLineage);
     }
 
     const autoWorkflow = selectAutoWorkflow(routingPlan);
     if (autoWorkflow) {
       const autoProgressStage: StageName = autoWorkflow === "deliver" ? "build" : autoWorkflow;
-      updateLineageStage(stageLineage, autoProgressStage, {
+      await controller.send({
+        type: "SET_STAGE_STATUS",
+        stageName: autoProgressStage,
         status: "running",
         executed: true,
         notes: `Starting downstream ${autoWorkflow} workflow.`
       });
+      await controller.send({
+        type: "SET_ACTIVE_SPECIALISTS",
+        names: []
+      });
       events.markStage(autoProgressStage, "running");
-      runRecord.currentStage = autoProgressStage;
-      runRecord.activeSpecialists = [];
-      runRecord.updatedAt = new Date().toISOString();
-      await writeRunRecord(runDir, runRecord);
-      await writeJson(stageLineagePath, stageLineage);
       await events.emit("activity", `Running downstream ${autoWorkflow} workflow from intent`);
-      let stopTracking: (() => void) | undefined;
+      let tracker: { sync: () => Promise<void>; stop: () => void } | undefined;
       try {
         await executeAutoWorkflow({
           cwd,
           intent: resolvedIntent,
           runId,
           workflow: autoWorkflow,
-          stageLineage,
+          safe: policy.safe,
           hooks: {
             suppressInteractiveInspect: true,
             onRunCreated: async (childRun) => {
-              updateLineageStage(stageLineage, autoProgressStage, {
-                status: "running",
-                executed: true,
-                childRunId: childRun.id,
-                notes: `Executing through downstream ${autoWorkflow} run ${childRun.id}.`
+              await controller.send({
+                type: "SYNC_CHILD",
+                stageName: autoProgressStage,
+                child: {
+                  stageName: autoProgressStage,
+                  runId: childRun.id,
+                  workflow: childRun.workflow,
+                  status: childRun.status,
+                  currentStage: childRun.currentStage ?? autoProgressStage
+                },
+                childStageLineage: await loadStageLineageForRun(cwd, childRun.id),
+                childActiveSpecialists: childRun.activeSpecialists ?? [],
+                note: `Executing through downstream ${autoWorkflow} run ${childRun.id}.`
               });
-              runRecord.currentStage = childRun.currentStage ?? autoProgressStage;
-              runRecord.activeSpecialists = childRun.activeSpecialists ?? [];
               if (childRun.sessionId) {
-                runRecord.sessionId = childRun.sessionId;
+                await controller.patchRun({ sessionId: childRun.sessionId });
               }
-              runRecord.updatedAt = new Date().toISOString();
-              runRecord.lastActivity = `Downstream ${autoWorkflow} run ${childRun.id} started`;
-              await writeRunRecord(runDir, runRecord);
-              await writeJson(stageLineagePath, stageLineage);
               await events.emit("activity", `Downstream ${autoWorkflow} run ${childRun.id} started`);
-              stopTracking = startChildRunTracker({
+              tracker = startChildRunTracker({
                 cwd,
                 workflow: autoWorkflow,
                 childRunId: childRun.id,
-                runDir,
-                runRecord,
-                stageLineage,
-                stageLineagePath,
+                controller,
                 events
               });
             }
           }
         });
       } finally {
-        stopTracking?.();
+        if (tracker) {
+          await tracker.sync();
+          tracker.stop();
+        }
       }
-      await writeJson(stageLineagePath, stageLineage);
+      stageLineage = controller.currentStageLineage;
       for (const stage of stageLineage.stages) {
         if (stage.executed) {
           events.markStage(stage.name, stage.status === "completed" ? "completed" : "failed");
@@ -1090,10 +1016,10 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
     } else {
       const selectedSpecialists = routingPlan.specialists.filter((specialist) => specialist.selected);
       for (const specialist of selectedSpecialists) {
-        runRecord.currentStage = `specialist:${specialist.name}`;
-        runRecord.activeSpecialists = [specialist.name];
-        runRecord.updatedAt = new Date().toISOString();
-        await writeRunRecord(runDir, runRecord);
+        await controller.send({
+          type: "SET_ACTIVE_SPECIALISTS",
+          names: [specialist.name]
+        });
         events.markSpecialist(specialist.name, "running");
         await events.emit("activity", `Running specialist ${specialist.name}`);
         const result = await executeSpecialist({
@@ -1101,42 +1027,48 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
           runId,
           runDir,
           intent: resolvedIntent,
-          config,
+          config: effectiveConfig,
           routingPlan,
           specialist,
           discoverFindings,
           specOutput
         });
-        stageLineage.specialists.push(result);
+        await controller.send({
+          type: "UPSERT_SPECIALIST",
+          specialist: result
+        });
         events.markSpecialist(specialist.name, result.status === "completed" ? "completed" : "failed");
-        await writeJson(stageLineagePath, stageLineage);
       }
+      await controller.send({
+        type: "SET_ACTIVE_SPECIALISTS",
+        names: []
+      });
     }
 
+    stageLineage = controller.currentStageLineage;
+    const completedSummary = stageLineage.stages.some((stage) => stage.status === "failed")
+      ? "Intent run finished with downstream workflow failures"
+      : "Intent run completed";
+    const failedStageError = stageLineage.stages
+      .filter((stage) => stage.status === "failed")
+      .map((stage) => `${stage.name} failed${stage.childRunId ? ` via ${stage.childRunId}` : ""}`)
+      .join("; ");
+    await controller.send({
+      type: "INTENT_FINALIZED",
+      summary: completedSummary,
+      ...(failedStageError ? { error: failedStageError } : {})
+    });
+    stageLineage = controller.currentStageLineage;
     const finalSummary = buildFinalSummary(resolvedIntent, routingPlan, stageLineage);
     await fs.writeFile(finalPath, finalSummary, "utf8");
-    runRecord.status = stageLineage.stages.some((stage) => stage.status === "failed") ? "failed" : "completed";
-    runRecord.updatedAt = new Date().toISOString();
-    delete runRecord.currentStage;
-    runRecord.activeSpecialists = [];
-    runRecord.lastActivity =
-      runRecord.status === "completed" ? "Intent run completed" : "Intent run finished with downstream workflow failures";
-    if (runRecord.status === "failed") {
-      runRecord.error = stageLineage.stages
-        .filter((stage) => stage.status === "failed")
-        .map((stage) => `${stage.name} failed${stage.childRunId ? ` via ${stage.childRunId}` : ""}`)
-        .join("; ");
-    } else {
-      delete runRecord.error;
-    }
-    await writeRunRecord(runDir, runRecord);
-    await events.emit(runRecord.status === "completed" ? "completed" : "failed", runRecord.lastActivity);
+    const finalRunRecord = controller.currentRunRecord;
+    await events.emit(finalRunRecord.status === "completed" ? "completed" : "failed", finalRunRecord.lastActivity ?? completedSummary);
 
     process.stdout.write(
       [
         `Run: ${runId}`,
         `Workflow: intent`,
-        `Status: ${runRecord.status}`,
+        `Status: ${finalRunRecord.status}`,
         `Artifacts:`,
         `  ${path.relative(cwd, routingPlanPath)}`,
         `  ${path.relative(cwd, stageLineagePath)}`,
@@ -1148,32 +1080,46 @@ export async function runIntent(cwd: string, intent: string, options: IntentComm
     return runId;
   } catch (error) {
     const failureMessage = error instanceof Error ? error.message : String(error);
-    const failedStage = runRecord.currentStage;
+    const failedStage = controller.currentRunRecord.currentStage;
     if (failedStage) {
       if (failedStage.startsWith("specialist:")) {
         const specialistName = failedStage.slice("specialist:".length);
+        stageLineage = controller.currentStageLineage;
         const lineageSpecialist = stageLineage.specialists.find((specialist) => specialist.name === specialistName);
         if (lineageSpecialist) {
-          lineageSpecialist.status = "failed";
-          lineageSpecialist.notes = failureMessage;
+          await controller.send({
+            type: "UPDATE_SPECIALIST",
+            name: specialistName as SpecialistName,
+            patch: {
+              status: "failed",
+              notes: failureMessage
+            }
+          });
         }
       } else {
+        stageLineage = controller.currentStageLineage;
         const lineageStage = stageLineage.stages.find((stage) => stage.name === failedStage);
         if (lineageStage) {
-          lineageStage.status = "failed";
-          lineageStage.executed = true;
-          lineageStage.notes = failureMessage;
+          await controller.send({
+            type: "SET_STAGE_STATUS",
+            stageName: failedStage as StageName,
+            status: "failed",
+            executed: true,
+            notes: failureMessage
+          });
         }
       }
-      await writeJson(stageLineagePath, stageLineage);
     }
-    runRecord.status = "failed";
-    runRecord.updatedAt = new Date().toISOString();
-    delete runRecord.currentStage;
-    runRecord.activeSpecialists = [];
-    runRecord.error = failureMessage;
-    await writeRunRecord(runDir, runRecord);
-    await events.emit("failed", runRecord.error);
+    await controller.send({
+      type: "SET_ACTIVE_SPECIALISTS",
+      names: []
+    });
+    await controller.send({
+      type: "INTENT_FINALIZED",
+      summary: failureMessage,
+      error: failureMessage
+    });
+    await events.emit("failed", failureMessage);
     throw error;
   }
 }

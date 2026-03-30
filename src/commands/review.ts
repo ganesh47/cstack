@@ -1,14 +1,18 @@
 import path from "node:path";
 import { loadConfig } from "../config.js";
 import { maybeOfferInteractiveInspect } from "../inspector.js";
-import { detectCodexVersion, detectGitBranch, ensureRunDir, makeRunId, writeRunRecord } from "../run.js";
+import { emitDeprecatedAllowAllWarning, resolveRunPolicy } from "../runtime-config.js";
+import { detectCodexVersion, detectGitBranch, ensureRunDir, makeRunId } from "../run.js";
 import { resolveLinkedReviewContext, runReviewExecution } from "../review.js";
 import type { RunRecord } from "../types.js";
+import { getWorkflowMachineDefinition, WorkflowController } from "../workflow-machine.js";
 
 export interface ReviewCliOptions {
   fromRunId?: string;
   initiativeId?: string;
   initiativeTitle?: string;
+  safe?: boolean;
+  allowAll?: boolean;
 }
 
 export interface ReviewRunHooks {
@@ -61,6 +65,14 @@ export function parseReviewArgs(args: string[]): { prompt: string; options: Revi
       index += 1;
       continue;
     }
+    if (arg === "--allow-all") {
+      options.allowAll = true;
+      continue;
+    }
+    if (arg === "--safe") {
+      options.safe = true;
+      continue;
+    }
     if (arg.startsWith("-")) {
       throw new Error(`Unknown review option: ${arg}`);
     }
@@ -85,7 +97,12 @@ export async function runReview(cwd: string, args: string[] = [], hooks: ReviewR
     throw new Error("`cstack review` requires a prompt or `--from-run <run-id>`.");
   }
 
-  const { config, sources } = await loadConfig(cwd);
+  const { config, sources, provenance } = await loadConfig(cwd);
+  if (parsed.options.allowAll) {
+    emitDeprecatedAllowAllWarning("review");
+  }
+  const policy = resolveRunPolicy({ config, provenance, ...(parsed.options.safe !== undefined ? { safe: parsed.options.safe } : {}) });
+  const effectiveConfig = policy.config;
   const linkedContext = parsed.options.fromRunId ? await resolveLinkedReviewContext(cwd, parsed.options.fromRunId) : undefined;
   const resolvedInitiativeId = parsed.options.initiativeId ?? linkedContext?.initiativeId;
   const resolvedInitiativeTitle = parsed.options.initiativeTitle ?? linkedContext?.initiativeTitle;
@@ -124,25 +141,38 @@ export async function runReview(cwd: string, args: string[] = [], hooks: ReviewR
     stdoutPath,
     stderrPath,
     configSources: sources,
-    currentStage: "review",
     summary: resolvedPrompt,
     inputs: {
       userPrompt: resolvedPrompt,
       entrypoint: "workflow",
+      ...(policy.safe ? { safe: true } : {}),
       ...(resolvedInitiativeId ? { initiativeId: resolvedInitiativeId } : {}),
       ...(resolvedInitiativeTitle ? { initiativeTitle: resolvedInitiativeTitle } : {}),
       ...(linkedContext ? { linkedRunId: linkedContext.runId } : {})
     }
   };
-  await writeRunRecord(runDir, runRecord);
-  await hooks.onRunCreated?.(runRecord);
+  const controller = await WorkflowController.create({
+    definition: getWorkflowMachineDefinition("review"),
+    runDir,
+    runRecord,
+    intent: resolvedPrompt,
+    stages: [
+      {
+        name: "review",
+        rationale: "Critique the current change, risks, and next actions.",
+        status: "planned",
+        executed: false
+      }
+    ]
+  });
+  await hooks.onRunCreated?.(controller.currentRunRecord);
 
   try {
     const execution = await runReviewExecution({
       cwd,
       runId,
       input: resolvedPrompt,
-      config,
+      config: effectiveConfig,
       paths: {
         runDir,
         promptPath,
@@ -156,26 +186,23 @@ export async function runReview(cwd: string, args: string[] = [], hooks: ReviewR
         verdictPath,
         stageLineagePath
       },
+      controller,
       ...(linkedContext ? { linkedContext } : {})
     });
 
-    runRecord.status = execution.executionSucceeded ? "completed" : "failed";
-    runRecord.updatedAt = new Date().toISOString();
-    delete runRecord.currentStage;
-    runRecord.inputs.selectedSpecialists = execution.selectedSpecialists.map((specialist) => specialist.name);
-    runRecord.lastActivity = execution.reviewVerdict.summary;
-    if (!execution.executionSucceeded) {
-      runRecord.error = execution.reviewVerdict.summary;
-    } else {
-      delete runRecord.error;
-    }
-    await writeRunRecord(runDir, runRecord);
+    await controller.patchRun({
+      inputs: {
+        userPrompt: resolvedPrompt,
+        selectedSpecialists: execution.selectedSpecialists.map((specialist) => specialist.name)
+      }
+    });
+    const finalRunRecord = controller.currentRunRecord;
 
     process.stdout.write(
       [
         `Run: ${runId}`,
         "Workflow: review",
-        `Status: ${runRecord.status}`,
+        `Status: ${finalRunRecord.status}`,
         `Review mode: ${execution.reviewVerdict.mode}`,
         `Verdict: ${execution.reviewVerdict.status}`,
         "Artifacts:",
@@ -192,11 +219,12 @@ export async function runReview(cwd: string, args: string[] = [], hooks: ReviewR
     }
     return runId;
   } catch (error) {
-    runRecord.status = "failed";
-    runRecord.updatedAt = new Date().toISOString();
-    delete runRecord.currentStage;
-    runRecord.error = error instanceof Error ? error.message : String(error);
-    await writeRunRecord(runDir, runRecord);
+    await controller.send({
+      type: "REVIEW_FINALIZED",
+      executionSucceeded: false,
+      verdictStatus: "failed",
+      summary: error instanceof Error ? error.message : String(error)
+    });
     throw error;
   }
 }

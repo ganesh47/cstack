@@ -120,6 +120,33 @@ describe("src/cli.ts", () => {
     expect(runIntentCommand).toHaveBeenCalledWith(cwd, ["Ship first release"], "run");
   });
 
+  it("dispatches workflow commands with --allow-all intact", async () => {
+    await runCliCommand(["run", "--allow-all", "Ship first release"]);
+    expect(runIntentCommand).toHaveBeenCalledWith(cwd, ["--allow-all", "Ship first release"], "run");
+
+    await runCliCommand(["discover", "--allow-all", "Investigate auth flow"]);
+    expect(runDiscover).toHaveBeenCalledWith(cwd, ["--allow-all", "Investigate auth flow"]);
+
+    await runCliCommand(["spec", "--allow-all", "Draft plan"]);
+    expect(runSpec).toHaveBeenCalledWith(cwd, "--allow-all Draft plan");
+
+    await runCliCommand(["build", "--allow-all", "Migrate API"]);
+    expect(runBuild).toHaveBeenCalledWith(cwd, ["--allow-all", "Migrate API"]);
+
+    await runCliCommand(["review", "--allow-all", "Fix race condition"]);
+    expect(runReview).toHaveBeenCalledWith(cwd, ["--allow-all", "Fix race condition"]);
+
+    await runCliCommand(["ship", "--allow-all", "Add endpoint"]);
+    expect(runShip).toHaveBeenCalledWith(cwd, ["--allow-all", "Add endpoint"]);
+
+    await runCliCommand(["deliver", "--allow-all", "Bundle release"]);
+    expect(runDeliver).toHaveBeenCalledWith(cwd, ["--allow-all", "Bundle release"]);
+
+    runIntentCommand.mockClear();
+    await runCliCommand(["--allow-all", "Implement", "observability"]);
+    expect(runIntentCommand).toHaveBeenCalledWith(cwd, ["--allow-all", "Implement", "observability"], "bare");
+  });
+
   it("dispatches spec", async () => {
     await runCliCommand(["spec", "Draft plan"]);
     expect(runSpec).toHaveBeenCalledWith(cwd, "Draft plan");

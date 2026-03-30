@@ -16,14 +16,14 @@ import { runUpdateCommand, UpdateCommandError } from "./commands/update.js";
 function usage(): string {
   return [
     "Usage:",
-    "  cstack <intent>",
-    "  cstack run <intent> [--dry-run]",
-    "  cstack discover <prompt> [--issue <n>]",
-    "  cstack spec <prompt> [--issue <n>] [--initiative <id>] [--initiative-title <title>]",
-    "  cstack build <prompt> [--from-run <run-id>] [--initiative <id>] [--initiative-title <title>] [--exec] [--allow-dirty]",
-    "  cstack review <prompt> [--from-run <run-id>] [--initiative <id>] [--initiative-title <title>]",
-    "  cstack ship <prompt> [--from-run <run-id>] [--initiative <id>] [--initiative-title <title>] [--release] [--issue <n>] [--allow-dirty]",
-    "  cstack deliver <prompt> [--from-run <run-id>] [--initiative <id>] [--initiative-title <title>] [--exec] [--release] [--issue <n>]",
+    "  cstack <intent> [--safe]",
+    "  cstack run <intent> [--dry-run] [--safe]",
+    "  cstack discover <prompt> [--issue <n>] [--safe]",
+    "  cstack spec <prompt> [--issue <n>] [--initiative <id>] [--initiative-title <title>] [--safe]",
+    "  cstack build <prompt> [--from-run <run-id>] [--initiative <id>] [--initiative-title <title>] [--exec] [--allow-dirty] [--safe]",
+    "  cstack review <prompt> [--from-run <run-id>] [--initiative <id>] [--initiative-title <title>] [--safe]",
+    "  cstack ship <prompt> [--from-run <run-id>] [--initiative <id>] [--initiative-title <title>] [--release] [--issue <n>] [--allow-dirty] [--safe]",
+    "  cstack deliver <prompt> [--from-run <run-id>] [--initiative <id>] [--initiative-title <title>] [--exec] [--release] [--issue <n>] [--allow-dirty] [--safe]",
     "  cstack rerun <run-id>",
     "  cstack resume <run-id>",
     "  cstack fork <run-id> [--workflow <name>]",
@@ -83,7 +83,7 @@ async function main(): Promise<void> {
       process.stdout.write(`${usage()}\n`);
       return;
     default:
-      if (command && !command.startsWith("-") && (rest.length > 0 || /\s/.test(command))) {
+      if (command && (!command.startsWith("-") || command === "--allow-all" || command === "--safe") && (rest.length > 0 || /\s/.test(command))) {
         await runIntentCommand(cwd, [command, ...rest], "bare");
         return;
       }

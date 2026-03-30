@@ -4,6 +4,7 @@ import { loadConfig } from "../config.js";
 import { runCodexExec } from "../codex.js";
 import { maybeOfferInteractiveInspect } from "../inspector.js";
 import { buildSpecPrompt, excerpt } from "../prompt.js";
+import { emitDeprecatedAllowAllWarning, resolveRunPolicy } from "../runtime-config.js";
 import { buildBoundedSpecInput, buildSpecContractError, deriveSpecPlanArtifact, validateSpecOutput } from "../spec-contract.js";
 import { detectCodexVersion, detectGitBranch, ensureRunDir, listRuns, makeRunId, writeRunRecord } from "../run.js";
 import { resolveLinkedBuildContext } from "../build.js";
@@ -14,6 +15,8 @@ export interface SpecCliOptions {
   planningIssueNumber?: number;
   initiativeId?: string;
   initiativeTitle?: string;
+  safe?: boolean;
+  allowAll?: boolean;
 }
 
 function parseSpecArgs(args: string[]): { prompt: string; options: SpecCliOptions } {
@@ -56,6 +59,14 @@ function parseSpecArgs(args: string[]): { prompt: string; options: SpecCliOption
       }
       options.initiativeTitle = value;
       index += 1;
+      continue;
+    }
+    if (arg === "--allow-all") {
+      options.allowAll = true;
+      continue;
+    }
+    if (arg === "--safe") {
+      options.safe = true;
       continue;
     }
     if (arg.startsWith("-")) {
@@ -132,7 +143,12 @@ export async function runSpec(cwd: string, input: string | string[]): Promise<st
     throw new Error("`cstack spec` requires a prompt or `--from-run <run-id>`.");
   }
 
-  const { config, sources } = await loadConfig(cwd);
+  const { config, sources, provenance } = await loadConfig(cwd);
+  if (parsed.options.allowAll) {
+    emitDeprecatedAllowAllWarning("spec");
+  }
+  const policy = resolveRunPolicy({ config, provenance, ...(parsed.options.safe !== undefined ? { safe: parsed.options.safe } : {}) });
+  const effectiveConfig = policy.config;
   const linkedContext = parsed.options.fromRunId ? await resolveLinkedBuildContext(cwd, parsed.options.fromRunId) : undefined;
   const resolvedPlanningIssueNumber =
     typeof parsed.options.planningIssueNumber === "number"
@@ -210,6 +226,7 @@ export async function runSpec(cwd: string, input: string | string[]): Promise<st
     summary: resolvedPrompt,
     inputs: {
       userPrompt: resolvedPrompt,
+      ...(policy.safe ? { safe: true } : {}),
       ...(linkedContext ? { linkedRunId: linkedContext.run.id } : {}),
       ...(typeof resolvedPlanningIssueNumber === "number" ? { planningIssueNumber: resolvedPlanningIssueNumber } : {}),
       ...(resolvedInitiativeId ? { initiativeId: resolvedInitiativeId } : {}),
@@ -230,7 +247,7 @@ export async function runSpec(cwd: string, input: string | string[]): Promise<st
       eventsPath,
       stdoutPath,
       stderrPath,
-      config
+      config: effectiveConfig
     });
 
     runRecord.status = result.code === 0 ? "completed" : "failed";

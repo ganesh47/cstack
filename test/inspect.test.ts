@@ -1658,6 +1658,11 @@ describe("inspect", () => {
 
   it("can launch a mitigation workflow directly from a review inspection", async () => {
     const reviewRunId = await seedReviewRun(repoDir);
+    const reviewRunDir = path.join(repoDir, ".cstack", "runs", reviewRunId);
+    const reviewRun = JSON.parse(await fs.readFile(path.join(reviewRunDir, "run.json"), "utf8")) as RunRecord;
+    reviewRun.inputs.safe = true;
+    reviewRun.inputs.allowDirty = true;
+    await fs.writeFile(path.join(reviewRunDir, "run.json"), `${JSON.stringify(reviewRun, null, 2)}\n`, "utf8");
     await fs.mkdir(path.join(repoDir, ".cstack", "runs", "local-dirty"), { recursive: true });
     await fs.writeFile(path.join(repoDir, ".cstack", "runs", "local-dirty", "payload.json"), "{}\n", "utf8");
     const inspection = await loadRunInspection(repoDir, reviewRunId);
@@ -1675,6 +1680,8 @@ describe("inspect", () => {
       const mitigationInspection = await loadRunInspection(repoDir, response.switchToRunId);
       expect(mitigationInspection.run.workflow).toBe("build");
       expect(mitigationInspection.run.inputs.linkedRunId).toBe(reviewRunId);
+      expect(mitigationInspection.run.inputs.safe).toBe(true);
+      expect(mitigationInspection.run.inputs.allowAll).toBeUndefined();
       expect(mitigationInspection.run.inputs.allowDirty).toBe(true);
       expect(mitigationInspection.run.summary).toContain("mitigate the findings");
     } finally {

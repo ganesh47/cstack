@@ -5,6 +5,7 @@ import { readCodexFinalOutput, runCodexExec } from "./codex.js";
 import { buildPostShipArtifacts } from "./post-ship.js";
 import { buildDeliverShipPrompt } from "./prompt.js";
 import { collectGitHubDeliveryEvidence, performGitHubDeliverMutations } from "./github.js";
+import { WorkflowController } from "./workflow-machine.js";
 import type {
   BuildVerificationRecord,
   CstackConfig,
@@ -66,6 +67,7 @@ export interface ShipExecutionOptions {
   input: string;
   config: CstackConfig;
   paths: ShipPaths;
+  controller: WorkflowController;
   deliveryMode: DeliverTargetMode;
   issueNumbers: number[];
   linkedContext?: LinkedShipContext;
@@ -537,20 +539,14 @@ export async function runShipExecution(options: ShipExecutionOptions): Promise<S
   const buildSummary = linkedContext?.buildSummary ?? linkedContext?.artifactBody ?? options.input;
   const verificationRecord = linkedContext?.verificationRecord ?? notRunVerificationRecord();
   const reviewVerdict = linkedContext?.reviewVerdict ?? blockedReviewVerdict("Ship requires review evidence.");
-
-  const stageLineage: StageLineage = {
-    intent: options.input,
-    stages: [
-      {
-        name: "ship",
-        rationale: "Prepare handoff or release artifacts and evaluate GitHub delivery policy.",
-        status: "running",
-        executed: false
-      }
-    ],
-    specialists: []
-  };
-  await writeJson(options.paths.stageLineagePath, stageLineage);
+  await options.controller.send({
+    type: "SET_STAGE_STATUS",
+    stageName: "ship",
+    status: "running",
+    executed: false,
+    stageDir: options.paths.runDir,
+    artifactPath: options.paths.shipSummaryPath
+  });
 
   const githubMutation = await performGitHubDeliverMutations({
     cwd: options.cwd,
@@ -697,18 +693,22 @@ export async function runShipExecution(options: ShipExecutionOptions): Promise<S
   await writeJson(options.paths.githubMutationPath, githubMutation.record);
   await writeJson(options.paths.githubDeliveryPath, githubDeliveryRecord);
 
-  stageLineage.stages[0] = {
-    ...stageLineage.stages[0]!,
-    status:
-      shipResult.code === 0 && githubMutation.record.blockers.length === 0 && shipRecord.readiness === "ready" && githubDeliveryRecord.overall.status === "ready"
-        ? "completed"
-        : "failed",
-    executed: true,
-    stageDir: options.paths.runDir,
-    artifactPath: options.paths.shipSummaryPath,
-    notes: shipRecord.summary
-  };
-  await writeJson(options.paths.stageLineagePath, stageLineage);
+  await options.controller.send({
+    type: "SET_CONTEXT",
+    patch: {
+      shipReadiness: shipRecord.readiness,
+      githubDeliveryStatus: githubDeliveryRecord.overall.status
+    }
+  });
+  await options.controller.send({
+    type: "SHIP_FINALIZED",
+    readiness: shipRecord.readiness,
+    githubDeliveryStatus: githubDeliveryRecord.overall.status,
+    hasMutationBlockers: githubMutation.record.blockers.length > 0,
+    summary: shipRecord.summary
+  });
+
+  const stageLineage = options.controller.currentStageLineage;
 
   const finalBody = buildFinalSummary({
     input: options.input,

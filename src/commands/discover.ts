@@ -3,11 +3,14 @@ import { promises as fs } from "node:fs";
 import { loadConfig } from "../config.js";
 import { runDiscoverExecution } from "../discover.js";
 import { maybeOfferInteractiveInspect } from "../inspector.js";
+import { emitDeprecatedAllowAllWarning, resolveRunPolicy } from "../runtime-config.js";
 import { detectCodexVersion, detectGitBranch, ensureRunDir, makeRunId, writeRunRecord } from "../run.js";
 import type { PlanningIssueLineageRecord, RunRecord } from "../types.js";
 
 export interface DiscoverCliOptions {
   planningIssueNumber?: number;
+  safe?: boolean;
+  allowAll?: boolean;
 }
 
 function parseDiscoverArgs(input: string | string[]): { prompt: string; options: DiscoverCliOptions } {
@@ -24,6 +27,14 @@ function parseDiscoverArgs(input: string | string[]): { prompt: string; options:
       }
       options.planningIssueNumber = Number.parseInt(value, 10);
       index += 1;
+      continue;
+    }
+    if (arg === "--allow-all") {
+      options.allowAll = true;
+      continue;
+    }
+    if (arg === "--safe") {
+      options.safe = true;
       continue;
     }
     if (arg.startsWith("-")) {
@@ -57,7 +68,12 @@ export async function runDiscover(cwd: string, input: string | string[]): Promis
     throw new Error("`cstack discover` requires a prompt.");
   }
 
-  const { config, sources } = await loadConfig(cwd);
+  const { config, sources, provenance } = await loadConfig(cwd);
+  if (parsed.options.allowAll) {
+    emitDeprecatedAllowAllWarning("discover");
+  }
+  const policy = resolveRunPolicy({ config, provenance, ...(parsed.options.safe !== undefined ? { safe: parsed.options.safe } : {}) });
+  const effectiveConfig = policy.config;
   const runId = makeRunId("discover", resolvedPrompt);
   const runDir = await ensureRunDir(cwd, runId);
   const promptPath = path.join(runDir, "prompt.md");
@@ -96,6 +112,7 @@ export async function runDiscover(cwd: string, input: string | string[]): Promis
     summary: resolvedPrompt,
     inputs: {
       userPrompt: resolvedPrompt,
+      ...(policy.safe ? { safe: true } : {}),
       ...(parsed.options.planningIssueNumber ? { planningIssueNumber: parsed.options.planningIssueNumber } : {})
     }
   };
@@ -107,7 +124,7 @@ export async function runDiscover(cwd: string, input: string | string[]): Promis
       cwd,
       runId,
       input: resolvedPrompt,
-      config,
+      config: effectiveConfig,
       ...(typeof parsed.options.planningIssueNumber === "number"
         ? { planningIssueNumber: parsed.options.planningIssueNumber }
         : {}),

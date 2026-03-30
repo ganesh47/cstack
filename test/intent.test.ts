@@ -46,6 +46,9 @@ describe("intent router", () => {
         `command = "${fakeCodexPath.replaceAll("\\", "\\\\")}"`,
         'sandbox = "workspace-write"',
         "",
+        "[workflows.deliver]",
+        "allowDirty = false",
+        "",
         "[workflows.spec.delegation]",
         "enabled = false",
         "maxAgents = 0",
@@ -271,6 +274,67 @@ describe("intent router", () => {
     expect(executionContext.execution.kind).toBe("git-worktree");
     expect(executionContext.source.dirtyFiles).toContain("dirty-local.txt");
     expect(executionContext.source.localChangesIgnored).toBe(true);
+  }, 60_000);
+
+  it("propagates --safe through intent into downstream delivery", async () => {
+    const fakeCodexPath = path.resolve("test/fixtures/fake-codex.mjs");
+    await fs.writeFile(
+      path.join(repoDir, ".cstack", "config.toml"),
+      [
+        "[codex]",
+        `command = "${fakeCodexPath.replaceAll("\\", "\\\\")}"`,
+        "",
+        "[workflows.spec.delegation]",
+        "enabled = false",
+        "maxAgents = 0",
+        "",
+        "[workflows.discover.delegation]",
+        "enabled = true",
+        "maxAgents = 3",
+        "",
+        "[workflows.discover.research]",
+        "enabled = true",
+        "allowWeb = true",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    await fs.writeFile(path.join(repoDir, "dirty-local.txt"), "do not copy\n", "utf8");
+
+    await runIntent(repoDir, "What are the gaps in this project? Can you work on closing the gaps?", {
+      entrypoint: "bare",
+      dryRun: false,
+      safe: true
+    });
+
+    const runs = await listRuns(repoDir);
+    const intentRun = await readRun(
+      repoDir,
+      runs.find((entry) => entry.workflow === "intent")!.id
+    );
+    const deliverRun = await readRun(
+      repoDir,
+      runs.find((entry) => entry.workflow === "deliver")!.id
+    );
+    const deliverRunDir = path.dirname(deliverRun.finalPath);
+    const executionContext = JSON.parse(await fs.readFile(path.join(deliverRunDir, "execution-context.json"), "utf8")) as {
+      source: { dirtyFiles: string[]; localChangesIgnored: boolean };
+      execution: { kind: string; cwd: string; notes: string[] };
+    };
+    const buildSession = JSON.parse(await fs.readFile(path.join(deliverRunDir, "stages", "build", "session.json"), "utf8")) as {
+      codexCommand: string[];
+    };
+
+    expect(intentRun.inputs.safe).toBe(true);
+    expect(deliverRun.inputs.safe).toBe(true);
+    expect(deliverRun.inputs.allowAll).toBeUndefined();
+    expect(deliverRun.inputs.allowDirty).toBe(false);
+    expect(executionContext.source.dirtyFiles).toContain("dirty-local.txt");
+    expect(executionContext.source.localChangesIgnored).toBe(true);
+    expect(executionContext.execution.kind).toBe("git-worktree");
+    expect(buildSession.codexCommand).toContain("--sandbox");
+    expect(buildSession.codexCommand).toContain("workspace-write");
+    expect(buildSession.codexCommand).not.toContain("danger-full-access");
   }, 60_000);
 
   it("fails closed when the shared spec stage returns a broad roadmap instead of one bounded slice", async () => {

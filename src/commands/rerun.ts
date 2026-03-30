@@ -25,15 +25,22 @@ function buildWorkflowArgs(run: RunRecord): string[] {
   const args: string[] = [];
   const prompt = run.inputs.userPrompt;
   const linkedRunId = run.inputs.linkedRunId;
+  const safe = run.inputs.safe ?? false;
 
   switch (run.workflow) {
     case "discover":
+      if (safe) {
+        args.push("--safe");
+      }
       if (typeof run.inputs.planningIssueNumber === "number") {
         args.push("--issue", String(run.inputs.planningIssueNumber));
       }
       args.push(prompt);
       return args;
     case "spec":
+      if (safe) {
+        args.push("--safe");
+      }
       if (linkedRunId) {
         args.push("--from-run", linkedRunId);
       }
@@ -45,13 +52,16 @@ function buildWorkflowArgs(run: RunRecord): string[] {
       }
       return args;
     case "build":
+      if (safe) {
+        args.push("--safe");
+      }
       if (linkedRunId) {
         args.push("--from-run", linkedRunId);
       }
       if (run.inputs.requestedMode === "exec") {
         args.push("--exec");
       }
-      if (run.inputs.allowDirty) {
+      if (safe && run.inputs.allowDirty) {
         args.push("--allow-dirty");
       }
       if (prompt) {
@@ -59,6 +69,9 @@ function buildWorkflowArgs(run: RunRecord): string[] {
       }
       return args;
     case "review":
+      if (safe) {
+        args.push("--safe");
+      }
       if (linkedRunId) {
         args.push("--from-run", linkedRunId);
       }
@@ -67,6 +80,9 @@ function buildWorkflowArgs(run: RunRecord): string[] {
       }
       return args;
     case "ship":
+      if (safe) {
+        args.push("--safe");
+      }
       if (linkedRunId) {
         args.push("--from-run", linkedRunId);
       }
@@ -76,7 +92,7 @@ function buildWorkflowArgs(run: RunRecord): string[] {
       for (const issueNumber of run.inputs.issueNumbers ?? []) {
         args.push("--issue", String(issueNumber));
       }
-      if (run.inputs.allowDirty) {
+      if (safe && run.inputs.allowDirty) {
         args.push("--allow-dirty");
       }
       if (prompt) {
@@ -84,6 +100,9 @@ function buildWorkflowArgs(run: RunRecord): string[] {
       }
       return args;
     case "deliver":
+      if (safe) {
+        args.push("--safe");
+      }
       if (linkedRunId) {
         args.push("--from-run", linkedRunId);
       }
@@ -96,7 +115,7 @@ function buildWorkflowArgs(run: RunRecord): string[] {
       for (const issueNumber of run.inputs.issueNumbers ?? []) {
         args.push("--issue", String(issueNumber));
       }
-      if (run.inputs.allowDirty) {
+      if (safe && run.inputs.allowDirty) {
         args.push("--allow-dirty");
       }
       if (prompt) {
@@ -104,7 +123,7 @@ function buildWorkflowArgs(run: RunRecord): string[] {
       }
       return args;
     case "intent":
-      return [prompt];
+      return [...(safe ? ["--safe"] : []), prompt];
     default:
       throw new Error(`\`cstack rerun\` does not support workflow ${run.workflow}.`);
   }
@@ -149,7 +168,8 @@ export async function runRerun(cwd: string, args: string[] = []): Promise<string
     case "intent":
       newRunId = await runIntent(cwd, run.inputs.userPrompt, {
         entrypoint: run.inputs.entrypoint === "intent" ? "bare" : "run",
-        dryRun: run.inputs.dryRun ?? false
+        dryRun: run.inputs.dryRun ?? false,
+        safe: run.inputs.safe ?? false
       });
       break;
     default:
