@@ -192,6 +192,7 @@ Key artifacts:
 - `artifacts/findings.md`
 - `artifacts/findings.json`
 - `artifacts/verdict.json`
+- `machine-state.json`
 - `stage-lineage.json`
 - optional `delegates/<specialist>/...`
 - `final.md`
@@ -244,6 +245,7 @@ Key artifacts:
 - `artifacts/follow-up-draft.md`
 - `artifacts/follow-up-lineage.json`
 - `artifacts/pull-request-body.md`
+- `machine-state.json`
 - `stage-lineage.json`
 - `final.md`
 
@@ -284,6 +286,7 @@ Safety:
 
 Key artifacts:
 
+- `machine-state.json`
 - `stage-lineage.json`
 - `execution-context.json`
 - `stages/build/...`
@@ -309,7 +312,8 @@ Current intent behavior:
 
 - infer a stage plan
 - persist `routing-plan.json`
-- persist `stage-lineage.json`
+- persist canonical `machine-state.json`
+- persist derived `stage-lineage.json`
 - auto-execute downstream `review`, `ship`, or `deliver` when the inferred plan warrants it
 - keep bounded specialist reviews inside the intent run only when the router stops after planning
 
@@ -569,11 +573,14 @@ Every run stores at least:
 
 Additional workflow-owned files include:
 
+- `machine-state.json` for machine-backed workflows; this is the canonical runtime snapshot for new `review`, `ship`, `deliver`, and `intent` runs
 - `routing-plan.json` for intent runs
-- `stage-lineage.json` for multi-stage or stage-oriented runs
+- `stage-lineage.json` for multi-stage or stage-oriented runs, projected from machine state when present
 - `session.json` for build sessions and nested deliver build sessions
 - `repo-profile.json`, `validation-plan.json`, and `tool-research.json` for deliver validation stages
 - `delegates/` for specialist or discover-track outputs
+
+For machine-backed workflows, `run.json.currentStage`, `run.json.status`, and `run.json.activeSpecialists` are derived from `machine-state.json` and remain compatibility fields for ledger and inspector views.
 
 Runs are immutable. `rerun` creates a new run id rather than mutating prior run state.
 

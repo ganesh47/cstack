@@ -39,6 +39,7 @@ Implemented behavior:
 - `review` is a standalone critique workflow with verdict artifacts and bounded specialist reviewers
 - `ship` is a standalone GitHub-aware handoff and release-readiness workflow
 - `deliver` runs internal `build -> validation -> review -> ship` inside one durable run
+- `review`, `ship`, `deliver`, and `intent` now persist canonical `machine-state.json`; `stage-lineage.json` remains a derived compatibility view for inspection and ledger output
 - `deliver` validation profiles the repo, inventories nested workspace targets, records OSS tool research, writes a test pyramid, and runs selected local validation commands
 - `deliver` and `ship` can publish branches and create or update pull requests when repo policy enables it
 - `rerun` replays supported workflows into fresh run ids
@@ -90,6 +91,8 @@ Current behavior:
 
 - infer a stage plan
 - persist `routing-plan.json`
+- persist canonical `machine-state.json`
+- persist derived `stage-lineage.json`
 - run `discover`
 - run `spec`
 - auto-run standalone `review` for review-shaped prompts
@@ -144,6 +147,7 @@ Continuation commands:
 ## Safety Rules
 
 - treat `.cstack/runs/<run-id>/` as the durable source of truth
+- treat `machine-state.json` as the canonical runtime state for machine-backed workflows and `stage-lineage.json` as a projection kept for compatibility
 - update inspector behavior whenever you introduce a new artifact family
 - `build` and `deliver` execute from isolated checkouts by default and ignore uncommitted local dirt unless `--allow-dirty` or repo policy opts into source-repo dirty execution
 - `ship` still requires a clean worktree unless `--allow-dirty` or repo policy allows otherwise

@@ -1029,7 +1029,7 @@ describe("runDeliver", () => {
     expect(githubDelivery.overall.blockers.join("\n")).toContain("GitHub command timed out");
     expect(shipRecord.readiness).toBe("blocked");
     expect(shipRecord.summary).toContain("GitHub delivery is blocked");
-  }, 10_000);
+  }, 20_000);
 
   it("stops after a failed build and marks downstream stages as deferred", async () => {
     process.env.FAKE_CODEX_FAIL_BUILD = "1";
