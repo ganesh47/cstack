@@ -50,7 +50,7 @@ jobs:
       - name: Validate package version matches tag
         shell: bash
         run: |
-          PACKAGE_VERSION="$(node -p 'require(\"./package.json\").version')"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
           EXPECTED_TAG="v${PACKAGE_VERSION}"
           if [ "${EXPECTED_TAG}" != "${RELEASE_TAG}" ]; then
             echo "package.json version ${PACKAGE_VERSION} does not match tag ${RELEASE_TAG}"
