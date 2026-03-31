@@ -688,11 +688,11 @@ Release flow:
 
 1. dispatch `Prepare Release` from the GitHub Actions UI or `gh workflow run`
 2. the workflow updates `package.json`, `package-lock.json`, and the versioned README examples
-3. the workflow creates a release prep branch and commits there
-4. the workflow creates and pushes a matching tag, for example `v0.1.0`
-5. `Prepare Release` pushes the prep branch and dispatches required checks (`CI`, `CodeQL`, `Gitleaks`) against that branch
-6. `Prepare Release` dispatches `CI` for that pushed commit and waits for it to succeed
-7. `Prepare Release` pushes the tag and then dispatches `Release`
+3. it creates a release prep branch from the default branch and commits there
+4. it pushes the prep branch and dispatches required checks (`CI`, `CodeQL`, `Gitleaks`) for that commit
+5. it waits for all required checks on the prep branch commit to pass
+6. it creates and pushes a matching tag, for example `v0.1.0`
+7. `Prepare Release` dispatches `Release`
 8. `Release` reruns validation, smoke-tests the packaged install, and publishes the GitHub Release
 
 Browser dispatch:
