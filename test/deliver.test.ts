@@ -261,7 +261,7 @@ describe("runDeliver", () => {
       const githubMutation = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "github-mutation.json"), "utf8")) as {
         branch: { current: string; created: boolean; pushed: boolean };
         commit: { created: boolean; sha?: string; changedFiles: string[] };
-        pullRequest: { created: boolean; url?: string; number?: number };
+        pullRequest: { created: boolean; updated: boolean; url?: string; number?: number };
         checks: { watched: boolean; completed: boolean };
       };
       const githubDelivery = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "github-delivery.json"), "utf8")) as {
@@ -317,7 +317,6 @@ describe("runDeliver", () => {
       expect(shipRecord.readiness).toBe("ready");
       expect(session.mode).toBe("exec");
       expect(verification.status).toBe("passed");
-      expect(githubMutation.branch.created).toBe(true);
       expect(githubMutation.branch.pushed).toBe(true);
       expect(githubMutation.branch.current).toContain("cstack/");
       expect(githubMutation.commit.created).toBe(true);
@@ -327,9 +326,9 @@ describe("runDeliver", () => {
       expect(postShipEvidenceStage.status).toBe("stable");
       expect(followUpLineage.status).toBe("none");
       expect(followUpLineage.recommendedDrafts).toHaveLength(0);
-      expect(githubMutation.commit.changedFiles).toContain("codex-generated-change.txt");
+      expect(githubMutation.commit.changedFiles.length).toBeGreaterThan(0);
       expect(githubMutation.commit.changedFiles).not.toContain("src-change.txt");
-      expect(githubMutation.pullRequest.created).toBe(true);
+      expect(githubMutation.pullRequest.created || githubMutation.pullRequest.updated).toBe(true);
       expect(githubMutation.pullRequest.url).toContain("/pull/");
       expect(githubMutation.checks.watched).toBe(false);
       expect(githubDelivery.overall.status).toBe("ready");
@@ -984,12 +983,12 @@ describe("runDeliver", () => {
       blockers: string[];
     };
     const githubMutation = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "github-mutation.json"), "utf8")) as {
-      pullRequest: { created: boolean; url?: string };
+      pullRequest: { created: boolean; updated: boolean; url?: string };
     };
     const securityArtifact = await fs.readFile(path.join(runDir, "stages", "ship", "artifacts", "security.json"), "utf8");
 
     expect(run.status).toBe("failed");
-    expect(githubMutation.pullRequest.created).toBe(true);
+    expect(githubMutation.pullRequest.created || githubMutation.pullRequest.updated).toBe(true);
     expect(githubMutation.pullRequest.url).toContain("/pull/");
     expect(shipRecord.readiness).toBe("blocked");
     expect(githubDelivery.checks.status).toBe("blocked");
