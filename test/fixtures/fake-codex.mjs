@@ -163,6 +163,7 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
   }
   const validationStatus = envValue("FAKE_CODEX_VALIDATION_STATUS") ?? "ready";
   const validationCommand = envValue("FAKE_CODEX_VALIDATION_COMMAND") ?? "node -e \"process.stdout.write('deliver verify ok')\"";
+  const noLocalValidationCommands = envValue("FAKE_CODEX_NO_LOCAL_VALIDATION_COMMANDS") === "1";
   const validationGap = validationStatus === "partial" ? ["Validation evidence intentionally missing from this fake fixture to force partial workflow handling."] : [];
   body = JSON.stringify(
     {
@@ -179,7 +180,7 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
           status: "ready",
           rationale: "Static checks catch syntax, types, and workflow errors early.",
           selectedTools: ["actionlint", "zizmor"],
-          localCommands: [validationCommand],
+          localCommands: noLocalValidationCommands ? [] : [validationCommand],
           ciCommands: [validationCommand],
           coverageIntent: ["type and workflow correctness"],
           notes: []
@@ -190,7 +191,7 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
           status: "ready",
           rationale: "Unit checks protect the common regression surface.",
           selectedTools: ["vitest"],
-          localCommands: [validationCommand],
+          localCommands: noLocalValidationCommands ? [] : [validationCommand],
           ciCommands: [validationCommand],
           coverageIntent: ["behavioral regressions"],
           notes: []
@@ -223,7 +224,7 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
           status: "ready",
           rationale: "Build and packaging smoke should stay in the delivery path.",
           selectedTools: ["github_actions"],
-          localCommands: [validationCommand],
+          localCommands: noLocalValidationCommands ? [] : [validationCommand],
           ciCommands: [validationCommand],
           coverageIntent: ["packaging confidence"],
           notes: []

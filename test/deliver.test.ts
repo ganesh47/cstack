@@ -174,6 +174,8 @@ describe("runDeliver", () => {
     delete process.env.FAKE_CODEX_VALIDATION_SPECIALIST_REGISTRY_STALL;
     delete process.env.FAKE_CODEX_VALIDATION_SPECIALIST_STALL_MS;
     delete process.env.FAKE_CODEX_NO_FINAL_VALIDATION;
+    delete process.env.FAKE_CODEX_NO_LOCAL_VALIDATION_COMMANDS;
+    delete process.env.FAKE_CODEX_HANG_AFTER_SESSION_MS;
     delete process.env.FAKE_CODEX_NO_FINAL_DELIVER_REVIEW;
     delete process.env.FAKE_CODEX_NO_FINAL_SHIP;
     delete process.env.FAKE_GH_DELAY_MS;
@@ -566,6 +568,73 @@ describe("runDeliver", () => {
     expect(validationFinal).toContain("Recovery reason: Validation lead did not write final output");
     expect(deliverySummary).toContain("Recovered validation");
     expect(deliverySummary).not.toContain("ENOENT");
+  }, 60_000);
+
+  it("degrades recovered validation to partial when no local commands exist but evidence does", async () => {
+    process.env.FAKE_CODEX_NO_FINAL_VALIDATION = "1";
+    await writeGitHubFixture({
+      repoView: {
+        nameWithOwner: "ganesh47/cstack",
+        defaultBranchRef: { name: "main" }
+      },
+      createdPullRequest: {
+        reviewDecision: "APPROVED",
+        mergeStateStatus: "CLEAN"
+      },
+      issues: [],
+      prChecks: [
+        { name: "deliver/test", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/241" },
+        { name: "deliver/typecheck", bucket: "pass", state: "completed", workflow: "CI", link: "https://github.com/ganesh47/cstack/actions/runs/251" }
+      ],
+      actions: [
+        { databaseId: 51, workflowName: "Release", status: "completed", conclusion: "success", url: "https://github.com/ganesh47/cstack/actions/runs/51" }
+      ],
+      security: {
+        dependabot: [],
+        codeScanning: []
+      }
+    });
+    const configPath = path.join(repoDir, ".cstack", "config.toml");
+    const configBody = await fs.readFile(configPath, "utf8");
+    await fs.writeFile(
+      configPath,
+      configBody.replace('verificationCommands = ["node -e \\"process.stdout.write(\'deliver verify ok\')\\""]', "verificationCommands = []"),
+      "utf8"
+    );
+
+    await runDeliver(repoDir, ["Deliver a slice where validation evidence exists but local commands do not"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const validationPlan = JSON.parse(await fs.readFile(path.join(runDir, "stages", "validation", "validation-plan.json"), "utf8")) as {
+      status: string;
+      outcomeCategory: string;
+      summary: string;
+      coverage: { summary: string };
+      localValidation: { notes: string[] };
+    };
+    const localValidation = JSON.parse(
+      await fs.readFile(path.join(runDir, "stages", "validation", "artifacts", "local-validation.json"), "utf8")
+    ) as { status: string };
+    const coverageSummary = JSON.parse(
+      await fs.readFile(path.join(runDir, "stages", "validation", "artifacts", "coverage-summary.json"), "utf8")
+    ) as { status: string; outcomeCategory: string; summary: string };
+    const validationFinal = await fs.readFile(path.join(runDir, "stages", "validation", "final.md"), "utf8");
+    const deliverySummary = await fs.readFile(run.finalPath, "utf8");
+
+    expect(run.status).toBe("failed");
+    expect(validationPlan.status).toBe("partial");
+    expect(validationPlan.outcomeCategory).toBe("partial");
+    expect(validationPlan.summary).toContain("Recovered validation remains partial");
+    expect(validationPlan.localValidation.notes.join("\n")).toContain("Validation lead did not write final output");
+    expect(validationPlan.coverage.summary).toContain("preserved actionable evidence");
+    expect(localValidation.status).toBe("not-run");
+    expect(coverageSummary.status).toBe("partial");
+    expect(coverageSummary.outcomeCategory).toBe("partial");
+    expect(validationFinal).toContain("Recovery reason: Validation lead did not write final output");
+    expect(deliverySummary).toContain("- status: partial");
+    expect(deliverySummary).toContain("- outcome category: partial");
   }, 60_000);
 
   it("fails closed when the ship lead exits without writing final output", async () => {

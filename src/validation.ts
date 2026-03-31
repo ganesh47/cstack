@@ -1411,6 +1411,28 @@ function deriveValidationOutcomeCategory(
   return "partial";
 }
 
+function isRecoverableValidationLeadFailure(message: string): boolean {
+  return (
+    message.includes("did not write final output") ||
+    message.includes("No meaningful activity for") ||
+    message.includes("Stalled after session setup")
+  );
+}
+
+function hasRecoverableValidationEvidence(
+  plan: Pick<DeliverValidationPlan, "layers" | "localValidation" | "ciValidation" | "coverage">,
+  localValidationRecord: DeliverValidationLocalRecord
+): boolean {
+  return (
+    (localValidationRecord.blockerCategories?.length ?? 0) === 0 &&
+    localValidationRecord.status !== "failed" &&
+    (plan.localValidation.commands.length > 0 ||
+      plan.ciValidation.jobs.length > 0 ||
+      plan.layers.some((layer) => layer.selected) ||
+      plan.coverage.signals.length > 0)
+  );
+}
+
 function buildCoverageSummary(plan: DeliverValidationPlan, localValidationRecord: DeliverValidationLocalRecord): ValidationCoverageSummary {
   return {
     status: plan.status,
@@ -1491,12 +1513,15 @@ async function recoverValidationLeadFailure(options: {
   leadFailure: Error;
 }): Promise<DeliverValidationExecutionResult> {
   const localValidationRecord = await runCommandSet(options.cwd, options.stageDir, options.initialPlan.localValidation.commands);
+  const recoverableLeadFailure = isRecoverableValidationLeadFailure(options.leadFailure.message);
   const basePlan: DeliverValidationPlan = {
     ...options.initialPlan,
     summary:
       localValidationRecord.status === "passed"
         ? "Recovered validation after the validation lead failed to emit final output; inferred commands passed locally."
-        : "Recovered validation after the validation lead failed to emit final output, but one or more inferred commands failed locally.",
+        : localValidationRecord.status === "failed"
+          ? "Recovered validation after the validation lead failed to emit final output, but one or more inferred commands failed locally."
+          : "Recovered validation after the validation lead failed to emit final output; no deterministic local validation commands were available, so repo and CI evidence were preserved.",
     profileSummary: `${options.initialPlan.profileSummary} Recovery used the inferred validation plan because the validation lead artifact was unavailable.`,
     selectedSpecialists: options.selectedSpecialists
       .filter((entry) => entry.selected)
@@ -1520,7 +1545,9 @@ async function recoverValidationLeadFailure(options: {
       summary:
         localValidationRecord.status === "passed"
           ? "Recovered validation used inferred commands and repo profiling to preserve progress after the lead artifact was missing."
-          : "Recovered validation exposed failures in inferred commands after the lead artifact was missing.",
+          : localValidationRecord.status === "failed"
+            ? "Recovered validation exposed failures in inferred commands after the lead artifact was missing."
+            : "Recovered validation preserved repo and CI evidence after the lead artifact was missing and no deterministic local validation commands were available.",
       signals: [
         ...options.initialPlan.coverage.signals,
         "validation lead artifact recovery path executed"
@@ -1532,17 +1559,31 @@ async function recoverValidationLeadFailure(options: {
     ],
     reportMarkdown: ""
   };
+  const finalizedStatus = finalizeValidationPlanStatus(basePlan, localValidationRecord);
+  const finalizedOutcomeCategory = deriveValidationOutcomeCategory(basePlan, localValidationRecord);
+  const shouldDegradeToPartial =
+    recoverableLeadFailure &&
+    finalizedStatus === "blocked" &&
+    hasRecoverableValidationEvidence(basePlan, localValidationRecord);
   const normalizedPlan: DeliverValidationPlan = {
     ...basePlan,
-    status: finalizeValidationPlanStatus(basePlan, localValidationRecord),
-    outcomeCategory: deriveValidationOutcomeCategory(basePlan, localValidationRecord),
+    status: shouldDegradeToPartial ? "partial" : finalizedStatus,
+    outcomeCategory: shouldDegradeToPartial ? "partial" : finalizedOutcomeCategory,
+    summary:
+      shouldDegradeToPartial && !basePlan.summary.includes("partial")
+        ? `${basePlan.summary} Recovered validation remains partial because the validation lead stalled before completing the artifact.`
+        : basePlan.summary,
     coverage: {
       ...basePlan.coverage,
       gaps: [
         ...basePlan.coverage.gaps,
         ...(localValidationRecord.status === "failed" ? ["One or more selected validation commands failed."] : []),
         ...(localValidationRecord.blockerCategories?.map((blocker) => `Validation blocked by ${blocker}.`) ?? [])
-      ]
+      ],
+      summary:
+        shouldDegradeToPartial
+          ? "Recovered validation preserved actionable evidence after the validation lead stalled before writing the final artifact."
+          : basePlan.coverage.summary
     }
   };
   const finalBody = buildRecoveredValidationFinalBody({
