@@ -301,14 +301,24 @@ export function validateSpecOutput(userPrompt: string, finalBody: string): SpecC
 
   const sections = parseMarkdownSections(finalBody);
   const allGapClusters = parseSectionItems(sections.get("gap clusters") ?? "");
+  const explicitDeferredGapClusters = parseSectionItems(sections.get("deferred gaps") ?? "");
   const gapClusters = allGapClusters.slice(0, 3);
-  const deferredGapClusters = allGapClusters.slice(3);
+  const overflowGapClusters = allGapClusters.slice(3);
+  const deferredGapClusters = explicitDeferredGapClusters.length > 0 ? explicitDeferredGapClusters : overflowGapClusters;
   const warnings: string[] = [];
 
   if (deferredGapClusters.length > 0) {
     warnings.push(
       `Deferred gap clusters to keep scope bounded: ${deferredGapClusters.join("; ")}`
     );
+  }
+  if (explicitDeferredGapClusters.length === 0 && overflowGapClusters.length > 0) {
+    warnings.push(
+      `## Deferred Gaps was not provided by model output; defaulted to overflow clusters: ${overflowGapClusters.join("; ")}`
+    );
+  }
+  if (explicitDeferredGapClusters.length > 0 && overflowGapClusters.length === 0) {
+    warnings.push(`Model included ## Deferred Gaps but it was unnecessary for bounded output.`);
   }
   const selectedSlice = compact(sections.get("selected first slice") ?? "");
   const filesInScope = parseSectionItems(sections.get("files in scope") ?? "");
