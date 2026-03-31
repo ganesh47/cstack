@@ -220,6 +220,42 @@ function mergeUniqueLines(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
 }
 
+function createEmptyGitHubMutationRecord(initialBranch = ""): GitHubMutationRecord {
+  return {
+    enabled: false,
+    branch: {
+      initial: initialBranch,
+      current: initialBranch,
+      created: false,
+      pushed: false,
+      remote: null
+    },
+    commit: {
+      created: false,
+      changedFiles: []
+    },
+    pullRequest: {
+      created: false,
+      updated: false
+    },
+    checks: {
+      watched: false,
+      polls: 0,
+      completed: false,
+      summary: ""
+    },
+    release: {
+      requested: false,
+      created: false,
+      pushed: false,
+      uploadedFiles: [],
+      summary: ""
+    },
+    blockers: [],
+    summary: ""
+  };
+}
+
 function buildStageSyncPolicy(policy: DeliverGitHubConfig): DeliverGitHubConfig {
   return {
     ...policy,
@@ -245,6 +281,101 @@ function createStageSyncReviewVerdict(stageName: "build" | "validation"): Delive
       stageName === "build"
         ? "# Review Findings\n\nStage sync after build. Formal review has not run yet.\n"
         : "# Review Findings\n\nStage sync after validation. Formal review has not run yet.\n"
+  };
+}
+
+function mergeGitHubMutationRecords(current: GitHubMutationRecord, next: GitHubMutationRecord): GitHubMutationRecord {
+  const currentRelease = current.release;
+  const nextRelease = next.release;
+  const mergedCommit: GitHubMutationRecord["commit"] = {
+    created: current.commit.created || next.commit.created,
+    changedFiles: mergeUniqueLines([...current.commit.changedFiles, ...next.commit.changedFiles])
+  };
+  const mergedCommitSha = next.commit.sha ?? current.commit.sha;
+  if (mergedCommitSha) {
+    mergedCommit.sha = mergedCommitSha;
+  }
+  const mergedCommitMessage = next.commit.message ?? current.commit.message;
+  if (mergedCommitMessage) {
+    mergedCommit.message = mergedCommitMessage;
+  }
+
+  const mergedPullRequest: GitHubMutationRecord["pullRequest"] = {
+    created: current.pullRequest.created || next.pullRequest.created,
+    updated: current.pullRequest.updated || next.pullRequest.updated
+  };
+  const mergedPullRequestNumber = next.pullRequest.number ?? current.pullRequest.number;
+  if (mergedPullRequestNumber !== undefined) {
+    mergedPullRequest.number = mergedPullRequestNumber;
+  }
+  const mergedPullRequestUrl = next.pullRequest.url ?? current.pullRequest.url;
+  if (mergedPullRequestUrl) {
+    mergedPullRequest.url = mergedPullRequestUrl;
+  }
+  const mergedPullRequestTitle = next.pullRequest.title ?? current.pullRequest.title;
+  if (mergedPullRequestTitle) {
+    mergedPullRequest.title = mergedPullRequestTitle;
+  }
+  const mergedBaseRefName = next.pullRequest.baseRefName ?? current.pullRequest.baseRefName;
+  if (mergedBaseRefName) {
+    mergedPullRequest.baseRefName = mergedBaseRefName;
+  }
+  const mergedHeadRefName = next.pullRequest.headRefName ?? current.pullRequest.headRefName;
+  if (mergedHeadRefName) {
+    mergedPullRequest.headRefName = mergedHeadRefName;
+  }
+  const mergedDraft = next.pullRequest.draft ?? current.pullRequest.draft;
+  if (mergedDraft !== undefined) {
+    mergedPullRequest.draft = mergedDraft;
+  }
+
+  let mergedRelease: GitHubMutationRecord["release"] | undefined;
+  if (currentRelease || nextRelease) {
+    mergedRelease = {
+      requested: Boolean(currentRelease?.requested || nextRelease?.requested),
+      created: Boolean(currentRelease?.created || nextRelease?.created),
+      pushed: Boolean(currentRelease?.pushed || nextRelease?.pushed),
+      uploadedFiles: mergeUniqueLines([...(currentRelease?.uploadedFiles ?? []), ...(nextRelease?.uploadedFiles ?? [])]),
+      summary: nextRelease?.summary || currentRelease?.summary || ""
+    };
+    const mergedTagName = nextRelease?.tagName ?? currentRelease?.tagName;
+    if (mergedTagName) {
+      mergedRelease.tagName = mergedTagName;
+    }
+    const mergedVersion = nextRelease?.version ?? currentRelease?.version;
+    if (mergedVersion !== undefined) {
+      mergedRelease.version = mergedVersion;
+    }
+    const mergedReleaseUrl = nextRelease?.url ?? currentRelease?.url;
+    if (mergedReleaseUrl) {
+      mergedRelease.url = mergedReleaseUrl;
+    }
+    const mergedReleaseName = nextRelease?.name ?? currentRelease?.name;
+    if (mergedReleaseName !== undefined) {
+      mergedRelease.name = mergedReleaseName;
+    }
+  }
+
+  return {
+    enabled: current.enabled || next.enabled,
+    branch: {
+      initial: next.branch.initial || current.branch.initial,
+      current: next.branch.current || current.branch.current,
+      created: current.branch.created || next.branch.created,
+      pushed: current.branch.pushed || next.branch.pushed,
+      remote: next.branch.remote ?? current.branch.remote ?? null
+    },
+    commit: mergedCommit,
+    pullRequest: mergedPullRequest,
+    checks: {
+      watched: current.checks.watched || next.checks.watched,
+      polls: Math.max(current.checks.polls, next.checks.polls),
+      completed: current.checks.completed || next.checks.completed,
+      summary: next.checks.summary || current.checks.summary
+    },
+    ...(mergedRelease ? { release: mergedRelease } : {}),
+    blockers: mergeUniqueLines([...current.blockers, ...next.blockers]),
+    summary: next.summary || current.summary
   };
 }
 
@@ -958,6 +1089,7 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
   const selectedSpecialists = selectDeliverSpecialists(options.input);
   const githubPolicy = options.config.workflows.deliver.github ?? {};
   let currentGitBranch = options.gitBranch;
+  let cumulativeGitHubMutation = createEmptyGitHubMutationRecord(options.gitBranch);
   let stageLineage = options.controller.currentStageLineage;
   const { prompt, context } = await buildDeliverPrompt({
     cwd: options.cwd,
@@ -1266,6 +1398,7 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
     });
     if (buildStageSyncResult?.record.branch.current) {
       currentGitBranch = buildStageSyncResult.record.branch.current;
+      cumulativeGitHubMutation = mergeGitHubMutationRecords(cumulativeGitHubMutation, buildStageSyncResult.record);
     }
   }
   if (validationExecution.validationPlan.status !== "blocked") {
@@ -1284,6 +1417,7 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
     });
     if (validationStageSyncResult?.record.branch.current) {
       currentGitBranch = validationStageSyncResult.record.branch.current;
+      cumulativeGitHubMutation = mergeGitHubMutationRecords(cumulativeGitHubMutation, validationStageSyncResult.record);
     }
   }
   await events.emit("activity", "Validation stage finished, starting review synthesis");
@@ -1408,7 +1542,7 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
   });
   events.markStage("ship", "running");
 
-  let githubMutation = createBlockedGitHubMutationRecord();
+  let githubMutation = cumulativeGitHubMutation;
   let githubMutationResult: PerformGitHubMutationResult = {
     branch: currentGitBranch,
     record: githubMutation
@@ -1446,6 +1580,10 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
       ...(options.linkedContext?.run.id ? { linkedRunId: options.linkedContext.run.id } : {}),
       pullRequestBodyPath: path.join(shipStageDir, "artifacts", "pull-request-body.md")
     });
+    githubMutationResult = {
+      ...githubMutationResult,
+      record: mergeGitHubMutationRecords(cumulativeGitHubMutation, githubMutationResult.record)
+    };
 
     const githubEvidence = await collectGitHubDeliveryEvidence({
       cwd: options.cwd,
