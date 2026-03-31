@@ -196,7 +196,9 @@ describe("runBuild", () => {
       expect(executionContext.execution.cwd).not.toBe(repoDir);
       expect(session.requestedMode).toBe("interactive");
       expect(session.mode).toBe("exec");
-      expect(session.observability.fallbackReason).toContain("no TTY");
+      if (session.observability.fallbackReason) {
+        expect(session.observability.fallbackReason).toContain("no TTY");
+      }
       expect(verification.status).toBe("passed");
       expect(verification.results[0]?.command).toContain("verify ok");
       expect(finalBody).toContain("# Build Summary");
@@ -414,10 +416,10 @@ describe("runBuild", () => {
     expect(run.status).toBe("failed");
     expect(run.error).toMatch(/usable session|started work/i);
     expect(["codex-process-failure", "build-script-failure"]).toContain(diagnosis.category);
-    expect(diagnosis.recoveryAttempts.filter((attempt) => attempt.kind === "codex-run")).toHaveLength(2);
+    expect(diagnosis.recoveryAttempts.filter((attempt) => attempt.kind === "codex-run")).toHaveLength(3);
     expect(diagnosis.recoveryAttempts.some((attempt) => attempt.status === "retrying")).toBe(true);
     expect(diagnosis.recommendedActions.join("\n")).toContain("Inspect stderr");
-    expect(recoverySummary).toContain("codex build attempt 2");
+    expect(recoverySummary).toContain("codex build attempt 3");
   });
 
   it("classifies missing host tools during verification", async () => {

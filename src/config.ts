@@ -40,7 +40,7 @@ const DEFAULT_CONFIG: CstackConfig = {
     build: {
       mode: "interactive",
       verificationCommands: [],
-      allowDirty: false,
+      allowDirty: true,
       maxCodexAttempts: 3,
       timeoutSeconds: 900,
       capabilities: {
