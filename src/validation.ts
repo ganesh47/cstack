@@ -1449,6 +1449,152 @@ function finalizeValidationPlanStatus(plan: DeliverValidationPlan, localValidati
   return plan.localValidation.commands.length > 0 ? "ready" : plan.status;
 }
 
+function buildRecoveredValidationFinalBody(options: {
+  summary: string;
+  recoveryReason: string;
+  localValidationRecord: DeliverValidationLocalRecord;
+  validationPlan: DeliverValidationPlan;
+}): string {
+  const executedCommands =
+    options.localValidationRecord.results.length > 0
+      ? options.localValidationRecord.results.map((result) => `- \`${result.command}\`: ${result.status}`)
+      : ["- none"];
+  return [
+    "# Validation Summary",
+    "",
+    options.summary,
+    "",
+    `Recovery reason: ${options.recoveryReason}`,
+    `Validation status: ${options.validationPlan.status} (${options.validationPlan.outcomeCategory})`,
+    "",
+    "## Local validation commands",
+    ...executedCommands,
+    "",
+    "## Coverage gaps",
+    ...(options.validationPlan.coverage.gaps.length > 0 ? options.validationPlan.coverage.gaps.map((gap) => `- ${gap}`) : ["- none"]),
+    "",
+    "## Notes",
+    "- Validation plan synthesized from the repo profile, selected specialists, and local validation evidence."
+  ].join("\n") + "\n";
+}
+
+async function recoverValidationLeadFailure(options: {
+  cwd: string;
+  stageDir: string;
+  finalPath: string;
+  repoProfile: ValidationRepoProfile;
+  toolResearch: ValidationToolResearch;
+  initialPlan: DeliverValidationPlan;
+  selectedSpecialists: ValidationSpecialistSelection;
+  specialistExecutions: SpecialistExecution[];
+  capabilityRecord: CapabilityUsageRecord;
+  leadFailure: Error;
+}): Promise<DeliverValidationExecutionResult> {
+  const localValidationRecord = await runCommandSet(options.cwd, options.stageDir, options.initialPlan.localValidation.commands);
+  const basePlan: DeliverValidationPlan = {
+    ...options.initialPlan,
+    summary:
+      localValidationRecord.status === "passed"
+        ? "Recovered validation after the validation lead failed to emit final output; inferred commands passed locally."
+        : "Recovered validation after the validation lead failed to emit final output, but one or more inferred commands failed locally.",
+    profileSummary: `${options.initialPlan.profileSummary} Recovery used the inferred validation plan because the validation lead artifact was unavailable.`,
+    selectedSpecialists: options.selectedSpecialists
+      .filter((entry) => entry.selected)
+      .map((entry) => {
+        const execution = options.specialistExecutions.find((candidate) => candidate.name === entry.name);
+        return {
+          name: entry.name,
+          disposition: (execution?.disposition ?? "accepted") as SpecialistDisposition,
+          reason: execution?.notes ?? entry.reason
+        };
+      }),
+    localValidation: {
+      ...options.initialPlan.localValidation,
+      notes: [
+        ...options.initialPlan.localValidation.notes,
+        `Recovered from validation lead failure: ${options.leadFailure.message}`
+      ]
+    },
+    coverage: {
+      ...options.initialPlan.coverage,
+      summary:
+        localValidationRecord.status === "passed"
+          ? "Recovered validation used inferred commands and repo profiling to preserve progress after the lead artifact was missing."
+          : "Recovered validation exposed failures in inferred commands after the lead artifact was missing.",
+      signals: [
+        ...options.initialPlan.coverage.signals,
+        "validation lead artifact recovery path executed"
+      ]
+    },
+    recommendedChanges: [
+      ...options.initialPlan.recommendedChanges,
+      "Inspect validation lead logs to determine why the final artifact was missing."
+    ],
+    reportMarkdown: ""
+  };
+  const normalizedPlan: DeliverValidationPlan = {
+    ...basePlan,
+    status: finalizeValidationPlanStatus(basePlan, localValidationRecord),
+    outcomeCategory: deriveValidationOutcomeCategory(basePlan, localValidationRecord),
+    coverage: {
+      ...basePlan.coverage,
+      gaps: [
+        ...basePlan.coverage.gaps,
+        ...(localValidationRecord.status === "failed" ? ["One or more selected validation commands failed."] : []),
+        ...(localValidationRecord.blockerCategories?.map((blocker) => `Validation blocked by ${blocker}.`) ?? [])
+      ]
+    }
+  };
+  const finalBody = buildRecoveredValidationFinalBody({
+    summary: normalizedPlan.summary,
+    recoveryReason: options.leadFailure.message,
+    localValidationRecord,
+    validationPlan: normalizedPlan
+  });
+  normalizedPlan.reportMarkdown = finalBody;
+
+  const selectedToolNames = options.toolResearch.candidates
+    .filter((candidate) => candidate.selected)
+    .map((candidate) => candidate.tool);
+  const observedCapabilities = inferUsedValidationCapabilities({
+    localValidationRecord,
+    validationPlan: normalizedPlan,
+    availableCapabilities: options.capabilityRecord.available,
+    selectedToolNames
+  });
+  const capabilityArtifact: CapabilityUsageRecord = {
+    ...options.capabilityRecord,
+    used: observedCapabilities,
+    notes: [
+      ...(options.capabilityRecord.notes ?? []),
+      "used capabilities are derived from executed local validation commands and observed CI validation job coverage.",
+      "validation lead recovery synthesized the plan from inferred defaults."
+    ]
+  };
+  const coverageSummary = buildCoverageSummary(normalizedPlan, localValidationRecord);
+
+  await fs.writeFile(options.finalPath, finalBody, "utf8");
+  await writeJson(path.join(options.stageDir, "artifacts", "capabilities.json"), capabilityArtifact);
+  await writeJson(path.join(options.stageDir, "validation-plan.json"), normalizedPlan);
+  await fs.writeFile(path.join(options.stageDir, "artifacts", "test-pyramid.md"), normalizedPlan.pyramidMarkdown, "utf8");
+  await writeJson(path.join(options.stageDir, "artifacts", "coverage-summary.json"), coverageSummary);
+  await fs.writeFile(path.join(options.stageDir, "artifacts", "coverage-gaps.md"), renderCoverageGapsMarkdown(normalizedPlan, localValidationRecord), "utf8");
+  await writeJson(path.join(options.stageDir, "artifacts", "local-validation.json"), localValidationRecord);
+  await writeJson(path.join(options.stageDir, "artifacts", "ci-validation.json"), normalizedPlan.ciValidation);
+  await fs.writeFile(path.join(options.stageDir, "artifacts", "github-actions-plan.md"), normalizedPlan.githubActionsPlanMarkdown, "utf8");
+
+  return {
+    repoProfile: options.repoProfile,
+    toolResearch: options.toolResearch,
+    validationPlan: normalizedPlan,
+    localValidationRecord,
+    coverageSummary,
+    selectedSpecialists: options.selectedSpecialists,
+    specialistExecutions: options.specialistExecutions,
+    finalBody
+  };
+}
+
 export async function runDeliverValidationExecution(options: DeliverValidationExecutionOptions): Promise<DeliverValidationExecutionResult> {
   await fs.mkdir(path.join(options.paths.stageDir, "artifacts"), { recursive: true });
   await fs.writeFile(options.paths.stdoutPath, "", "utf8");
@@ -1535,14 +1681,32 @@ export async function runDeliverValidationExecution(options: DeliverValidationEx
     ...(typeof options.timeoutSeconds === "number" ? { timeoutSeconds: options.timeoutSeconds } : {})
   });
 
-  const finalBody = await readCodexFinalOutput({
-    context: "Validation lead",
-    finalPath: options.paths.finalPath,
-    stdoutPath: options.paths.stdoutPath,
-    stderrPath: options.paths.stderrPath,
-    result
-  });
-  const validationPlan = parseJson<DeliverValidationPlan>(finalBody, "Validation lead");
+  let finalBody = "";
+  let validationPlan: DeliverValidationPlan;
+  try {
+    finalBody = await readCodexFinalOutput({
+      context: "Validation lead",
+      finalPath: options.paths.finalPath,
+      stdoutPath: options.paths.stdoutPath,
+      stderrPath: options.paths.stderrPath,
+      result
+    });
+    validationPlan = parseJson<DeliverValidationPlan>(finalBody, "Validation lead");
+  } catch (error) {
+    const leadFailure = error instanceof Error ? error : new Error(String(error));
+    return recoverValidationLeadFailure({
+      cwd: options.cwd,
+      stageDir: options.paths.stageDir,
+      finalPath: options.paths.finalPath,
+      repoProfile,
+      toolResearch,
+      initialPlan,
+      selectedSpecialists,
+      specialistExecutions,
+      capabilityRecord,
+      leadFailure
+    });
+  }
   const acceptedByName = new Map(validationPlan.selectedSpecialists.map((entry) => [entry.name, entry]));
   for (let index = 0; index < specialistExecutions.length; index += 1) {
     const execution = specialistExecutions[index]!;

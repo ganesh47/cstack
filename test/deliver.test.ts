@@ -515,7 +515,7 @@ describe("runDeliver", () => {
     }
   }, 60_000);
 
-  it("fails closed when the validation lead exits without writing final output", async () => {
+  it("recovers when the validation lead exits without writing final output", async () => {
     process.env.FAKE_CODEX_NO_FINAL_VALIDATION = "1";
     await writeGitHubFixture({
       repoView: {
@@ -549,17 +549,23 @@ describe("runDeliver", () => {
       status: string;
       outcomeCategory: string;
       summary: string;
+      localValidation: { notes: string[] };
     };
+    const localValidation = JSON.parse(
+      await fs.readFile(path.join(runDir, "stages", "validation", "artifacts", "local-validation.json"), "utf8")
+    ) as { status: string };
     const validationFinal = await fs.readFile(path.join(runDir, "stages", "validation", "final.md"), "utf8");
     const deliverySummary = await fs.readFile(run.finalPath, "utf8");
 
     expect(run.status).toBe("failed");
-    expect(validationPlan.status).toBe("blocked");
-    expect(validationPlan.outcomeCategory).toBe("blocked-by-validation");
-    expect(validationPlan.summary).toContain("Validation lead did not write final output");
-    expect(validationPlan.summary).not.toContain("ENOENT");
-    expect(validationFinal).toContain("Validation stage failed");
-    expect(deliverySummary).toContain("Validation lead did not write final output");
+    expect(validationPlan.status).toBe("ready");
+    expect(validationPlan.outcomeCategory).toBe("ready");
+    expect(validationPlan.summary).toContain("Recovered validation");
+    expect(validationPlan.localValidation.notes.join("\n")).toContain("Validation lead did not write final output");
+    expect(localValidation.status).toBe("passed");
+    expect(validationFinal).toContain("Recovered validation");
+    expect(validationFinal).toContain("Recovery reason: Validation lead did not write final output");
+    expect(deliverySummary).toContain("Recovered validation");
     expect(deliverySummary).not.toContain("ENOENT");
   }, 60_000);
 
