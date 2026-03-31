@@ -35,6 +35,24 @@ const TRANSIENT_FAILURE_PATTERNS = [
   /\b5\d\d\b/
 ] as const;
 const BUILD_NO_PROGRESS_TIMEOUT_SECONDS = 120;
+const DEFAULT_MAX_CODEX_ATTEMPTS = 3;
+const MAX_CODEX_ATTEMPTS = 8;
+const MISSING_TOOL_REMEDIATION_FILTER: Set<string> = new Set(["sh", "bash", "dash", "env", "command", "script"]);
+const TOOL_INSTALL_HINTS: Record<string, string[]> = {
+  node: [
+    "Install Node.js (LTS), preferably with nvm: `curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.5/install.sh | bash && nvm install --lts && nvm use --lts`.",
+    "If nvm is unavailable, use the environment package manager (for example `apt-get install -y nodejs` or `brew install node`)."
+  ],
+  npm: ["Install Node.js tooling so npm is available in PATH."],
+  pnpm: [
+    "If corepack exists: `corepack enable && corepack prepare pnpm@latest --activate`.",
+    "Fallback if corepack is unavailable: `npm i -g pnpm@latest`."
+  ],
+  corepack: ["If node exists but corepack is missing: `npm i -g corepack` and `corepack enable`."],
+  uv: ["Install uv with `python -m pip install --user --upgrade uv` and ensure `~/.local/bin` is on PATH."],
+  mvn: ["Install Maven using your package manager (for example `apt-get install -y maven` or `brew install maven`)."],
+  python: ["Install Python 3 and ensure `python3` is on PATH."]
+};
 
 function isInternalRunArtifactPath(filePath: string): boolean {
   const normalized = filePath.replace(/\\/g, "/").replace(/^\.?\//, "");
@@ -98,9 +116,18 @@ interface BuildBootstrapAction {
 interface BuildEnvironmentAssessment {
   summary: string;
   requiredTools: string[];
+  missingTools: string[];
   bootstrapActions: BuildBootstrapAction[];
   evidence: string[];
   notes: string[];
+}
+
+interface CodexRetryContext {
+  attemptNumber: number;
+  maxAttempts: number;
+  reason: string;
+  missingTools: string[];
+  remediationCommands: string[];
 }
 
 interface CodexAttemptOutcome {
@@ -149,6 +176,97 @@ function uniqueLines(values: string[]): string[] {
 
 function isTransientFailure(output: string): boolean {
   return TRANSIENT_FAILURE_PATTERNS.some((pattern) => pattern.test(output));
+}
+
+function resolveMaxCodexAttempts(config: CstackConfig): number {
+  const configured = config.workflows.build.maxCodexAttempts;
+  if (typeof configured === "number" && Number.isInteger(configured)) {
+    return Math.max(1, Math.min(MAX_CODEX_ATTEMPTS, configured));
+  }
+  return DEFAULT_MAX_CODEX_ATTEMPTS;
+}
+
+function resolveBuildAttemptMode(requestedMode: WorkflowMode, canUseInteractive: boolean, attemptNumber: number): WorkflowMode {
+  if (requestedMode === "interactive" && !canUseInteractive) {
+    return "exec";
+  }
+  if (attemptNumber <= 1) {
+    return requestedMode;
+  }
+  return attemptNumber % 2 === 0
+    ? requestedMode === "interactive"
+      ? "exec"
+      : "interactive"
+    : requestedMode;
+}
+
+function makeCodexRetryHint(attemptNumber: number, maxAttempts: number, previousOutcome?: CodexAttemptOutcome): string {
+  const priorFailure = previousOutcome?.stderrTail || previousOutcome?.finalBody || "";
+  const summaryLine = firstMeaningfulErrorLine(priorFailure);
+  return [
+    `Recovery attempt ${attemptNumber} of ${maxAttempts}:`,
+    previousOutcome ? "previous attempt exited before cstack observed a usable session, transcript, or final artifact." : "",
+    summaryLine ? `signal: ${truncateLine(summaryLine)}` : "Keep changes focused and prioritize emitting a final artifact quickly."
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function normalizeToolName(tool: string): string {
+  return tool
+    .toLowerCase()
+    .trim()
+    .replace(/^['"]|['"]$/g, "")
+    .replace(/[`]/g, "");
+}
+
+function extractMissingToolsFromText(text: string): string[] {
+  const patterns = [
+    /(?:^|[\s"`'([])([A-Za-z0-9._-]+): command not found/gi,
+    /(?:\[\w+\]: )?([A-Za-z0-9._-]+): not found/gi,
+    /No such file or directory:?[\s"`']?([A-Za-z0-9._-]+)/gi,
+    /\b([A-Za-z0-9._-]+)\s+command not found/gi
+  ] as const;
+
+  const found: string[] = [];
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const tool = normalizeToolName(match[1] ?? "");
+      if (!tool || TOOL_REMEDIATION_FILTER.has(tool) || tool.length > 32) {
+        continue;
+      }
+      found.push(tool);
+    }
+  }
+  return uniqueLines(found);
+}
+
+function getRemediationCommands(missingTools: string[]): string[] {
+  const commands: string[] = [];
+  for (const tool of uniqueLines(missingTools.map((value) => normalizeToolName(value)))) {
+    const hints = TOOL_INSTALL_HINTS[tool];
+    if (hints) {
+      commands.push(...hints);
+      continue;
+    }
+    commands.push(`Install ${tool} in the execution environment before continuing this attempt.`);
+  }
+  return uniqueLines(commands);
+}
+
+function inferRetryRemediation(
+  assessment: BuildEnvironmentAssessment,
+  previousOutcome: CodexAttemptOutcome | null
+): { missingTools: string[]; remediationCommands: string[] } {
+  const outcomeBasedTools = extractMissingToolsFromText(`${previousOutcome?.stderrTail ?? ""}\n${previousOutcome?.finalBody ?? ""}`);
+  const missingTools = uniqueLines([...assessment.missingTools, ...outcomeBasedTools]).filter((tool) =>
+    !TOOL_REMEDIATION_FILTER.has(normalizeToolName(tool))
+  );
+
+  return {
+    missingTools,
+    remediationCommands: getRemediationCommands(missingTools)
+  };
 }
 
 function buildAttemptRecord(input: {
@@ -258,6 +376,7 @@ async function resolveBuildEnvironmentAssessment(cwd: string): Promise<BuildEnvi
   const evidence: string[] = [];
   const notes: string[] = [];
   const requiredTools = new Set<string>();
+  const missingTools: string[] = [];
   const bootstrapActions: BuildBootstrapAction[] = [];
 
   const hasRootNodeWorkspace =
@@ -321,6 +440,7 @@ async function resolveBuildEnvironmentAssessment(cwd: string): Promise<BuildEnvi
     if (check.available) {
       evidence.push(`Tool available in execution checkout: ${check.tool}`);
     } else {
+      missingTools.push(check.tool);
       notes.push(`Required tool not currently available in execution checkout: ${check.tool}`);
     }
   }
@@ -331,6 +451,7 @@ async function resolveBuildEnvironmentAssessment(cwd: string): Promise<BuildEnvi
         ? `Prepared ${bootstrapActions.length} bootstrap action${bootstrapActions.length > 1 ? "s" : ""} for the execution checkout.`
         : "No pre-build bootstrap actions were required for the execution checkout.",
     requiredTools: [...requiredTools],
+    missingTools,
     bootstrapActions,
     evidence: uniqueLines(evidence),
     notes: uniqueLines(notes)
@@ -794,12 +915,18 @@ async function writeJson(filePath: string, value: unknown): Promise<void> {
 async function runCodexBuildAttempt(options: {
   executionCwd: string;
   requestedMode: WorkflowMode;
-  promptBuilder: (mode: WorkflowMode) => Promise<{ prompt: string; context: string }>;
+  attemptNumber: number;
+  promptBuilder: (
+    mode: WorkflowMode,
+    attemptNumber: number,
+    retryContext?: CodexRetryContext
+  ) => Promise<{ prompt: string; context: string }>;
   paths: BuildPaths;
   config: CstackConfig;
   runId: string;
   timeoutSeconds?: number;
   noProgressTimeoutSeconds?: number;
+  retryContext?: CodexRetryContext;
 }): Promise<CodexAttemptOutcome> {
   let observedMode = options.requestedMode;
   let fallbackReason: string | undefined;
@@ -812,7 +939,7 @@ async function runCodexBuildAttempt(options: {
     notes.push(fallbackReason);
   }
 
-  let { prompt, context } = await options.promptBuilder(observedMode);
+  let { prompt, context } = await options.promptBuilder(observedMode, options.attemptNumber, options.retryContext);
   await fs.writeFile(options.paths.promptPath, prompt, "utf8");
   await fs.writeFile(options.paths.contextPath, `${context}\n`, "utf8");
 
@@ -839,7 +966,7 @@ async function runCodexBuildAttempt(options: {
       observedMode = "exec";
       fallbackReason = "Interactive build launch failed because the local `script` utility was unavailable; cstack fell back to exec mode.";
       notes.push(fallbackReason);
-      ({ prompt, context } = await options.promptBuilder(observedMode));
+      ({ prompt, context } = await options.promptBuilder(observedMode, options.attemptNumber, options.retryContext));
       await fs.writeFile(options.paths.promptPath, prompt, "utf8");
       await fs.writeFile(options.paths.contextPath, `${context}\n`, "utf8");
       result = await runCodexExec({
@@ -883,8 +1010,8 @@ async function runCodexBuildAttempt(options: {
   };
 }
 
-function shouldRetryCodexAttempt(outcome: CodexAttemptOutcome, attemptNumber: number): boolean {
-  if (attemptNumber >= 2 || outcome.result.code === 0 || outcome.result.timedOut) {
+function shouldRetryCodexAttempt(outcome: CodexAttemptOutcome, attemptNumber: number, maxAttempts: number): boolean {
+  if (attemptNumber >= maxAttempts || outcome.result.code === 0 || outcome.result.timedOut) {
     return false;
   }
   if (outcome.result.sessionId) {
@@ -941,7 +1068,14 @@ export async function runBuildExecution(options: BuildExecutionOptions): Promise
     }
   }
 
-  const promptBuilder = async (mode: WorkflowMode) =>
+  const noProgressTimeoutSeconds = Math.min(
+    typeof options.timeoutSeconds === "number" && options.timeoutSeconds > 0 ? options.timeoutSeconds : BUILD_NO_PROGRESS_TIMEOUT_SECONDS,
+    BUILD_NO_PROGRESS_TIMEOUT_SECONDS
+  );
+
+  const maxCodexAttempts = resolveMaxCodexAttempts(options.config);
+  const canUseInteractive = canUseInteractiveBuild();
+  const promptBuilder = async (mode: WorkflowMode, attemptNumber: number, retryContext?: CodexRetryContext) =>
     buildBuildPrompt({
       cwd: executionCwd,
       input: options.input,
@@ -953,34 +1087,58 @@ export async function runBuildExecution(options: BuildExecutionOptions): Promise
       ...(options.linkedContext?.artifactPath ? { linkedArtifactPath: options.linkedContext.artifactPath } : {}),
       ...(options.linkedContext?.artifactBody ? { linkedArtifactBody: options.linkedContext.artifactBody } : {}),
       ...(options.linkedContext?.run.id ? { linkedRunId: options.linkedContext.run.id } : {}),
-      ...(options.linkedContext?.run.workflow ? { linkedWorkflow: options.linkedContext.run.workflow } : {})
+      ...(options.linkedContext?.run.workflow ? { linkedWorkflow: options.linkedContext.run.workflow } : {}),
+      ...(retryContext
+        ? {
+            retryAttempt: {
+              attemptNumber,
+              maxAttempts: retryContext.maxAttempts,
+              reason: retryContext.reason,
+              ...(retryContext.missingTools.length ? { missingTools: retryContext.missingTools } : {}),
+              ...(retryContext.remediationCommands.length ? { remediationCommands: retryContext.remediationCommands } : {})
+            }
+          }
+        : {})
     });
-
-  const noProgressTimeoutSeconds = Math.min(
-    typeof options.timeoutSeconds === "number" && options.timeoutSeconds > 0 ? options.timeoutSeconds : BUILD_NO_PROGRESS_TIMEOUT_SECONDS,
-    BUILD_NO_PROGRESS_TIMEOUT_SECONDS
-  );
 
   let attemptNumber = 0;
   let codexOutcome: CodexAttemptOutcome | null = null;
+  let previousOutcome: CodexAttemptOutcome | null = null;
   do {
     attemptNumber += 1;
     const attemptStartedAt = nowIso();
+    const attemptMode = resolveBuildAttemptMode(requestedMode, canUseInteractive, attemptNumber);
+    const remediation = inferRetryRemediation(assessment, previousOutcome);
+    const retryContext =
+      attemptNumber > 1 && previousOutcome
+        ? {
+            attemptNumber,
+            maxAttempts: maxCodexAttempts,
+            reason: makeCodexRetryHint(attemptNumber, maxCodexAttempts, previousOutcome),
+            ...(remediation.missingTools.length ? { missingTools: remediation.missingTools } : { missingTools: [] }),
+            ...(remediation.remediationCommands.length
+              ? { remediationCommands: remediation.remediationCommands }
+              : { remediationCommands: [] })
+          }
+        : undefined;
     codexOutcome = await runCodexBuildAttempt({
       executionCwd,
-      requestedMode,
+      requestedMode: attemptMode,
+      attemptNumber,
       promptBuilder,
       paths: options.paths,
       config: options.config,
       runId: options.runId,
+      ...(typeof retryContext?.attemptNumber === "number" ? { retryContext } : {}),
       ...(typeof options.timeoutSeconds === "number" ? { timeoutSeconds: options.timeoutSeconds } : {}),
       ...(typeof noProgressTimeoutSeconds === "number" ? { noProgressTimeoutSeconds } : {})
     });
-    const retrying = shouldRetryCodexAttempt(codexOutcome, attemptNumber);
+    previousOutcome = codexOutcome;
+    const retrying = shouldRetryCodexAttempt(codexOutcome, attemptNumber, maxCodexAttempts);
     recoveryAttempts.push(
       buildAttemptRecord({
         kind: "codex-run",
-        label: `codex build attempt ${attemptNumber}`,
+        label: `codex build attempt ${attemptNumber} (${attemptMode})`,
         status: retrying ? "retrying" : codexOutcome.result.code === 0 ? "completed" : "failed",
         startedAt: attemptStartedAt,
         cwd: executionCwd,
@@ -988,7 +1146,7 @@ export async function runBuildExecution(options: BuildExecutionOptions): Promise
           codexOutcome.result.code === 0
             ? "Codex build attempt completed successfully."
             : retrying
-              ? "Codex exited before producing a usable session; retrying once with the prepared execution checkout."
+              ? `Codex exited before producing a usable session; retrying with ${attemptMode} mode (attempt ${attemptNumber + 1}/${maxCodexAttempts}).`
               : `Codex build attempt failed with exit code ${codexOutcome.result.code}.`,
         command: codexOutcome.result.command.join(" "),
         exitCode: codexOutcome.result.code,
@@ -998,7 +1156,7 @@ export async function runBuildExecution(options: BuildExecutionOptions): Promise
     if (!retrying) {
       break;
     }
-  } while (attemptNumber < 2);
+  } while (attemptNumber < maxCodexAttempts);
 
   if (!codexOutcome) {
     throw new Error("Build execution did not produce a Codex attempt outcome.");

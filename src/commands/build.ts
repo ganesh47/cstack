@@ -137,6 +137,7 @@ export async function runBuild(cwd: string, args: string[] = []): Promise<string
     detectGitBranch(cwd),
     detectCodexVersion(cwd, config.codex.command)
   ]);
+  const maxCodexAttempts = config.workflows.build.maxCodexAttempts ?? 3;
 
   const verificationCommands = [
     ...(config.workflows.build.verificationCommands ?? []),
@@ -175,7 +176,8 @@ export async function runBuild(cwd: string, args: string[] = []): Promise<string
       verificationCommands,
       allowDirty,
       ...(policy.safe ? { safe: true } : {}),
-      ...(timeoutSeconds ? { timeoutSeconds } : {})
+      ...(timeoutSeconds ? { timeoutSeconds } : {}),
+      ...(typeof maxCodexAttempts === "number" ? { maxCodexAttempts } : {})
     }
   };
 

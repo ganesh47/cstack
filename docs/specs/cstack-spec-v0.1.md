@@ -150,7 +150,7 @@ Failure handling:
 - bounded recovery is allowed before the stage fails:
   - repo assessment for likely required tools and workspace bootstrap
   - bounded bootstrap commands for supported workspaces such as `pnpm` and `uv`
-  - at most one opaque early-exit retry when Codex terminates before leaving a usable session, transcript, or final artifact
+  - bounded backtracking retries across launch modes (interactive/exec), with the number of attempts controlled by `workflows.build.maxCodexAttempts` when Codex exits before leaving a usable session, transcript, or final artifact
 - recovery attempts must be persisted in `artifacts/recovery-attempts.json`
 - if build still fails, `artifacts/failure-diagnosis.json` must record:
   - classified category
@@ -613,6 +613,7 @@ Important repo-policy knobs include:
 - discover web-research policy
 - dirty-worktree allowance
 - workflow timeout budgets
+- build retry budget
 - deliver per-stage timeout budgets
 - verification commands
 - validation-stage parity and workflow-mutation policy

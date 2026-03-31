@@ -391,6 +391,8 @@ maxAgents = 0
 [workflows.build]
 mode = "interactive"
 verificationCommands = ["npm test"]
+allowDirty = false
+maxCodexAttempts = 3
 timeoutSeconds = 900
 
 [workflows.review]
@@ -502,6 +504,8 @@ maxAgents = 0
 [workflows.build]
 mode = "interactive"
 verificationCommands = ["npm test"]
+allowDirty = false
+maxCodexAttempts = 3
 
 [workflows.review]
 mode = "exec"
@@ -534,6 +538,7 @@ Notes:
 - If repo or user config explicitly sets `sandbox` or `allowDirty`, that explicit config wins over `--safe`.
 - `--allow-all` is deprecated and currently accepted as a temporary no-op.
 - `workflows.build.mode` selects `interactive` or `exec`; interactive is the default for build runs.
+- `workflows.build.maxCodexAttempts` sets the bounded retry budget for build attempts.
 - `workflows.build.verificationCommands` provides default verification commands recorded into build artifacts.
 - `workflows.build.timeoutSeconds` time-boxes the Codex-backed build stage.
 - `workflows.deliver.stageTimeoutSeconds` can time-box internal `deliver` stages such as `build`, `review`, and `ship`.
@@ -606,6 +611,7 @@ Build notes:
 
 - `build` is interactive by default and records the observed Codex session id in `session.json`
 - if `build` is requested in a non-TTY shell, `cstack` falls back to `exec` and records both requested and observed mode in `session.json`
+- `build` uses bounded Codex retries (default 3, configurable via `workflows.build.maxCodexAttempts`) and alternates modes when recovering from missing session/transcript/final output.
 - `build --from-run <run-id>` links a prior `spec` or `intent` run into the build context without mutating the source run
 - `build` executes from an isolated checkout by default and ignores uncommitted local dirt unless `--allow-dirty` or repo policy opts into source-repo dirty execution
 - when `workflows.build.timeoutSeconds` is set or left at the shipped default, a stalled Codex-backed build fails with an explicit timeout instead of lingering indefinitely

@@ -40,7 +40,8 @@ const DEFAULT_CONFIG: CstackConfig = {
     build: {
       mode: "interactive",
       verificationCommands: [],
-      allowDirty: true,
+      allowDirty: false,
+      maxCodexAttempts: 3,
       timeoutSeconds: 900,
       capabilities: {
         allowed: ["shell", "github"],
@@ -442,6 +443,9 @@ function validateWorkflowConfig(source: string, workflowName: string, value: unk
   }
   if ("timeoutSeconds" in objectValue) {
     validateInteger(source, `${configPath}.timeoutSeconds`, objectValue.timeoutSeconds, { minimum: 1 });
+  }
+  if ("maxCodexAttempts" in objectValue) {
+    validateInteger(source, `${configPath}.maxCodexAttempts`, objectValue.maxCodexAttempts, { minimum: 1 });
   }
   if ("stageTimeoutSeconds" in objectValue) {
     const stageTimeouts = expectObject(source, `${configPath}.stageTimeoutSeconds`, objectValue.stageTimeoutSeconds);

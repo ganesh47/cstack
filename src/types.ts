@@ -451,6 +451,7 @@ export interface WorkflowConfig {
   mode?: WorkflowMode;
   verificationCommands?: string[];
   allowDirty?: boolean;
+  maxCodexAttempts?: number;
   timeoutSeconds?: number;
   stageTimeoutSeconds?: Partial<Record<StageName, number>>;
   delegation?: {
@@ -1134,5 +1135,6 @@ export interface RunRecord {
     allowAll?: boolean;
     safe?: boolean;
     timeoutSeconds?: number;
+    maxCodexAttempts?: number;
   };
 }

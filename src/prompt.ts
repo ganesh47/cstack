@@ -220,6 +220,13 @@ export async function buildBuildPrompt(options: {
   linkedWorkflow?: string;
   verificationCommands: string[];
   dirtyWorktree: boolean;
+  retryAttempt?: {
+    attemptNumber: number;
+    maxAttempts: number;
+    reason?: string;
+    missingTools?: string[];
+    remediationCommands?: string[];
+  };
 }): Promise<{ prompt: string; context: string }> {
   const {
     cwd,
@@ -232,7 +239,8 @@ export async function buildBuildPrompt(options: {
     linkedRunId,
     linkedWorkflow,
     verificationCommands,
-    dirtyWorktree
+    dirtyWorktree,
+    retryAttempt
   } = options;
   const { prompt, context } = await buildWorkflowPrompt({ cwd, input, workflow: "build", config });
 
@@ -260,6 +268,29 @@ export async function buildBuildPrompt(options: {
       "## Wrapper verification commands",
       ...(verificationCommands.length > 0 ? verificationCommands.map((command) => `- ${command}`) : ["- none requested"]),
       "",
+      ...(retryAttempt
+        ? [
+            "## Recovery retry attempt",
+            `- attempt ${retryAttempt.attemptNumber} of ${retryAttempt.maxAttempts}`,
+            `- ${retryAttempt.reason ??
+              "Previous attempt exited before cstack observed a usable session, transcript, or final artifact; keep the same intent and retry with a conservative scope."}`,
+            ...(retryAttempt.missingTools?.length
+              ? [
+                  `- Missing tools detected in prior attempt: ${retryAttempt.missingTools.join(", ")}`,
+                  "- Repair the environment first, then continue with implementation."
+                ]
+              : []),
+            ...(retryAttempt.remediationCommands?.length
+              ? [
+                  "### Suggested environment repair commands",
+                  ...retryAttempt.remediationCommands.map((command) => `- ${command}`),
+                  "- If a command fails, capture the exact error and choose a safer fallback command for the same tool."
+                ]
+              : []),
+            "- Prioritise writing the final artifact even if implementation is incomplete.",
+            ""
+          ]
+        : []),
       "## Working tree state",
       dirtyWorktree ? "- dirty worktree detected; avoid touching unrelated files" : "- worktree appears clean"
     ].join("\n"),
@@ -271,7 +302,13 @@ export async function buildBuildPrompt(options: {
       linkedWorkflow ? `Linked workflow: ${linkedWorkflow}` : "Linked workflow: none",
       linkedArtifactPath ? `Linked artifact: ${linkedArtifactPath}` : "Linked artifact: none",
       `Verification commands: ${verificationCommands.join(" | ") || "none"}`,
-      `Dirty worktree: ${dirtyWorktree ? "yes" : "no"}`
+      `Dirty worktree: ${dirtyWorktree ? "yes" : "no"}`,
+      ...(retryAttempt
+        ? [
+            `Retry attempt: ${retryAttempt.attemptNumber}/${retryAttempt.maxAttempts}`,
+            ...(retryAttempt.missingTools?.length ? [`Retry missing tools: ${retryAttempt.missingTools.join(", ")}`] : [])
+          ]
+        : [])
     ].join("\n")
   };
 }
