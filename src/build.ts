@@ -232,7 +232,7 @@ function extractMissingToolsFromText(text: string): string[] {
   for (const pattern of patterns) {
     for (const match of text.matchAll(pattern)) {
       const tool = normalizeToolName(match[1] ?? "");
-      if (!tool || TOOL_REMEDIATION_FILTER.has(tool) || tool.length > 32) {
+      if (!tool || MISSING_TOOL_REMEDIATION_FILTER.has(tool) || tool.length > 32) {
         continue;
       }
       found.push(tool);
@@ -260,7 +260,7 @@ function inferRetryRemediation(
 ): { missingTools: string[]; remediationCommands: string[] } {
   const outcomeBasedTools = extractMissingToolsFromText(`${previousOutcome?.stderrTail ?? ""}\n${previousOutcome?.finalBody ?? ""}`);
   const missingTools = uniqueLines([...assessment.missingTools, ...outcomeBasedTools]).filter((tool) =>
-    !TOOL_REMEDIATION_FILTER.has(normalizeToolName(tool))
+    !MISSING_TOOL_REMEDIATION_FILTER.has(normalizeToolName(tool))
   );
 
   return {
