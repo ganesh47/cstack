@@ -22,6 +22,7 @@ jobs:
       VERSION: ${{ inputs.version }}
       TAG: v${{ inputs.version }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      RELEASE_BRANCH: release/v${{ inputs.version }}-${{ github.run_id }}
       REPOSITORY: ${{ github.repository }}
     steps:
       - name: Check out default branch
@@ -66,6 +67,11 @@ jobs:
           echo "CURRENT_VERSION=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
           echo "BASE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
+      - name: Create release branch
+        run: |
+          git fetch origin "${DEFAULT_BRANCH}" --depth=1
+          git checkout -b "${RELEASE_BRANCH}" "origin/${DEFAULT_BRANCH}"
+
       - name: Bump package version
         shell: bash
         run: |
@@ -105,7 +111,7 @@ jobs:
       - name: Push release preparation commit
         run: |
           if [ "${{ steps.commit.outputs.created }}" = "true" ]; then
-            git push origin "HEAD:${DEFAULT_BRANCH}"
+            git push origin "HEAD:${RELEASE_BRANCH}"
           fi
 
       - name: Dispatch CI for pushed release commit
@@ -115,7 +121,7 @@ jobs:
         run: |
           RELEASE_SHA="$(git rev-parse HEAD)"
           gh workflow run ci.yml \
-            --ref "${DEFAULT_BRANCH}" \
+            --ref "${RELEASE_BRANCH}" \
             -f base_ref="${BASE_SHA}" \
             -f head_ref="${RELEASE_SHA}"
 
@@ -123,13 +129,13 @@ jobs:
         if: steps.commit.outputs.created == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: gh workflow run codeql.yml --ref "${DEFAULT_BRANCH}"
+        run: gh workflow run codeql.yml --ref "${RELEASE_BRANCH}"
 
       - name: Dispatch Gitleaks for pushed release commit
         if: steps.commit.outputs.created == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: gh workflow run secrets.yml --ref "${DEFAULT_BRANCH}"
+        run: gh workflow run secrets.yml --ref "${RELEASE_BRANCH}"
 
       - name: Wait for required checks on pushed release commit
         if: steps.commit.outputs.created == 'true'
