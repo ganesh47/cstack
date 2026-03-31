@@ -100,33 +100,34 @@ export async function runLoop(cwd: string, args: string[] = []): Promise<void> {
   const parsed = parseLoopArgs(args);
   let priorFinalBody = "";
   let succeeded = false;
+  let loopWorkspace = cwd;
   const previousNoInspect = process.env.CSTACK_NO_POSTRUN_INSPECT;
   const previousAutomatedLoop = process.env.CSTACK_AUTOMATED_LOOP;
   process.env.CSTACK_NO_POSTRUN_INSPECT = "1";
   process.env.CSTACK_AUTOMATED_LOOP = "1";
 
   try {
+    if (parsed.options.repo) {
+      loopWorkspace = await cloneIterationRepo(parsed.options.repo, parsed.options.branch, 1);
+    }
     for (let iteration = 1; iteration <= parsed.options.iterations; iteration += 1) {
-      const iterationCwd = parsed.options.repo
-        ? await cloneIterationRepo(parsed.options.repo, parsed.options.branch, iteration)
-        : cwd;
       const intent =
         iteration === 1 || !priorFinalBody ? parsed.intent : buildRetryIntent(parsed.intent, priorFinalBody);
 
       process.stdout.write(
         [
           `Loop iteration: ${iteration}/${parsed.options.iterations}`,
-          `Workspace: ${iterationCwd}`,
+          `Workspace: ${loopWorkspace}`,
           `Intent: ${intent.split("\n")[0]}`
         ].join("\n") + "\n"
       );
 
-      const runId = await runIntent(iterationCwd, intent, {
+      const runId = await runIntent(loopWorkspace, intent, {
         dryRun: false,
         entrypoint: "run",
         ...(parsed.options.safe ? { safe: true } : {})
       });
-      const run = await readRun(iterationCwd, runId);
+      const run = await readRun(loopWorkspace, runId);
       priorFinalBody = await fs.readFile(run.finalPath, "utf8").catch(() => "");
 
       process.stdout.write(

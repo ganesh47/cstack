@@ -17,6 +17,7 @@ import { runDeliverValidationExecution, type DeliverValidationExecutionResult } 
 import { WorkflowController } from "./workflow-machine.js";
 import type {
   CstackConfig,
+  DeliverGitHubConfig,
   DeliveryReadinessPolicyRecord,
   DeploymentEvidenceRecord,
   DeliverTargetMode,
@@ -217,6 +218,65 @@ function renderUnresolvedMarkdown(record: DeliverShipRecord): string {
 
 function mergeUniqueLines(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
+}
+
+function buildStageSyncPolicy(policy: DeliverGitHubConfig): DeliverGitHubConfig {
+  return {
+    ...policy,
+    createRelease: false,
+    releasePushTag: false,
+    releaseFiles: [],
+    watchChecks: false
+  };
+}
+
+function createStageSyncReviewVerdict(stageName: "build" | "validation"): DeliverReviewVerdict {
+  return {
+    mode: "readiness",
+    status: "completed",
+    summary:
+      stageName === "build"
+        ? "Stage sync after build: repository changes were prepared for review."
+        : "Stage sync after validation: repository changes were prepared for review.",
+    findings: [],
+    recommendedActions: [],
+    acceptedSpecialists: [],
+    reportMarkdown:
+      stageName === "build"
+        ? "# Review Findings\n\nStage sync after build. Formal review has not run yet.\n"
+        : "# Review Findings\n\nStage sync after validation. Formal review has not run yet.\n"
+  };
+}
+
+async function syncStageChangesToGitHub(options: {
+  cwd: string;
+  gitBranch: string;
+  runId: string;
+  input: string;
+  issueNumbers: number[];
+  policy: DeliverGitHubConfig;
+  buildSummary: string;
+  verificationRecord: object;
+  stageName: "build" | "validation";
+  pullRequestBodyPath: string;
+  linkedRunId?: string;
+}): Promise<PerformGitHubMutationResult | null> {
+  if (!options.policy.enabled) {
+    return null;
+  }
+  return performGitHubDeliverMutations({
+    cwd: options.cwd,
+    gitBranch: options.gitBranch,
+    runId: `${options.runId}-${options.stageName}`,
+    input: options.input,
+    issueNumbers: options.issueNumbers,
+    policy: buildStageSyncPolicy(options.policy),
+    buildSummary: options.buildSummary,
+    reviewVerdict: createStageSyncReviewVerdict(options.stageName),
+    verificationRecord: options.verificationRecord,
+    ...(options.linkedRunId ? { linkedRunId: options.linkedRunId } : {}),
+    pullRequestBodyPath: options.pullRequestBodyPath
+  });
 }
 
 function summarizeBuildFailure(buildExecution: BuildExecutionResult): string {
@@ -896,6 +956,8 @@ function createBlockedReadinessPolicyRecord(options: {
 
 export async function runDeliverExecution(options: DeliverExecutionOptions): Promise<DeliverExecutionResult> {
   const selectedSpecialists = selectDeliverSpecialists(options.input);
+  const githubPolicy = options.config.workflows.deliver.github ?? {};
+  let currentGitBranch = options.gitBranch;
   let stageLineage = options.controller.currentStageLineage;
   const { prompt, context } = await buildDeliverPrompt({
     cwd: options.cwd,
@@ -1188,6 +1250,42 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
     validationStatus === "completed" ? "completed" : validationStatus === "deferred" ? "deferred" : "failed"
   );
   await writeValidationArtifacts({ validationStageDir, validationExecution });
+  if (buildExecution.result.code === 0) {
+    const buildStageSyncResult = await syncStageChangesToGitHub({
+      cwd: options.cwd,
+      gitBranch: currentGitBranch,
+      runId: options.runId,
+      input: options.input,
+      issueNumbers: options.issueNumbers,
+      policy: githubPolicy,
+      buildSummary: buildExecution.finalBody,
+      verificationRecord: buildExecution.verificationRecord,
+      stageName: "build",
+      ...(options.linkedContext?.run.id ? { linkedRunId: options.linkedContext.run.id } : {}),
+      pullRequestBodyPath: path.join(buildStageDir, "artifacts", "pull-request-body.md")
+    });
+    if (buildStageSyncResult?.record.branch.current) {
+      currentGitBranch = buildStageSyncResult.record.branch.current;
+    }
+  }
+  if (validationExecution.validationPlan.status !== "blocked") {
+    const validationStageSyncResult = await syncStageChangesToGitHub({
+      cwd: options.cwd,
+      gitBranch: currentGitBranch,
+      runId: options.runId,
+      input: options.input,
+      issueNumbers: options.issueNumbers,
+      policy: githubPolicy,
+      buildSummary: buildExecution.finalBody,
+      verificationRecord: buildExecution.verificationRecord,
+      stageName: "validation",
+      ...(options.linkedContext?.run.id ? { linkedRunId: options.linkedContext.run.id } : {}),
+      pullRequestBodyPath: path.join(validationStageDir, "artifacts", "pull-request-body.md")
+    });
+    if (validationStageSyncResult?.record.branch.current) {
+      currentGitBranch = validationStageSyncResult.record.branch.current;
+    }
+  }
   await events.emit("activity", "Validation stage finished, starting review synthesis");
   await options.controller.send({
     type: "SET_STAGE_STATUS",
@@ -1312,11 +1410,11 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
 
   let githubMutation = createBlockedGitHubMutationRecord();
   let githubMutationResult: PerformGitHubMutationResult = {
-    branch: options.gitBranch,
+    branch: currentGitBranch,
     record: githubMutation
   };
   let githubDeliveryRecord = createBlockedGitHubDeliveryRecord({
-    gitBranch: options.gitBranch,
+    gitBranch: currentGitBranch,
     deliveryMode: options.deliveryMode,
     issueNumbers: options.issueNumbers,
     config: options.config,
@@ -1337,11 +1435,11 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
   try {
     githubMutationResult = await performGitHubDeliverMutations({
       cwd: options.cwd,
-      gitBranch: options.gitBranch,
+      gitBranch: currentGitBranch,
       runId: options.runId,
       input: options.input,
       issueNumbers: options.issueNumbers,
-      policy: options.config.workflows.deliver.github ?? {},
+      policy: githubPolicy,
       buildSummary: buildExecution.finalBody,
       reviewVerdict,
       verificationRecord: buildExecution.verificationRecord,
@@ -1354,7 +1452,7 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
       gitBranch: githubMutationResult.record.branch.current,
       deliveryMode: options.deliveryMode,
       issueNumbers: options.issueNumbers,
-      policy: options.config.workflows.deliver.github ?? {},
+      policy: githubPolicy,
       input: options.input,
       mutationRecord: githubMutationResult.record,
       ...(options.linkedContext?.artifactBody ? { linkedArtifactBody: options.linkedContext.artifactBody } : {})
@@ -1489,7 +1587,7 @@ export async function runDeliverExecution(options: DeliverExecutionOptions): Pro
       record: githubMutation
     };
     githubDeliveryRecord = createBlockedGitHubDeliveryRecord({
-      gitBranch: options.gitBranch,
+      gitBranch: currentGitBranch,
       deliveryMode: options.deliveryMode,
       issueNumbers: options.issueNumbers,
       config: options.config,
