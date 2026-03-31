@@ -33,6 +33,7 @@
     "clean": "rm -rf dist",
     "dev": "tsx src/cli.ts",
     "prepack": "npm run build",
+    "smoke:packaged": "node scripts/run-packaging-smoke.mjs",
     "smoke:live": "node scripts/run-live-codex-smoke.mjs",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"

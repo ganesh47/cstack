@@ -537,7 +537,10 @@ function detectSurfaces(options: {
   const hasDocker = options.manifests.includes("Dockerfile") || options.manifests.includes("docker-compose.yml") || options.manifests.includes("docker-compose.yaml");
   const hasMobileIos = options.manifests.includes("Podfile") || options.manifests.includes("Package.swift");
   const hasMobileAndroid = options.manifests.some((manifest) => manifest.includes("gradle"));
-  const webSignals = deps.some((dep) => /react|next|vite|playwright|cypress|@testing-library/.test(dep)) || scripts.some((name) => /dev|start|storybook/.test(name));
+  const webSignals =
+    deps.some((dep) => /react|next|vite|playwright|cypress|@testing-library/.test(dep)) ||
+    scripts.some((name) => /start|storybook|preview/.test(name)) ||
+    options.existingTests.some((entry) => /playwright|cypress|storybook/i.test(entry));
   const serviceSignals = deps.some((dep) => /express|fastify|nest/.test(dep)) || scripts.some((name) => /serve|api/.test(name));
 
   if (webSignals) {
@@ -943,8 +946,14 @@ function selectDefaultLocalCommands(profile: ValidationRepoProfile, buildVerific
   if (scriptMap.has("test:e2e")) {
     add("npm run test:e2e");
   }
+  if (scriptMap.has("ci:e2e")) {
+    add("npm run ci:e2e");
+  }
   if (scriptMap.has("build")) {
     add("npm run build");
+  }
+  if (scriptMap.has("smoke:packaged")) {
+    add("npm run smoke:packaged");
   }
   if (profile.buildSystems.includes("cargo")) {
     add("cargo test");
@@ -984,6 +993,8 @@ function selectDefaultCiJobs(profile: ValidationRepoProfile, localCommands: stri
 function buildInitialValidationPlan(profile: ValidationRepoProfile, toolResearch: ValidationToolResearch, buildVerificationRecord: BuildVerificationRecord, selectedSpecialists: ValidationSpecialistSelection): DeliverValidationPlan {
   const localCommands = selectDefaultLocalCommands(profile, buildVerificationRecord);
   const ciJobs = selectDefaultCiJobs(profile, localCommands);
+  const e2eCommands = localCommands.filter((command) => /e2e/.test(command));
+  const packagingCommands = localCommands.filter((command) => /build|pack|smoke/.test(command) && !/live/.test(command));
   const layers: DeliverValidationPlan["layers"] = [
     {
       name: "static",
@@ -1017,23 +1028,23 @@ function buildInitialValidationPlan(profile: ValidationRepoProfile, toolResearch
     },
     {
       name: "e2e-system",
-      selected: profile.surfaces.some((surface) => ["web-app", "ios-app", "android-app"].includes(surface)),
-      status: profile.surfaces.includes("web-app") ? "partial" : "skipped",
-      rationale: "System flows should cover representative user journeys for interactive products.",
+      selected: profile.surfaces.some((surface) => ["web-app", "ios-app", "android-app", "cli-binary"].includes(surface)) && e2eCommands.length > 0,
+      status: e2eCommands.length > 0 ? "ready" : profile.surfaces.some((surface) => ["web-app", "ios-app", "android-app", "cli-binary"].includes(surface)) ? "partial" : "skipped",
+      rationale: "System flows should cover representative user journeys for interactive products, including deterministic CLI workflow paths.",
       selectedTools: toolResearch.candidates.filter((candidate) => candidate.category === "e2e-system" && candidate.selected).map((candidate) => candidate.tool),
-      localCommands: localCommands.filter((command) => /e2e/.test(command)),
-      ciCommands: localCommands.filter((command) => /e2e/.test(command)),
-      coverageIntent: ["critical user journeys", "auth or session flows", "release-time regressions"]
+      localCommands: e2eCommands,
+      ciCommands: e2eCommands,
+      coverageIntent: ["critical user journeys", "auth or session flows", "release-time regressions", "deterministic CLI workflow execution"]
     },
     {
       name: "packaging-smoke",
       selected: true,
-      status: profile.surfaces.includes("container") || profile.surfaces.includes("cli-binary") ? "partial" : "ready",
-      rationale: "Packaging and runtime smoke checks ensure the produced artifact can actually boot or run.",
+      status: packagingCommands.length > 0 ? "ready" : profile.surfaces.includes("container") || profile.surfaces.includes("cli-binary") ? "partial" : "ready",
+      rationale: "Packaging and runtime smoke checks ensure the produced artifact can actually boot or run without depending on registry installs.",
       selectedTools: toolResearch.candidates.filter((candidate) => candidate.category === "packaging-smoke" && candidate.selected).map((candidate) => candidate.tool),
-      localCommands: localCommands.filter((command) => /build/.test(command)),
-      ciCommands: localCommands.filter((command) => /build/.test(command)),
-      coverageIntent: ["build artifact readiness", "runtime smoke", "container image structure where relevant"]
+      localCommands: packagingCommands,
+      ciCommands: packagingCommands,
+      coverageIntent: ["build artifact readiness", "runtime smoke", "package contents", "container image structure where relevant"]
     }
   ];
 
