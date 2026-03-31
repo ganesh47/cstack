@@ -176,6 +176,7 @@ export async function buildSpecPrompt(
       "- for mixed gap-analysis plus remediation prompts, rank the top 1-3 gap clusters briefly and then select exactly one slice to implement first",
       "- the chosen slice must fit in one bounded change set with named files, validation, and out-of-scope boundaries",
       "- avoid multi-epic roadmaps, repo-wide rewrites, or parallel workstreams in the first slice",
+      "- if you identify more than 3 meaningful gap clusters, keep only the top 3 in ## Gap Clusters and add a short `## Deferred Gaps` section naming what was not chosen",
       "- rely on provided discover findings and a representative sample of repo files instead of re-scanning everything",
       "- inspect at most 8 additional files and run at most 6 shell commands before you stop planning",
       "- stop once you can fill the required headings with evidence; do not continue scanning after the first slice is clear",

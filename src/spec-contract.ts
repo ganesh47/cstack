@@ -77,7 +77,9 @@ export interface SpecContractValidation {
   required: boolean;
   status: "not-required" | "valid" | "invalid";
   violations: string[];
+  warnings: string[];
   gapClusters: string[];
+  deferredGapClusters: string[];
   selectedSlice: string;
   filesInScope: string[];
   validation: string[];
@@ -287,7 +289,9 @@ export function validateSpecOutput(userPrompt: string, finalBody: string): SpecC
       required: false,
       status: "not-required",
       violations: [],
+      warnings: [],
       gapClusters: [],
+      deferredGapClusters: [],
       selectedSlice: "",
       filesInScope: [],
       validation: [],
@@ -296,7 +300,16 @@ export function validateSpecOutput(userPrompt: string, finalBody: string): SpecC
   }
 
   const sections = parseMarkdownSections(finalBody);
-  const gapClusters = parseSectionItems(sections.get("gap clusters") ?? "");
+  const allGapClusters = parseSectionItems(sections.get("gap clusters") ?? "");
+  const gapClusters = allGapClusters.slice(0, 3);
+  const deferredGapClusters = allGapClusters.slice(3);
+  const warnings: string[] = [];
+
+  if (deferredGapClusters.length > 0) {
+    warnings.push(
+      `Deferred gap clusters to keep scope bounded: ${deferredGapClusters.join("; ")}`
+    );
+  }
   const selectedSlice = compact(sections.get("selected first slice") ?? "");
   const filesInScope = parseSectionItems(sections.get("files in scope") ?? "");
   const validation = parseSectionItems(sections.get("validation") ?? "");
@@ -305,8 +318,6 @@ export function validateSpecOutput(userPrompt: string, finalBody: string): SpecC
 
   if (gapClusters.length === 0) {
     violations.push("missing required section: ## Gap Clusters");
-  } else if (gapClusters.length > 3) {
-    violations.push("## Gap Clusters must list at most 3 entries");
   }
   if (!selectedSlice) {
     violations.push("missing required section: ## Selected First Slice");
@@ -325,7 +336,9 @@ export function validateSpecOutput(userPrompt: string, finalBody: string): SpecC
     required: true,
     status: violations.length > 0 ? "invalid" : "valid",
     violations,
+    warnings,
     gapClusters,
+    deferredGapClusters,
     selectedSlice,
     filesInScope,
     validation,
@@ -352,6 +365,8 @@ export function deriveSpecPlanArtifact(
     ...(contract.required
       ? {
           gapClusters: contract.gapClusters,
+          deferredGapClusters: contract.deferredGapClusters,
+          warnings: contract.warnings,
           selectedSlice: contract.selectedSlice,
           filesInScope: contract.filesInScope,
           validation: contract.validation,
