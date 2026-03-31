@@ -366,6 +366,13 @@ function createBlockedGitHubMutationRecord(): GitHubMutationRecord {
       completed: false,
       summary: "GitHub mutation was skipped because build failed first."
     },
+    release: {
+      requested: false,
+      created: false,
+      pushed: false,
+      uploadedFiles: [],
+      summary: "Release mutation was skipped because build failed first."
+    },
     blockers: ["Build failed before GitHub mutation could run."],
     summary: "GitHub mutation skipped because build failed first."
   };

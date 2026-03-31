@@ -21,20 +21,21 @@ The repository validation contract is also part of the shipped surface:
 
 Current top-level commands:
 
-- `cstack <intent>`
-- `cstack run <intent> [--dry-run]`
-- `cstack discover <prompt> [--issue <n>]`
-- `cstack spec <prompt> [--from-run <run-id>] [--issue <n>]`
-- `cstack build <prompt> [--from-run <run-id>] [--exec] [--allow-dirty]`
-- `cstack review <prompt> [--from-run <run-id>]`
-- `cstack ship <prompt> [--from-run <run-id>] [--release] [--issue <n>] [--allow-dirty]`
-- `cstack deliver <prompt> [--from-run <run-id>] [--exec] [--release] [--issue <n>] [--allow-dirty]`
+- `cstack <intent> [--safe]`
+- `cstack run <intent> [--dry-run] [--safe]`
+- `cstack discover <prompt> [--issue <n>] [--safe]`
+- `cstack spec <prompt> [--issue <n>] [--initiative <id>] [--initiative-title <title>] [--safe]`
+- `cstack build <prompt> [--from-run <run-id>] [--initiative <id>] [--initiative-title <title>] [--exec] [--allow-dirty] [--safe]`
+- `cstack review <prompt> [--from-run <run-id>] [--initiative <id>] [--initiative-title <title>] [--safe]`
+- `cstack ship <prompt> [--from-run <run-id>] [--initiative <id>] [--initiative-title <title>] [--release] [--issue <n>] [--allow-dirty] [--safe]`
+- `cstack deliver <prompt> [--from-run <run-id>] [--initiative <id>] [--initiative-title <title>] [--exec] [--release] [--issue <n>] [--allow-dirty] [--safe]`
 - `cstack rerun <run-id>`
 - `cstack resume <run-id>`
 - `cstack fork <run-id> [--workflow <name>]`
-- `cstack runs [--active] [--workflow <name>] [--status <status>] [--recent <n>] [--json]`
-- `cstack inspect [run-id] [--interactive]`
 - `cstack update [--check] [--dry-run] [--yes] [--version <x>] [--channel stable]`
+- `cstack loop <intent> [--repo <git-url>] [--branch <name>] [--iterations <n>] [--safe]`
+- `cstack runs [--active] [--workflow <name>] [--status <status>] [--issue <n>] [--initiative <id>] [--recent <n>] [--json]`
+- `cstack inspect [run-id] [--interactive]`
 
 ## Principles
 

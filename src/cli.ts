@@ -11,6 +11,7 @@ import { runShip } from "./commands/ship.js";
 import { runSpec } from "./commands/spec.js";
 import { runRuns } from "./commands/runs.js";
 import { runInspect } from "./commands/inspect.js";
+import { runLoop } from "./commands/loop.js";
 import { runUpdateCommand, UpdateCommandError } from "./commands/update.js";
 
 function usage(): string {
@@ -28,6 +29,7 @@ function usage(): string {
     "  cstack resume <run-id>",
     "  cstack fork <run-id> [--workflow <name>]",
     "  cstack update [--check] [--dry-run] [--yes] [--version <x>] [--channel stable]",
+    "  cstack loop <intent> [--repo <git-url>] [--branch <name>] [--iterations <n>] [--safe]",
     "  cstack runs [--active] [--workflow <name>] [--status <status>] [--issue <n>] [--initiative <id>] [--recent <n>] [--json]",
     "  cstack inspect [run-id] [--interactive]"
   ].join("\n");
@@ -73,6 +75,9 @@ async function main(): Promise<void> {
       return;
     case "update":
       await runUpdateCommand(cwd, rest);
+      return;
+    case "loop":
+      await runLoop(cwd, rest);
       return;
     case "inspect":
       await runInspect(cwd, rest);

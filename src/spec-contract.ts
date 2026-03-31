@@ -329,6 +329,9 @@ export function validateSpecOutput(userPrompt: string, finalBody: string): SpecC
   if (gapClusters.length === 0) {
     violations.push("missing required section: ## Gap Clusters");
   }
+  if (allGapClusters.length > 3) {
+    warnings.push(`Trimmed ## Gap Clusters to the top 3 entries and deferred ${allGapClusters.length - 3} additional cluster(s).`);
+  }
   if (!selectedSlice) {
     violations.push("missing required section: ## Selected First Slice");
   }
@@ -376,6 +379,10 @@ export function deriveSpecPlanArtifact(
       ? {
           gapClusters: contract.gapClusters,
           deferredGapClusters: contract.deferredGapClusters,
+          deferredSummary:
+            contract.deferredGapClusters.length > 0
+              ? `Deferred after first slice: ${contract.deferredGapClusters.join("; ")}`
+              : "No deferred gap clusters.",
           warnings: contract.warnings,
           selectedSlice: contract.selectedSlice,
           filesInScope: contract.filesInScope,

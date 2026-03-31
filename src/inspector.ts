@@ -2517,7 +2517,13 @@ export async function runInteractiveInspector(
 }
 
 export async function maybeOfferInteractiveInspect(cwd: string, runId: string): Promise<void> {
-  if (!process.stdin.isTTY || !process.stdout.isTTY || process.env.CI || process.env.CSTACK_NO_POSTRUN_INSPECT === "1") {
+  if (
+    !process.stdin.isTTY ||
+    !process.stdout.isTTY ||
+    process.env.CI ||
+    process.env.CSTACK_NO_POSTRUN_INSPECT === "1" ||
+    process.env.CSTACK_AUTOMATED_LOOP === "1"
+  ) {
     return;
   }
 

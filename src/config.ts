@@ -119,6 +119,14 @@ const DEFAULT_CONFIG: CstackConfig = {
       github: {
         enabled: false,
         mode: "merge-ready",
+        createRelease: false,
+        releaseMessage: "",
+        releaseName: "",
+        releasePrerelease: false,
+        releaseDraft: false,
+        releaseGenerateNotes: true,
+        releasePushTag: false,
+        releaseFiles: [],
         pushBranch: false,
         branchPrefix: "cstack",
         commitChanges: false,
@@ -347,6 +355,30 @@ function validateDeliverGitHubConfig(source: string, configPath: string, value: 
   }
   if ("mode" in objectValue) {
     validateEnum(source, `${configPath}.mode`, objectValue.mode, DELIVER_TARGET_MODES);
+  }
+  if ("createRelease" in objectValue) {
+    validateBoolean(source, `${configPath}.createRelease`, objectValue.createRelease);
+  }
+  if ("releaseMessage" in objectValue) {
+    validateString(source, `${configPath}.releaseMessage`, objectValue.releaseMessage);
+  }
+  if ("releaseName" in objectValue) {
+    validateString(source, `${configPath}.releaseName`, objectValue.releaseName);
+  }
+  if ("releasePrerelease" in objectValue) {
+    validateBoolean(source, `${configPath}.releasePrerelease`, objectValue.releasePrerelease);
+  }
+  if ("releaseDraft" in objectValue) {
+    validateBoolean(source, `${configPath}.releaseDraft`, objectValue.releaseDraft);
+  }
+  if ("releaseGenerateNotes" in objectValue) {
+    validateBoolean(source, `${configPath}.releaseGenerateNotes`, objectValue.releaseGenerateNotes);
+  }
+  if ("releasePushTag" in objectValue) {
+    validateBoolean(source, `${configPath}.releasePushTag`, objectValue.releasePushTag);
+  }
+  if ("releaseFiles" in objectValue) {
+    validateStringArray(source, `${configPath}.releaseFiles`, objectValue.releaseFiles);
   }
   if ("pushBranch" in objectValue) {
     validateBoolean(source, `${configPath}.pushBranch`, objectValue.pushBranch);

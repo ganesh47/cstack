@@ -9,7 +9,7 @@ function validateVersion(version) {
 }
 
 function replaceMarkedBlock(readme, marker, body) {
-  const pattern = new RegExp(`(<!-- ${marker}:start -->\\n)([\\s\\S]*?)(\\n<!-- ${marker}:end -->)`);
+  const pattern = new RegExp(`(<!-- ${marker}:start -->\\r?\\n)([\\s\\S]*?)(\\r?\\n<!-- ${marker}:end -->)`);
   if (!pattern.test(readme)) {
     throw new Error(`Missing README marker block: ${marker}`);
   }

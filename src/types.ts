@@ -513,6 +513,14 @@ export interface DeliverGitHubConfig {
   command?: string;
   repository?: string;
   mode?: DeliverTargetMode;
+  createRelease?: boolean;
+  releaseMessage?: string;
+  releaseName?: string;
+  releasePrerelease?: boolean;
+  releaseDraft?: boolean;
+  releaseGenerateNotes?: boolean;
+  releasePushTag?: boolean;
+  releaseFiles?: string[];
   pushBranch?: boolean;
   branchPrefix?: string;
   commitChanges?: boolean;
@@ -585,7 +593,7 @@ export type BuildFailureCategory =
   | "unknown";
 
 export interface BuildRecoveryAttemptRecord {
-  kind: "assessment" | "bootstrap" | "codex-run" | "verification";
+  kind: "assessment" | "bootstrap" | "remediation" | "codex-run" | "verification";
   label: string;
   status: "completed" | "failed" | "retrying" | "skipped";
   startedAt: string;
@@ -1082,6 +1090,17 @@ export interface GitHubMutationRecord {
     watched: boolean;
     polls: number;
     completed: boolean;
+    summary: string;
+  };
+  release?: {
+    requested: boolean;
+    tagName?: string;
+    version?: string | null;
+    created: boolean;
+    pushed: boolean;
+    uploadedFiles: string[];
+    url?: string;
+    name?: string | null;
     summary: string;
   };
   blockers: string[];

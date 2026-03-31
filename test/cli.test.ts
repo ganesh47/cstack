@@ -6,6 +6,7 @@ const runDiscover = vi.fn(async () => undefined);
 const runFork = vi.fn(async () => undefined);
 const runIntentCommand = vi.fn(async () => undefined);
 const runInspect = vi.fn(async () => undefined);
+const runLoop = vi.fn(async () => undefined);
 const runRerun = vi.fn(async () => undefined);
 const runResume = vi.fn(async () => undefined);
 const runReview = vi.fn(async () => undefined);
@@ -20,6 +21,7 @@ vi.mock("../src/commands/discover.js", () => ({ runDiscover }));
 vi.mock("../src/commands/fork.js", () => ({ runFork }));
 vi.mock("../src/commands/intent.js", () => ({ runIntentCommand }));
 vi.mock("../src/commands/inspect.js", () => ({ runInspect }));
+vi.mock("../src/commands/loop.js", () => ({ runLoop }));
 vi.mock("../src/commands/rerun.js", () => ({ runRerun }));
 vi.mock("../src/commands/resume.js", () => ({ runResume }));
 vi.mock("../src/commands/review.js", () => ({ runReview }));
@@ -200,6 +202,21 @@ describe("src/cli.ts", () => {
   it("dispatches inspect", async () => {
     await runCliCommand(["inspect", "run-123"]);
     expect(runInspect).toHaveBeenCalledWith(cwd, ["run-123"]);
+  });
+
+  it("dispatches loop", async () => {
+    await runCliCommand(["loop", "Close", "coverage", "--repo", "https://example.com/repo.git", "--branch", "main", "--iterations", "2", "--safe"]);
+    expect(runLoop).toHaveBeenCalledWith(cwd, [
+      "Close",
+      "coverage",
+      "--repo",
+      "https://example.com/repo.git",
+      "--branch",
+      "main",
+      "--iterations",
+      "2",
+      "--safe",
+    ]);
   });
 
   it("dispatches bare intent", async () => {

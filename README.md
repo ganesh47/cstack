@@ -15,6 +15,7 @@ Current implemented surface:
 - `resume`
 - `fork`
 - `update`
+- `loop`
 - `runs`
 - `inspect`
 - repo-local config in `.cstack/config.toml`
@@ -53,21 +54,21 @@ npm install -g "https://github.com/ganesh47/cstack/releases/latest/download/csta
 ```
 
 <!-- release-version:start -->
-Current release example version: `v0.17.26`
+Current release example version: `v0.17.27`
 <!-- release-version:end -->
 
 <!-- release-examples:start -->
 Install directly from a published release tarball:
 
 ```bash
-VERSION=v0.17.26
+VERSION=v0.17.27
 npm install -g "https://github.com/ganesh47/cstack/releases/download/${VERSION}/cstack-${VERSION#v}.tgz"
 ```
 
 Download first, then install locally:
 
 ```bash
-VERSION=v0.17.26
+VERSION=v0.17.27
 curl -LO "https://github.com/ganesh47/cstack/releases/download/${VERSION}/cstack-${VERSION#v}.tgz"
 npm install -g "./cstack-${VERSION#v}.tgz"
 ```
@@ -75,7 +76,7 @@ npm install -g "./cstack-${VERSION#v}.tgz"
 Verify the downloaded tarball:
 
 ```bash
-VERSION=v0.17.26
+VERSION=v0.17.27
 curl -LO "https://github.com/ganesh47/cstack/releases/download/${VERSION}/SHA256SUMS.txt"
 sha256sum -c SHA256SUMS.txt
 ```
@@ -131,6 +132,10 @@ cstack rerun <run-id>
 # Check for the latest stable GitHub release or apply it
 cstack update --check
 cstack update --yes
+
+# Run repeated intent-improvement loops in the current repo or a temp clone
+cstack loop "What are the gaps in this project? Can you work on closing the gaps?"
+cstack loop --repo git@github.com:ganesh47/sqlite-metadata-proposal.git --iterations 3 "What are the gaps in this project? Can you work on closing the gaps?"
 
 # List saved runs
 cstack runs
@@ -218,6 +223,18 @@ Current contract:
 - if Codex exits before leaving a usable session, transcript, or final artifact, `cstack` retries once before failing the stage
 - verification failure counts as a build failure for workflow purposes
 - final failure summaries now prefer a classified root cause over a raw `exit code 1`
+- when a retry detects missing host tools, `cstack` now tries multiple bounded remediation commands before giving up
+
+## Feedback Loops
+
+`cstack loop` runs repeated intent cycles against either the current repository or a fresh temporary clone.
+
+Current contract:
+
+- each iteration runs the same intent with optional failure context from the previous iteration
+- broad gap-remediation prompts remain bounded to a top-3 first slice, and overflow gaps are treated as deferred follow-up work
+- `--repo` clones a fresh temp checkout so each attempt starts from a clean baseline
+- the loop stops early once the intent run completes without failed downstream stages
 
 Build recovery artifacts:
 

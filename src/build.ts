@@ -40,18 +40,31 @@ const MAX_CODEX_ATTEMPTS = 8;
 const MISSING_TOOL_REMEDIATION_FILTER: Set<string> = new Set(["sh", "bash", "dash", "env", "command", "script"]);
 const TOOL_INSTALL_HINTS: Record<string, string[]> = {
   node: [
-    "Install Node.js (LTS), preferably with nvm: `curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.5/install.sh | bash && nvm install --lts && nvm use --lts`.",
-    "If nvm is unavailable, use the environment package manager (for example `apt-get install -y nodejs` or `brew install node`)."
+    "if command -v nvm >/dev/null 2>&1; then nvm install --lts && nvm use --lts; else exit 127; fi",
+    "if command -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y nodejs npm; else exit 127; fi",
+    "if command -v brew >/dev/null 2>&1; then brew install node; else exit 127; fi"
   ],
-  npm: ["Install Node.js tooling so npm is available in PATH."],
+  npm: [
+    "if command -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y npm; else exit 127; fi",
+    "if command -v brew >/dev/null 2>&1; then brew install npm; else exit 127; fi"
+  ],
   pnpm: [
-    "If corepack exists: `corepack enable && corepack prepare pnpm@latest --activate`.",
-    "Fallback if corepack is unavailable: `npm i -g pnpm@latest`."
+    "if command -v corepack >/dev/null 2>&1; then corepack enable && corepack prepare pnpm@latest --activate; else exit 127; fi",
+    "if command -v npm >/dev/null 2>&1; then npm i -g pnpm@latest; else exit 127; fi"
   ],
-  corepack: ["If node exists but corepack is missing: `npm i -g corepack` and `corepack enable`."],
-  uv: ["Install uv with `python -m pip install --user --upgrade uv` and ensure `~/.local/bin` is on PATH."],
-  mvn: ["Install Maven using your package manager (for example `apt-get install -y maven` or `brew install maven`)."],
-  python: ["Install Python 3 and ensure `python3` is on PATH."]
+  corepack: ["if command -v npm >/dev/null 2>&1; then npm i -g corepack && corepack enable; else exit 127; fi"],
+  uv: [
+    "if command -v python3 >/dev/null 2>&1; then python3 -m pip install --user --upgrade uv; else exit 127; fi",
+    "if command -v curl >/dev/null 2>&1; then curl -LsSf https://astral.sh/uv/install.sh | sh; else exit 127; fi"
+  ],
+  mvn: [
+    "if command -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y maven; else exit 127; fi",
+    "if command -v brew >/dev/null 2>&1; then brew install maven; else exit 127; fi"
+  ],
+  python: [
+    "if command -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y python3 python3-pip; else exit 127; fi",
+    "if command -v brew >/dev/null 2>&1; then brew install python; else exit 127; fi"
+  ]
 };
 
 function isInternalRunArtifactPath(filePath: string): boolean {
@@ -491,6 +504,40 @@ async function runBootstrapAction(action: BuildBootstrapAction): Promise<BuildRe
         ? `${action.rationale} Bootstrap failed because of a likely transient dependency or network issue.`
         : `${action.rationale} Bootstrap failed before build could start.`,
       evidence: [combined]
+    });
+  }
+}
+
+async function runRemediationCommand(cwd: string, command: string, label: string): Promise<BuildRecoveryAttemptRecord> {
+  const startedAt = nowIso();
+  const shell = process.env.SHELL || "/bin/bash";
+  try {
+    const { stdout, stderr } = await execFileAsync(shell, ["-lc", command], {
+      cwd,
+      maxBuffer: 20 * 1024 * 1024
+    });
+    return buildAttemptRecord({
+      kind: "remediation",
+      label,
+      status: "completed",
+      startedAt,
+      cwd,
+      command,
+      summary: `${label} completed successfully.`,
+      evidence: [stdout, stderr].filter(Boolean)
+    });
+  } catch (error) {
+    const execError = error as NodeJS.ErrnoException & { stdout?: string; stderr?: string; code?: number };
+    return buildAttemptRecord({
+      kind: "remediation",
+      label,
+      status: "failed",
+      startedAt,
+      cwd,
+      command,
+      exitCode: typeof execError.code === "number" ? execError.code : 1,
+      summary: `${label} failed.`,
+      evidence: [execError.stdout ?? "", execError.stderr ?? "", execError.message ?? ""]
     });
   }
 }
@@ -1047,7 +1094,7 @@ export async function runBuildExecution(options: BuildExecutionOptions): Promise
   const startedAt = nowIso();
   const recoveryAttempts: BuildRecoveryAttemptRecord[] = [];
 
-  const assessment = await resolveBuildEnvironmentAssessment(executionCwd);
+  let assessment = await resolveBuildEnvironmentAssessment(executionCwd);
   recoveryAttempts.push(
     buildAttemptRecord({
       kind: "assessment",
@@ -1121,6 +1168,28 @@ export async function runBuildExecution(options: BuildExecutionOptions): Promise
               : { remediationCommands: [] })
           }
         : undefined;
+    if (attemptNumber > 1 && remediation.remediationCommands.length > 0) {
+      for (const [index, command] of remediation.remediationCommands.entries()) {
+        const remediationAttempt = await runRemediationCommand(
+          executionCwd,
+          command,
+          `environment remediation ${index + 1}`
+        );
+        recoveryAttempts.push(remediationAttempt);
+      }
+      assessment = await resolveBuildEnvironmentAssessment(executionCwd);
+      recoveryAttempts.push(
+        buildAttemptRecord({
+          kind: "assessment",
+          label: `re-assess repo requirements after remediation ${attemptNumber - 1}`,
+          status: "completed",
+          startedAt: nowIso(),
+          cwd: executionCwd,
+          summary: assessment.summary,
+          evidence: [...assessment.evidence, ...assessment.notes]
+        })
+      );
+    }
     codexOutcome = await runCodexBuildAttempt({
       executionCwd,
       requestedMode: attemptMode,
