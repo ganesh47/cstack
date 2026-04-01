@@ -763,6 +763,41 @@ export interface DeliveryReadinessPolicyRecord {
   postReadinessSummary: DeliveryPostReadinessSummary;
 }
 
+export interface LoopIterationRecord {
+  iteration: number;
+  runId: string;
+  status: RunStatus;
+  summary: string;
+  targetCluster?: string;
+  deferredClusters: string[];
+  specialists: SpecialistName[];
+}
+
+export interface LoopCycleRecord {
+  schemaVersion: 1;
+  loopId: string;
+  intent: string;
+  repo: string | null;
+  branch: string | null;
+  workspace: string;
+  iterationsRequested: number;
+  iterationsCompleted: number;
+  status: "completed" | "failed";
+  latestRunId?: string;
+  latestSummary?: string;
+  primaryBlockerCluster?: string | null;
+  iterations: LoopIterationRecord[];
+}
+
+export interface LoopBacktrackDecisionRecord {
+  schemaVersion: 1;
+  loopId: string;
+  targetCluster: string | null;
+  deferredClusters: string[];
+  specialists: SpecialistName[];
+  summary: string;
+}
+
 export interface DeploymentEvidenceReference {
   kind: "pull-request" | "issue" | "check" | "action" | "release";
   label: string;

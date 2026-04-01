@@ -5,7 +5,7 @@ import { promises as fs } from "node:fs";
 import { promisify } from "node:util";
 import { runIntent } from "../intent.js";
 import { readRun } from "../run.js";
-import type { SpecialistName } from "../types.js";
+import type { LoopBacktrackDecisionRecord, LoopCycleRecord, LoopIterationRecord, SpecialistName } from "../types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -20,6 +20,7 @@ const LOOP_SPECIALIST_ORDER: SpecialistName[] = [
 interface RetryGuidance {
   summary: string;
   targetCluster?: string;
+  deferredClusters: string[];
   specialists: SpecialistName[];
 }
 
@@ -99,6 +100,11 @@ async function readJsonFile<T>(filePath: string): Promise<T | null> {
   }
 }
 
+async function writeJsonFile(filePath: string, value: unknown): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
 function summarizeBody(body: string): string {
   return body
     .split("\n")
@@ -141,6 +147,7 @@ async function extractRetryGuidance(cwd: string, runId: string, previousFinalBod
   if (!childRunId) {
     return {
       summary: baseSummary || "No prior summary was available.",
+      deferredClusters: [],
       specialists: inferRetrySpecialists(baseSummary)
     };
   }
@@ -149,6 +156,7 @@ async function extractRetryGuidance(cwd: string, runId: string, previousFinalBod
   if (!childRun) {
     return {
       summary: baseSummary || "No prior summary was available.",
+      deferredClusters: [],
       specialists: inferRetrySpecialists(baseSummary)
     };
   }
@@ -188,6 +196,11 @@ async function extractRetryGuidance(cwd: string, runId: string, previousFinalBod
     reviewVerdict?.gapClusters?.[0]?.title ??
     buildFailureDiagnosis?.recommendedActions?.[0] ??
     validationPlan?.coverage?.gaps?.[0];
+  const deferredClusters = [
+    ...(reviewVerdict?.recommendedNextSlices ?? []),
+    ...(reviewVerdict?.gapClusters?.map((cluster) => cluster.title ?? "").filter(Boolean) ?? []),
+    ...(validationPlan?.coverage?.gaps ?? [])
+  ].filter((cluster, index, values) => Boolean(cluster) && cluster !== targetCluster && values.indexOf(cluster) === index);
   const guidanceSummary =
     reviewVerdict?.summary ??
     validationPlan?.summary ??
@@ -200,6 +213,7 @@ async function extractRetryGuidance(cwd: string, runId: string, previousFinalBod
   return {
     summary: [guidanceSummary, patchHintSummary].filter(Boolean).join("\n"),
     ...(targetCluster ? { targetCluster } : {}),
+    deferredClusters,
     specialists
   };
 }
@@ -225,6 +239,13 @@ function buildRetryIntent(baseIntent: string, guidance: RetryGuidance): string {
           "Out of scope for this retry: every other cluster from the previous run."
         ]
       : []),
+    ...(guidance.deferredClusters.length > 0
+      ? [
+          "",
+          "## Deferred clusters",
+          ...guidance.deferredClusters.map((cluster) => `- ${cluster}`)
+        ]
+      : []),
     "",
     "## Prior run summary",
     summary || "No prior summary was available."
@@ -233,12 +254,79 @@ function buildRetryIntent(baseIntent: string, guidance: RetryGuidance): string {
     .join("\n");
 }
 
+function summarizeRetryDecision(guidance: RetryGuidance): string {
+  return [
+    guidance.targetCluster ? `Target cluster: ${guidance.targetCluster}` : "",
+    guidance.deferredClusters.length > 0 ? `Deferred: ${guidance.deferredClusters.join("; ")}` : "",
+    guidance.specialists.length > 0 ? `Specialists: ${guidance.specialists.join(", ")}` : "",
+    summarizeBody(guidance.summary)
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+async function writeLoopArtifacts(options: {
+  loopDir: string;
+  trace: LoopCycleRecord;
+  latestGuidance?: RetryGuidance;
+  latestIteration?: LoopIterationRecord;
+}): Promise<void> {
+  await writeJsonFile(path.join(options.loopDir, "benchmark-outcome.json"), options.trace);
+  const cycleRecord: LoopCycleRecord = {
+    schemaVersion: 1,
+    loopId: options.trace.loopId,
+    repo: options.trace.repo,
+    branch: options.trace.branch,
+    intent: options.trace.intent,
+    workspace: options.trace.workspace,
+    status: options.trace.status,
+    iterationsRequested: options.trace.iterationsRequested,
+    iterationsCompleted: options.trace.iterationsCompleted,
+    ...(options.trace.latestRunId ? { latestRunId: options.trace.latestRunId } : {}),
+    ...(options.trace.latestSummary ? { latestSummary: options.trace.latestSummary } : {}),
+    primaryBlockerCluster: options.latestGuidance?.targetCluster ?? options.latestIteration?.targetCluster ?? null,
+    iterations: options.trace.iterations
+  };
+  await writeJsonFile(path.join(options.loopDir, "cycle-record.json"), cycleRecord);
+  if (options.latestGuidance) {
+    const backtrackDecision: LoopBacktrackDecisionRecord = {
+      schemaVersion: 1,
+      loopId: options.trace.loopId,
+      targetCluster: options.latestGuidance.targetCluster ?? null,
+      deferredClusters: options.latestGuidance.deferredClusters,
+      specialists: options.latestGuidance.specialists,
+      summary: summarizeRetryDecision(options.latestGuidance)
+    };
+    await writeJsonFile(path.join(options.loopDir, "backtrack-decision.json"), backtrackDecision);
+  }
+  const summaryMarkdown = [
+    "# Loop Summary",
+    "",
+    `- status: ${options.trace.status}`,
+    `- intent: ${options.trace.intent}`,
+    `- workspace: ${options.trace.workspace}`,
+    `- iterations: ${options.trace.iterationsCompleted}/${options.trace.iterationsRequested}`,
+    `- latest run: ${options.trace.latestRunId ?? "none"}`,
+    ...(options.latestGuidance?.targetCluster ? [`- retry target: ${options.latestGuidance.targetCluster}`] : []),
+    ...(options.latestGuidance?.deferredClusters.length ? [`- deferred: ${options.latestGuidance.deferredClusters.join("; ")}`] : []),
+    "",
+    "## Iterations",
+    ...options.trace.iterations.map((iteration) =>
+      `- ${iteration.iteration}: ${iteration.status} ${iteration.runId} ${iteration.targetCluster ? `(${iteration.targetCluster})` : ""}`.trim()
+    )
+  ].join("\n");
+  await fs.writeFile(path.join(options.loopDir, "summary.md"), `${summaryMarkdown}\n`, "utf8");
+}
+
 export async function runLoop(cwd: string, args: string[] = []): Promise<void> {
   const parsed = parseLoopArgs(args);
+  const loopId = new Date().toISOString().replaceAll(":", "-");
   let priorFinalBody = "";
   let priorRunId = "";
   let succeeded = false;
   let loopWorkspace = cwd;
+  let latestGuidance: RetryGuidance | undefined;
+  const iterations: LoopIterationRecord[] = [];
   const previousNoInspect = process.env.CSTACK_NO_POSTRUN_INSPECT;
   const previousAutomatedLoop = process.env.CSTACK_AUTOMATED_LOOP;
   process.env.CSTACK_NO_POSTRUN_INSPECT = "1";
@@ -248,11 +336,29 @@ export async function runLoop(cwd: string, args: string[] = []): Promise<void> {
     if (parsed.options.repo) {
       loopWorkspace = await cloneIterationRepo(parsed.options.repo, parsed.options.branch, 1);
     }
+    const loopDir = path.join(loopWorkspace, ".cstack", "loops", loopId);
+    const trace: LoopCycleRecord = {
+      schemaVersion: 1,
+      loopId,
+      repo: parsed.options.repo ?? null,
+      branch: parsed.options.branch ?? null,
+      intent: parsed.intent,
+      workspace: loopWorkspace,
+      iterationsRequested: parsed.options.iterations,
+      iterationsCompleted: 0,
+      status: "failed",
+      iterations
+    };
+    await writeLoopArtifacts({ loopDir, trace });
     for (let iteration = 1; iteration <= parsed.options.iterations; iteration += 1) {
-      const intent =
+      latestGuidance =
         iteration === 1 || !priorFinalBody || !priorRunId
+          ? undefined
+          : await extractRetryGuidance(loopWorkspace, priorRunId, priorFinalBody);
+      const intent =
+        iteration === 1 || !priorFinalBody || !priorRunId || !latestGuidance
           ? parsed.intent
-          : buildRetryIntent(parsed.intent, await extractRetryGuidance(loopWorkspace, priorRunId, priorFinalBody));
+          : buildRetryIntent(parsed.intent, latestGuidance);
 
       process.stdout.write(
         [
@@ -270,6 +376,26 @@ export async function runLoop(cwd: string, args: string[] = []): Promise<void> {
       const run = await readRun(loopWorkspace, runId);
       priorFinalBody = await fs.readFile(run.finalPath, "utf8").catch(() => "");
       priorRunId = runId;
+      const iterationRecord: LoopIterationRecord = {
+        iteration,
+        runId,
+        status: run.status,
+        summary: run.lastActivity ?? run.error ?? "completed",
+        ...(latestGuidance?.targetCluster ? { targetCluster: latestGuidance.targetCluster } : {}),
+        deferredClusters: latestGuidance?.deferredClusters ?? [],
+        specialists: latestGuidance?.specialists ?? []
+      };
+      iterations.push(iterationRecord);
+      trace.iterationsCompleted = iteration;
+      trace.latestRunId = runId;
+      trace.latestSummary = iterationRecord.summary;
+      trace.status = run.status === "completed" ? "completed" : "failed";
+      await writeLoopArtifacts({
+        loopDir,
+        trace,
+        ...(latestGuidance ? { latestGuidance } : {}),
+        latestIteration: iterationRecord
+      });
 
       process.stdout.write(
         [
@@ -284,6 +410,7 @@ export async function runLoop(cwd: string, args: string[] = []): Promise<void> {
         break;
       }
     }
+    process.stdout.write(`Loop artifacts: ${path.relative(cwd, path.join(loopWorkspace, ".cstack", "loops", loopId))}\n`);
   } finally {
     if (previousNoInspect === undefined) {
       delete process.env.CSTACK_NO_POSTRUN_INSPECT;
