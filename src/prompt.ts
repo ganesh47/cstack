@@ -903,6 +903,7 @@ export async function buildDeliverValidationLeadPrompt(options: {
       "- classify missing tools, registry failures, or network failures as explicit external blockers instead of repo defects",
       "- avoid recommending tools with weak repo fit just because they are popular",
       "- preserve platform constraints such as macOS, emulators, or Docker requirements",
+      "- during long edit, install, or validation phases, emit short human-readable progress updates at least every 30 seconds so the run is not mistaken for stalled",
       "- return valid JSON only, with no markdown fences or extra commentary",
       "",
       "Required JSON shape:",

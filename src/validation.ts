@@ -102,7 +102,7 @@ export interface DeliverValidationExecutionResult {
 type ValidationSpecialistSelection = Array<{ name: SpecialistName; reason: string; selected: boolean }>;
 
 const VALIDATION_STALE_SESSION_TIMEOUT_SECONDS = 20;
-const VALIDATION_NO_PROGRESS_TIMEOUT_SECONDS = 45;
+const VALIDATION_NO_PROGRESS_TIMEOUT_SECONDS = 180;
 
 async function writeJson(filePath: string, value: unknown): Promise<void> {
   await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
@@ -137,7 +137,8 @@ async function readTextFile(filePath: string): Promise<string> {
 
 function resolveValidationNoProgressTimeoutSeconds(timeoutSeconds?: number): number | undefined {
   if (typeof timeoutSeconds === "number" && timeoutSeconds > 0) {
-    return Math.max(1, Math.min(timeoutSeconds, VALIDATION_NO_PROGRESS_TIMEOUT_SECONDS));
+    const reservedTailSeconds = 60;
+    return Math.max(1, Math.min(Math.max(1, timeoutSeconds - reservedTailSeconds), VALIDATION_NO_PROGRESS_TIMEOUT_SECONDS));
   }
   return VALIDATION_NO_PROGRESS_TIMEOUT_SECONDS;
 }
