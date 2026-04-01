@@ -173,6 +173,9 @@ async function extractRetryGuidance(cwd: string, runId: string, previousFinalBod
   }>(path.join(childRunDir, "stages", "build", "artifacts", "failure-diagnosis.json"));
   const validationPlan = await readJsonFile<{
     summary?: string;
+    classificationReason?: string;
+    selectedScope?: string[];
+    deferredScope?: string[];
     coverage?: { gaps?: string[] };
   }>(path.join(childRunDir, "stages", "validation", "validation-plan.json"));
   const buildStderr = await fs
@@ -192,26 +195,35 @@ async function extractRetryGuidance(cwd: string, runId: string, previousFinalBod
     .join(" ");
 
   const targetCluster =
+    validationPlan?.classificationReason === "validation drift detected"
+      ? "validation drift detected"
+      : validationPlan?.deferredScope?.[0] ??
     reviewVerdict?.recommendedNextSlices?.[0] ??
     reviewVerdict?.gapClusters?.[0]?.title ??
     buildFailureDiagnosis?.recommendedActions?.[0] ??
     validationPlan?.coverage?.gaps?.[0];
   const deferredClusters = [
+    ...(validationPlan?.deferredScope ?? []),
     ...(reviewVerdict?.recommendedNextSlices ?? []),
     ...(reviewVerdict?.gapClusters?.map((cluster) => cluster.title ?? "").filter(Boolean) ?? []),
     ...(validationPlan?.coverage?.gaps ?? [])
   ].filter((cluster, index, values) => Boolean(cluster) && cluster !== targetCluster && values.indexOf(cluster) === index);
   const guidanceSummary =
+    validationPlan?.classificationReason === "validation drift detected"
+      ? "Previous retry failed because validation drifted into repo mutations instead of staying read-only and bounded."
+      : undefined;
+  const resolvedSummary =
+    guidanceSummary ??
     reviewVerdict?.summary ??
     validationPlan?.summary ??
     buildFailureDiagnosis?.summary ??
     childRun.lastActivity ??
     baseSummary ??
     "No prior summary was available.";
-  const specialists = inferRetrySpecialists([targetCluster, guidanceSummary].filter(Boolean).join("\n"));
+  const specialists = inferRetrySpecialists([targetCluster, resolvedSummary].filter(Boolean).join("\n"));
 
   return {
-    summary: [guidanceSummary, patchHintSummary].filter(Boolean).join("\n"),
+    summary: [resolvedSummary, patchHintSummary].filter(Boolean).join("\n"),
     ...(targetCluster ? { targetCluster } : {}),
     deferredClusters,
     specialists

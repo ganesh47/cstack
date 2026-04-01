@@ -175,6 +175,8 @@ describe("runDeliver", () => {
     delete process.env.FAKE_CODEX_VALIDATION_SPECIALIST_STALL_MS;
     delete process.env.FAKE_CODEX_NO_FINAL_VALIDATION;
     delete process.env.FAKE_CODEX_NO_LOCAL_VALIDATION_COMMANDS;
+    delete process.env.FAKE_CODEX_VALIDATION_MANY_COMMANDS;
+    delete process.env.FAKE_CODEX_VALIDATION_MUTATE_REPO;
     delete process.env.FAKE_CODEX_HANG_AFTER_SESSION_MS;
     delete process.env.FAKE_CODEX_NO_FINAL_DELIVER_REVIEW;
     delete process.env.FAKE_CODEX_NO_FINAL_SHIP;
@@ -635,6 +637,95 @@ describe("runDeliver", () => {
     expect(validationFinal).toContain("Recovery reason: Validation lead did not write final output");
     expect(deliverySummary).toContain("- status: partial");
     expect(deliverySummary).toContain("- outcome category: partial");
+  }, 60_000);
+
+  it("blocks validation when the validation lead mutates the repository", async () => {
+    process.env.FAKE_CODEX_VALIDATION_MUTATE_REPO = "1";
+    await writeGitHubFixture({
+      repoView: {
+        nameWithOwner: "ganesh47/cstack",
+        defaultBranchRef: { name: "main" }
+      },
+      createdPullRequest: {
+        reviewDecision: "APPROVED",
+        mergeStateStatus: "CLEAN"
+      },
+      issues: [],
+      prChecks: [],
+      actions: [],
+      security: {
+        dependabot: [],
+        codeScanning: []
+      }
+    });
+
+    await runDeliver(repoDir, ["Deliver a slice where validation drifts into repo mutation"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const validationPlan = JSON.parse(
+      await fs.readFile(path.join(runDir, "stages", "validation", "validation-plan.json"), "utf8")
+    ) as { status: string; outcomeCategory: string; classificationReason: string; coverage: { gaps: string[] } };
+    const coverageSummary = JSON.parse(
+      await fs.readFile(path.join(runDir, "stages", "validation", "artifacts", "coverage-summary.json"), "utf8")
+    ) as { outcomeCategory: string; gaps: string[]; classificationReason: string };
+
+    expect(run.status).toBe("failed");
+    expect(validationPlan.status).toBe("blocked");
+    expect(validationPlan.outcomeCategory).toBe("blocked-by-validation-drift");
+    expect(validationPlan.classificationReason).toBe("validation drift detected");
+    expect(validationPlan.coverage.gaps.join("\n")).toContain("Validation mutated the workspace");
+    expect(coverageSummary.outcomeCategory).toBe("blocked-by-validation-drift");
+    expect(coverageSummary.classificationReason).toBe("validation drift detected");
+  }, 60_000);
+
+  it("bounds oversized validation plans and records deferred scope", async () => {
+    process.env.FAKE_CODEX_VALIDATION_MANY_COMMANDS = "1";
+    await writeGitHubFixture({
+      repoView: {
+        nameWithOwner: "ganesh47/cstack",
+        defaultBranchRef: { name: "main" }
+      },
+      createdPullRequest: {
+        reviewDecision: "APPROVED",
+        mergeStateStatus: "CLEAN"
+      },
+      issues: [],
+      prChecks: [],
+      actions: [],
+      security: {
+        dependabot: [],
+        codeScanning: []
+      }
+    });
+
+    await runDeliver(repoDir, ["Deliver a slice where validation proposes too much scope"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const validationPlan = JSON.parse(
+      await fs.readFile(path.join(runDir, "stages", "validation", "validation-plan.json"), "utf8")
+    ) as {
+      boundedScope: boolean;
+      selectedScope: string[];
+      deferredScope: string[];
+      localValidation: { commands: string[] };
+      ciValidation: { jobs: Array<{ name: string; commands: string[] }> };
+    };
+    const coverageSummary = JSON.parse(
+      await fs.readFile(path.join(runDir, "stages", "validation", "artifacts", "coverage-summary.json"), "utf8")
+    ) as { deferredScope: string[]; selectedScope: string[] };
+
+    expect(validationPlan.boundedScope).toBe(true);
+    expect(validationPlan.localValidation.commands.length).toBeLessThanOrEqual(3);
+    expect(validationPlan.ciValidation.jobs.length).toBeLessThanOrEqual(2);
+    expect(validationPlan.ciValidation.jobs.every((job) => job.commands.length <= 2)).toBe(true);
+    expect(validationPlan.deferredScope.length).toBeGreaterThan(0);
+    expect(validationPlan.selectedScope.length).toBeGreaterThan(0);
+    expect(coverageSummary.deferredScope).toEqual(validationPlan.deferredScope);
+    expect(coverageSummary.selectedScope).toEqual(validationPlan.selectedScope);
   }, 60_000);
 
   it("fails closed when the ship lead exits without writing final output", async () => {

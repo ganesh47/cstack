@@ -52,6 +52,7 @@ describe("runLoop", () => {
 
   afterEach(async () => {
     delete process.env.FAKE_CODEX_FAIL_BUILD;
+    delete process.env.FAKE_CODEX_VALIDATION_MUTATE_REPO;
     await fs.rm(repoDir, { recursive: true, force: true });
   });
 
@@ -91,5 +92,24 @@ describe("runLoop", () => {
     expect(cycleRecord.iterationsCompleted).toBe(2);
     expect(cycleRecord.primaryBlockerCluster).toBeTruthy();
     expect(backtrackDecision.summary).toContain("Target cluster:");
+  }, 120_000);
+
+  it("records a completed cycle without retry guidance when validation drift is contained in the first pass", async () => {
+    process.env.FAKE_CODEX_VALIDATION_MUTATE_REPO = "1";
+
+    await runLoop(repoDir, ["--iterations", "2", "What are the gaps in this project? Can you work on closing the gaps?"]);
+
+    const loopRoot = path.join(repoDir, ".cstack", "loops");
+    const loopIds = await fs.readdir(loopRoot);
+    const loopDir = path.join(loopRoot, loopIds[0]!);
+    const cycleRecord = JSON.parse(await fs.readFile(path.join(loopDir, "cycle-record.json"), "utf8")) as {
+      status: string;
+      primaryBlockerCluster: string | null;
+    };
+    const backtrackDecisionPath = path.join(loopDir, "backtrack-decision.json");
+
+    expect(cycleRecord.status).toBe("completed");
+    expect(cycleRecord.primaryBlockerCluster).toBeNull();
+    await expect(fs.access(backtrackDecisionPath)).rejects.toThrow(/ENOENT/);
   }, 120_000);
 });

@@ -916,9 +916,13 @@ export interface ValidationLayerPlan {
 
 export interface DeliverValidationPlan {
   status: "ready" | "partial" | "blocked";
-  outcomeCategory: "ready" | "partial" | "blocked-by-build" | "blocked-by-validation";
+  outcomeCategory: "ready" | "partial" | "blocked-by-build" | "blocked-by-validation" | "blocked-by-validation-drift";
   summary: string;
   profileSummary: string;
+  boundedScope: boolean;
+  selectedScope: string[];
+  deferredScope: string[];
+  classificationReason: string;
   layers: ValidationLayerPlan[];
   selectedSpecialists: Array<{
     name: SpecialistName;
@@ -981,6 +985,9 @@ export interface ValidationCoverageSummary {
   signals: string[];
   gaps: string[];
   localValidationStatus: DeliverValidationLocalRecord["status"];
+  selectedScope: string[];
+  deferredScope: string[];
+  classificationReason: string;
 }
 
 export type GitHubGateStatus = "ready" | "blocked" | "not-applicable" | "unknown";

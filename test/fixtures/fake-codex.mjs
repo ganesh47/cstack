@@ -161,8 +161,54 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
     process.stderr.write("synthetic validation failure without final output\n");
     process.exit(1);
   }
+  if (envValue("FAKE_CODEX_VALIDATION_MUTATE_REPO") === "1") {
+    await writeFile(path.join(process.cwd(), "README.md"), "# mutated during validation\n", "utf8");
+  }
   const validationStatus = envValue("FAKE_CODEX_VALIDATION_STATUS") ?? "ready";
   const validationCommand = envValue("FAKE_CODEX_VALIDATION_COMMAND") ?? "node -e \"process.stdout.write('deliver verify ok')\"";
+  const manyCommands = envValue("FAKE_CODEX_VALIDATION_MANY_COMMANDS") === "1";
+  const localCommands = manyCommands
+    ? [
+        validationCommand,
+        "npm run lint",
+        "npm run typecheck",
+        "npm test",
+        "npm run ci:e2e"
+      ]
+    : [validationCommand];
+  const ciJobs = manyCommands
+    ? [
+        {
+          name: "validation",
+          runner: "ubuntu-latest",
+          purpose: "Run selected validation commands.",
+          commands: localCommands,
+          artifacts: ["test-reports"]
+        },
+        {
+          name: "contract-sync",
+          runner: "ubuntu-latest",
+          purpose: "Check contract alignment.",
+          commands: ["npm run validate:contract-sync", "npm run validate:api", "npm run test:integration"],
+          artifacts: ["contract-report"]
+        },
+        {
+          name: "compose-smoke",
+          runner: "ubuntu-latest",
+          purpose: "Validate compose stacks.",
+          commands: ["npm run validate:compose"],
+          artifacts: ["compose-report"]
+        }
+      ]
+    : [
+        {
+          name: "validation",
+          runner: "ubuntu-latest",
+          purpose: "Run selected validation commands.",
+          commands: [validationCommand],
+          artifacts: ["test-reports"]
+        }
+      ];
   const noLocalValidationCommands = envValue("FAKE_CODEX_NO_LOCAL_VALIDATION_COMMANDS") === "1";
   const validationGap = validationStatus === "partial" ? ["Validation evidence intentionally missing from this fake fixture to force partial workflow handling."] : [];
   body = JSON.stringify(
@@ -173,6 +219,10 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
           ? "Validation plan completed with bounded local and CI validation."
           : "Validation evidence is intentionally incomplete for test control.",
       profileSummary: "Detected a JavaScript/TypeScript repository with GitHub Actions and packaging validation needs.",
+      boundedScope: true,
+      selectedScope: ["local command: node -e \"process.stdout.write('deliver verify ok')\"", "ci job: validation"],
+      deferredScope: manyCommands ? ["local command: npm run typecheck", "ci job: compose-smoke"] : [],
+      classificationReason: "bounded validation first slice",
       layers: [
         {
           name: "static",
@@ -180,8 +230,8 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
           status: "ready",
           rationale: "Static checks catch syntax, types, and workflow errors early.",
           selectedTools: ["actionlint", "zizmor"],
-          localCommands: noLocalValidationCommands ? [] : [validationCommand],
-          ciCommands: [validationCommand],
+          localCommands: noLocalValidationCommands ? [] : localCommands,
+          ciCommands: localCommands,
           coverageIntent: ["type and workflow correctness"],
           notes: []
         },
@@ -191,8 +241,8 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
           status: "ready",
           rationale: "Unit checks protect the common regression surface.",
           selectedTools: ["vitest"],
-          localCommands: noLocalValidationCommands ? [] : [validationCommand],
-          ciCommands: [validationCommand],
+          localCommands: noLocalValidationCommands ? [] : localCommands,
+          ciCommands: localCommands,
           coverageIntent: ["behavioral regressions"],
           notes: []
         },
@@ -224,29 +274,21 @@ if (prompt.includes("track in a bounded `cstack discover` research run")) {
           status: "ready",
           rationale: "Build and packaging smoke should stay in the delivery path.",
           selectedTools: ["github_actions"],
-          localCommands: noLocalValidationCommands ? [] : [validationCommand],
-          ciCommands: [validationCommand],
+          localCommands: noLocalValidationCommands ? [] : localCommands,
+          ciCommands: localCommands,
           coverageIntent: ["packaging confidence"],
           notes: []
         }
       ],
       selectedSpecialists: [],
       localValidation: {
-        commands: [validationCommand],
+        commands: noLocalValidationCommands ? [] : localCommands,
         prerequisites: ["linux-default"],
         notes: []
       },
       ciValidation: {
         workflowFiles: [".github/workflows/release.yml"],
-        jobs: [
-          {
-            name: "validation",
-            runner: "ubuntu-latest",
-            purpose: "Run selected validation commands.",
-            commands: [validationCommand],
-            artifacts: ["test-reports"]
-          }
-        ],
+        jobs: ciJobs,
         notes: []
       },
       coverage: {

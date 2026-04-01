@@ -451,6 +451,10 @@ function createBlockedValidationExecution(buildExecution: BuildExecutionResult):
       outcomeCategory: "blocked-by-build",
       summary,
       profileSummary: "Validation profiling was skipped because build failed first.",
+      boundedScope: true,
+      selectedScope: [],
+      deferredScope: [],
+      classificationReason: "build failed before validation",
       layers: [],
       selectedSpecialists: [],
       localValidation: {
@@ -488,7 +492,10 @@ function createBlockedValidationExecution(buildExecution: BuildExecutionResult):
       summary: "No validation evidence was collected because build failed first.",
       signals: [],
       gaps: ["Build failed before validation could run."],
-      localValidationStatus: "not-run"
+      localValidationStatus: "not-run",
+      selectedScope: [],
+      deferredScope: [],
+      classificationReason: "build failed before validation"
     },
     selectedSpecialists: [],
     specialistExecutions: [],
@@ -814,6 +821,10 @@ function createFailedValidationExecution(error: string): DeliverValidationExecut
       outcomeCategory: "blocked-by-validation",
       summary,
       profileSummary: summary,
+      boundedScope: true,
+      selectedScope: [],
+      deferredScope: [],
+      classificationReason: "validation stage execution failed",
       layers: [],
       selectedSpecialists: [],
       localValidation: {
@@ -851,7 +862,10 @@ function createFailedValidationExecution(error: string): DeliverValidationExecut
       summary,
       signals: [],
       gaps: [summary],
-      localValidationStatus: "not-run"
+      localValidationStatus: "not-run",
+      selectedScope: [],
+      deferredScope: [],
+      classificationReason: "validation stage execution failed"
     },
     selectedSpecialists: [],
     specialistExecutions: [],

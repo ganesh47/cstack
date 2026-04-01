@@ -103,6 +103,9 @@ type ValidationSpecialistSelection = Array<{ name: SpecialistName; reason: strin
 
 const VALIDATION_STALE_SESSION_TIMEOUT_SECONDS = 20;
 const VALIDATION_NO_PROGRESS_TIMEOUT_SECONDS = 180;
+const MAX_LOCAL_VALIDATION_COMMANDS = 3;
+const MAX_CI_VALIDATION_JOBS = 2;
+const MAX_CI_COMMANDS_PER_JOB = 2;
 
 async function writeJson(filePath: string, value: unknown): Promise<void> {
   await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
@@ -141,6 +144,66 @@ function resolveValidationNoProgressTimeoutSeconds(timeoutSeconds?: number): num
     return Math.max(1, Math.min(Math.max(1, timeoutSeconds - reservedTailSeconds), VALIDATION_NO_PROGRESS_TIMEOUT_SECONDS));
   }
   return VALIDATION_NO_PROGRESS_TIMEOUT_SECONDS;
+}
+
+interface ValidationWorkspaceSnapshot {
+  trackedDiff: string;
+  untrackedFiles: string[];
+}
+
+interface ValidationWorkspaceDrift {
+  detected: boolean;
+  changedFiles: string[];
+  summary?: string;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return values.filter((value, index) => Boolean(value) && values.indexOf(value) === index);
+}
+
+async function captureValidationWorkspaceSnapshot(cwd: string): Promise<ValidationWorkspaceSnapshot | null> {
+  try {
+    await execFileAsync("git", ["rev-parse", "--is-inside-work-tree"], { cwd });
+  } catch {
+    return null;
+  }
+
+  const [{ stdout: trackedDiff }, { stdout: untrackedRaw }] = await Promise.all([
+    execFileAsync("git", ["diff", "--no-ext-diff", "--binary", "--"], { cwd, maxBuffer: 20 * 1024 * 1024 }),
+    execFileAsync("git", ["ls-files", "--others", "--exclude-standard"], { cwd, maxBuffer: 20 * 1024 * 1024 })
+  ]);
+
+  return {
+    trackedDiff,
+    untrackedFiles: untrackedRaw
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => Boolean(line) && !line.startsWith(".cstack/runs/"))
+  };
+}
+
+function detectValidationWorkspaceDrift(
+  before: ValidationWorkspaceSnapshot | null,
+  after: ValidationWorkspaceSnapshot | null
+): ValidationWorkspaceDrift {
+  if (!before || !after) {
+    return { detected: false, changedFiles: [] };
+  }
+
+  const changedFiles = uniqueStrings([
+    ...(before.trackedDiff === after.trackedDiff ? [] : ["tracked-diff-changed"]),
+    ...after.untrackedFiles.filter((file) => !before.untrackedFiles.includes(file))
+  ]);
+
+  if (changedFiles.length === 0) {
+    return { detected: false, changedFiles: [] };
+  }
+
+  return {
+    detected: true,
+    changedFiles,
+    summary: `Validation mutated the workspace outside stage artifacts: ${changedFiles.join(", ")}`
+  };
 }
 
 function buildValidationSpecialistFailureBody(options: {
@@ -1054,6 +1117,10 @@ function buildInitialValidationPlan(profile: ValidationRepoProfile, toolResearch
     outcomeCategory: localCommands.length > 0 ? "ready" : "partial",
     summary: `Validation planning selected ${layers.filter((layer) => layer.selected).length} pyramid layers.`,
     profileSummary: `Surfaces: ${profile.surfaces.join(", ") || "unknown"}; build systems: ${profile.buildSystems.join(", ") || "unknown"}; workspace targets: ${profile.workspaceTargets.length}.`,
+    boundedScope: true,
+    selectedScope: uniqueStrings(localCommands).slice(0, MAX_LOCAL_VALIDATION_COMMANDS).map((command) => `local command: ${command}`),
+    deferredScope: [],
+    classificationReason: "bounded validation first slice",
     layers,
     selectedSpecialists: selectedSpecialists.filter((entry) => entry.selected).map((entry) => ({
       name: entry.name,
@@ -1397,9 +1464,12 @@ function renderCoverageGapsMarkdown(plan: DeliverValidationPlan, localValidation
 }
 
 function deriveValidationOutcomeCategory(
-  plan: Pick<DeliverValidationPlan, "status" | "coverage" | "localValidation" | "unsupported">,
+  plan: Pick<DeliverValidationPlan, "status" | "coverage" | "localValidation" | "unsupported" | "classificationReason">,
   localValidationRecord: DeliverValidationLocalRecord
 ): DeliverValidationPlan["outcomeCategory"] {
+  if (plan.classificationReason === "validation drift detected") {
+    return "blocked-by-validation-drift";
+  }
   if (localValidationRecord.status === "failed" || (localValidationRecord.blockerCategories?.length ?? 0) > 0) {
     return "blocked-by-validation";
   }
@@ -1440,7 +1510,9 @@ function buildCoverageSummary(plan: DeliverValidationPlan, localValidationRecord
     outcomeCategory: plan.outcomeCategory,
     confidence: plan.coverage.confidence,
     summary:
-      plan.outcomeCategory === "blocked-by-validation"
+      plan.outcomeCategory === "blocked-by-validation-drift"
+        ? `Validation drifted outside its bounded scope. ${plan.coverage.summary}`
+        : plan.outcomeCategory === "blocked-by-validation"
         ? `Validation commands or validation-specific blockers prevented a ready result. ${plan.coverage.summary}`
         : plan.coverage.summary,
     signals: [
@@ -1458,11 +1530,17 @@ function buildCoverageSummary(plan: DeliverValidationPlan, localValidationRecord
       ...(localValidationRecord.blockerCategories?.map((blocker) => `Local validation blocked by ${blocker}.`) ?? []),
       ...plan.unsupported
     ],
-    localValidationStatus: localValidationRecord.status
+    localValidationStatus: localValidationRecord.status,
+    selectedScope: plan.selectedScope,
+    deferredScope: plan.deferredScope,
+    classificationReason: plan.classificationReason
   };
 }
 
 function finalizeValidationPlanStatus(plan: DeliverValidationPlan, localValidationRecord: DeliverValidationLocalRecord): DeliverValidationPlan["status"] {
+  if (plan.classificationReason === "validation drift detected") {
+    return "blocked";
+  }
   if (localValidationRecord.status === "failed") {
     return "blocked";
   }
@@ -1470,6 +1548,139 @@ function finalizeValidationPlanStatus(plan: DeliverValidationPlan, localValidati
     return plan.localValidation.commands.length > 0 ? "partial" : "blocked";
   }
   return plan.localValidation.commands.length > 0 ? "ready" : plan.status;
+}
+
+function normalizeValidationPlanBoundaries(plan: DeliverValidationPlan): DeliverValidationPlan {
+  const retainedLocalCommands = uniqueStrings(plan.localValidation.commands).slice(0, MAX_LOCAL_VALIDATION_COMMANDS);
+  const deferredLocalCommands = uniqueStrings(plan.localValidation.commands).slice(MAX_LOCAL_VALIDATION_COMMANDS);
+  const retainedJobs = plan.ciValidation.jobs.slice(0, MAX_CI_VALIDATION_JOBS).map((job) => ({
+    ...job,
+    commands: uniqueStrings(job.commands).slice(0, MAX_CI_COMMANDS_PER_JOB)
+  }));
+  const deferredJobs = plan.ciValidation.jobs.slice(MAX_CI_VALIDATION_JOBS).map((job) => `ci job: ${job.name}`);
+  const deferredJobCommands = plan.ciValidation.jobs
+    .slice(0, MAX_CI_VALIDATION_JOBS)
+    .flatMap((job) => uniqueStrings(job.commands).slice(MAX_CI_COMMANDS_PER_JOB).map((command) => `ci command (${job.name}): ${command}`));
+  const allowedLocalCommands = new Set(retainedLocalCommands);
+  const allowedCiCommands = new Set(retainedJobs.flatMap((job) => job.commands));
+  const deferredScope = [
+    ...deferredLocalCommands.map((command) => `local command: ${command}`),
+    ...deferredJobs,
+    ...deferredJobCommands
+  ];
+  const boundedPlan: DeliverValidationPlan = {
+    ...plan,
+    boundedScope: true,
+    selectedScope: [
+      ...retainedLocalCommands.map((command) => `local command: ${command}`),
+      ...retainedJobs.map((job) => `ci job: ${job.name}`)
+    ],
+    deferredScope,
+    classificationReason: plan.classificationReason || "bounded validation first slice",
+    layers: plan.layers.map((layer) => ({
+      ...layer,
+      localCommands: layer.localCommands.filter((command) => allowedLocalCommands.has(command)),
+      ciCommands: layer.ciCommands.filter((command) => allowedCiCommands.has(command)),
+      notes: [
+        ...(layer.notes ?? []),
+        ...(deferredScope.length > 0 && layer.selected ? ["Additional validation scope was deferred to keep this stage bounded."] : [])
+      ]
+    })),
+    localValidation: {
+      ...plan.localValidation,
+      commands: retainedLocalCommands,
+      notes: [
+        ...plan.localValidation.notes,
+        ...(deferredScope.length > 0 ? ["Validation commands were trimmed to a bounded first slice."] : [])
+      ]
+    },
+    ciValidation: {
+      ...plan.ciValidation,
+      jobs: retainedJobs,
+      notes: [
+        ...plan.ciValidation.notes,
+        ...(deferredScope.length > 0 ? ["Deferred extra CI validation jobs or commands to a follow-up slice."] : [])
+      ]
+    },
+    coverage: {
+      ...plan.coverage,
+      summary:
+        deferredScope.length > 0
+          ? `${plan.coverage.summary} Additional validation scope was deferred to keep this stage bounded.`
+          : plan.coverage.summary,
+      gaps: [...plan.coverage.gaps, ...deferredScope.map((entry) => `Deferred validation scope: ${entry}`)]
+    },
+    recommendedChanges: [
+      ...plan.recommendedChanges,
+      ...(deferredScope.length > 0 ? ["Run the deferred validation scope in a follow-up retry instead of expanding this validation pass."] : [])
+    ]
+  };
+  return boundedPlan;
+}
+
+function applyValidationWorkspaceDrift(
+  result: DeliverValidationExecutionResult,
+  drift: ValidationWorkspaceDrift
+): DeliverValidationExecutionResult {
+  if (!drift.detected) {
+    return result;
+  }
+
+  const validationPlan: DeliverValidationPlan = {
+    ...result.validationPlan,
+    status: "blocked",
+    outcomeCategory: "blocked-by-validation-drift",
+    summary: drift.summary ?? result.validationPlan.summary,
+    classificationReason: "validation drift detected",
+    coverage: {
+      ...result.validationPlan.coverage,
+      summary: "Validation mutated the workspace outside stage artifacts and cannot be accepted as a bounded validation result.",
+      gaps: [...result.validationPlan.coverage.gaps, ...(drift.summary ? [drift.summary] : [])]
+    },
+    recommendedChanges: [
+      ...result.validationPlan.recommendedChanges,
+      "Keep validation read-only and defer repo changes to build or a later retry."
+    ],
+    reportMarkdown: [
+      "# Validation Summary",
+      "",
+      drift.summary ?? "Validation drift detected.",
+      "",
+      "## Changed files",
+      ...drift.changedFiles.map((file) => `- ${file}`),
+      "",
+      "## Deferred scope",
+      ...(result.validationPlan.deferredScope.length > 0 ? result.validationPlan.deferredScope.map((entry) => `- ${entry}`) : ["- none"])
+    ].join("\n")
+  };
+  const localValidationRecord: DeliverValidationLocalRecord = {
+    ...result.localValidationRecord,
+    notes: [result.localValidationRecord.notes, drift.summary].filter(Boolean).join(" ")
+  };
+
+  return {
+    ...result,
+    validationPlan,
+    localValidationRecord,
+    coverageSummary: buildCoverageSummary(validationPlan, localValidationRecord),
+    finalBody: validationPlan.reportMarkdown
+  };
+}
+
+async function persistValidationExecutionArtifacts(
+  options: DeliverValidationExecutionOptions,
+  capabilityArtifact: CapabilityUsageRecord,
+  result: DeliverValidationExecutionResult
+): Promise<void> {
+  await fs.writeFile(options.paths.finalPath, result.finalBody, "utf8");
+  await writeJson(path.join(options.paths.stageDir, "artifacts", "capabilities.json"), capabilityArtifact);
+  await writeJson(options.paths.validationPlanPath, result.validationPlan);
+  await fs.writeFile(options.paths.testPyramidPath, result.validationPlan.pyramidMarkdown, "utf8");
+  await writeJson(options.paths.coverageSummaryPath, result.coverageSummary);
+  await fs.writeFile(options.paths.coverageGapsPath, renderCoverageGapsMarkdown(result.validationPlan, result.localValidationRecord), "utf8");
+  await writeJson(options.paths.localValidationPath, result.localValidationRecord);
+  await writeJson(options.paths.ciValidationPath, result.validationPlan.ciValidation);
+  await fs.writeFile(options.paths.githubActionsPlanPath, result.validationPlan.githubActionsPlanMarkdown, "utf8");
 }
 
 function buildRecoveredValidationFinalBody(options: {
@@ -1504,7 +1715,6 @@ function buildRecoveredValidationFinalBody(options: {
 async function recoverValidationLeadFailure(options: {
   cwd: string;
   stageDir: string;
-  finalPath: string;
   repoProfile: ValidationRepoProfile;
   toolResearch: ValidationToolResearch;
   initialPlan: DeliverValidationPlan;
@@ -1604,33 +1814,13 @@ async function recoverValidationLeadFailure(options: {
     availableCapabilities: options.capabilityRecord.available,
     selectedToolNames
   });
-  const capabilityArtifact: CapabilityUsageRecord = {
-    ...options.capabilityRecord,
-    used: observedCapabilities,
-    notes: [
-      ...(options.capabilityRecord.notes ?? []),
-      "used capabilities are derived from executed local validation commands and observed CI validation job coverage.",
-      "validation lead recovery synthesized the plan from inferred defaults."
-    ]
-  };
-  const coverageSummary = buildCoverageSummary(normalizedPlan, localValidationRecord);
-
-  await fs.writeFile(options.finalPath, finalBody, "utf8");
-  await writeJson(path.join(options.stageDir, "artifacts", "capabilities.json"), capabilityArtifact);
-  await writeJson(path.join(options.stageDir, "validation-plan.json"), normalizedPlan);
-  await fs.writeFile(path.join(options.stageDir, "artifacts", "test-pyramid.md"), normalizedPlan.pyramidMarkdown, "utf8");
-  await writeJson(path.join(options.stageDir, "artifacts", "coverage-summary.json"), coverageSummary);
-  await fs.writeFile(path.join(options.stageDir, "artifacts", "coverage-gaps.md"), renderCoverageGapsMarkdown(normalizedPlan, localValidationRecord), "utf8");
-  await writeJson(path.join(options.stageDir, "artifacts", "local-validation.json"), localValidationRecord);
-  await writeJson(path.join(options.stageDir, "artifacts", "ci-validation.json"), normalizedPlan.ciValidation);
-  await fs.writeFile(path.join(options.stageDir, "artifacts", "github-actions-plan.md"), normalizedPlan.githubActionsPlanMarkdown, "utf8");
 
   return {
     repoProfile: options.repoProfile,
     toolResearch: options.toolResearch,
     validationPlan: normalizedPlan,
     localValidationRecord,
-    coverageSummary,
+    coverageSummary: buildCoverageSummary(normalizedPlan, localValidationRecord),
     selectedSpecialists: options.selectedSpecialists,
     specialistExecutions: options.specialistExecutions,
     finalBody
@@ -1651,7 +1841,10 @@ export async function runDeliverValidationExecution(options: DeliverValidationEx
     toolResearch
   });
   const selectedSpecialists = selectValidationSpecialists(repoProfile, options.input);
-  const initialPlan = buildInitialValidationPlan(repoProfile, toolResearch, options.buildVerificationRecord, selectedSpecialists);
+  const initialPlan = normalizeValidationPlanBoundaries(
+    buildInitialValidationPlan(repoProfile, toolResearch, options.buildVerificationRecord, selectedSpecialists)
+  );
+  const workspaceSnapshotBefore = await captureValidationWorkspaceSnapshot(options.cwd);
 
   await writeJson(options.paths.repoProfilePath, repoProfile);
   await writeJson(options.paths.toolResearchPath, toolResearch);
@@ -1684,14 +1877,20 @@ export async function runDeliverValidationExecution(options: DeliverValidationEx
     });
   }
 
+  let executionResult: DeliverValidationExecutionResult;
+
   if (specialistExecutions.some((entry) => entry.status === "failed")) {
-    return createBlockedValidationExecutionFromSpecialists({
+    executionResult = createBlockedValidationExecutionFromSpecialists({
       repoProfile,
       toolResearch,
       initialPlan,
       selectedSpecialists,
       specialistExecutions
     });
+    const workspaceSnapshotAfter = await captureValidationWorkspaceSnapshot(options.cwd);
+    executionResult = applyValidationWorkspaceDrift(executionResult, detectValidationWorkspaceDrift(workspaceSnapshotBefore, workspaceSnapshotAfter));
+    await persistValidationExecutionArtifacts(options, capabilityRecord, executionResult);
+    return executionResult;
   }
 
   const leadPrompt = await buildDeliverValidationLeadPrompt({
@@ -1736,10 +1935,9 @@ export async function runDeliverValidationExecution(options: DeliverValidationEx
     validationPlan = parseJson<DeliverValidationPlan>(finalBody, "Validation lead");
   } catch (error) {
     const leadFailure = error instanceof Error ? error : new Error(String(error));
-    return recoverValidationLeadFailure({
+    executionResult = await recoverValidationLeadFailure({
       cwd: options.cwd,
       stageDir: options.paths.stageDir,
-      finalPath: options.paths.finalPath,
       repoProfile,
       toolResearch,
       initialPlan,
@@ -1748,6 +1946,20 @@ export async function runDeliverValidationExecution(options: DeliverValidationEx
       capabilityRecord,
       leadFailure
     });
+    const recoveryCapabilityArtifact: CapabilityUsageRecord = {
+      ...capabilityRecord,
+      used: inferUsedValidationCapabilities({
+        localValidationRecord: executionResult.localValidationRecord,
+        validationPlan: executionResult.validationPlan,
+        availableCapabilities: capabilityRecord.available,
+        selectedToolNames: toolResearch.candidates.filter((candidate) => candidate.selected).map((candidate) => candidate.tool)
+      }),
+      notes: [...(capabilityRecord.notes ?? []), "validation lead recovery synthesized the plan from inferred defaults."]
+    };
+    const workspaceSnapshotAfter = await captureValidationWorkspaceSnapshot(options.cwd);
+    executionResult = applyValidationWorkspaceDrift(executionResult, detectValidationWorkspaceDrift(workspaceSnapshotBefore, workspaceSnapshotAfter));
+    await persistValidationExecutionArtifacts(options, recoveryCapabilityArtifact, executionResult);
+    return executionResult;
   }
   const acceptedByName = new Map(validationPlan.selectedSpecialists.map((entry) => [entry.name, entry]));
   for (let index = 0; index < specialistExecutions.length; index += 1) {
@@ -1775,18 +1987,19 @@ export async function runDeliverValidationExecution(options: DeliverValidationEx
           results: [],
           notes: "Local validation commands were skipped because the validation lead did not complete successfully."
         };
+  const boundedValidationPlan = normalizeValidationPlanBoundaries(validationPlan);
   const normalizedPlan: DeliverValidationPlan = {
-    ...validationPlan,
-    status: finalizeValidationPlanStatus(validationPlan, localValidationRecord),
-    outcomeCategory: deriveValidationOutcomeCategory(validationPlan, localValidationRecord),
+    ...boundedValidationPlan,
+    status: finalizeValidationPlanStatus(boundedValidationPlan, localValidationRecord),
+    outcomeCategory: deriveValidationOutcomeCategory(boundedValidationPlan, localValidationRecord),
     selectedSpecialists: validationPlan.selectedSpecialists.map((entry) => ({
       ...entry,
       disposition: acceptedByName.get(entry.name)?.disposition ?? entry.disposition
     })),
     coverage: {
-      ...validationPlan.coverage,
+      ...boundedValidationPlan.coverage,
       gaps: [
-        ...validationPlan.coverage.gaps,
+        ...boundedValidationPlan.coverage.gaps,
         ...(localValidationRecord.status === "failed" ? ["One or more selected validation commands failed."] : []),
         ...(localValidationRecord.blockerCategories?.map((blocker) => `Validation blocked by ${blocker}.`) ?? [])
       ]
@@ -1809,25 +2022,18 @@ export async function runDeliverValidationExecution(options: DeliverValidationEx
       "used capabilities are derived from executed local validation commands and observed CI validation job coverage."
     ]
   };
-  const coverageSummary = buildCoverageSummary(normalizedPlan, localValidationRecord);
-
-  await writeJson(path.join(options.paths.stageDir, "artifacts", "capabilities.json"), capabilityArtifact);
-  await writeJson(options.paths.validationPlanPath, normalizedPlan);
-  await fs.writeFile(options.paths.testPyramidPath, normalizedPlan.pyramidMarkdown, "utf8");
-  await writeJson(options.paths.coverageSummaryPath, coverageSummary);
-  await fs.writeFile(options.paths.coverageGapsPath, renderCoverageGapsMarkdown(normalizedPlan, localValidationRecord), "utf8");
-  await writeJson(options.paths.localValidationPath, localValidationRecord);
-  await writeJson(options.paths.ciValidationPath, normalizedPlan.ciValidation);
-  await fs.writeFile(options.paths.githubActionsPlanPath, normalizedPlan.githubActionsPlanMarkdown, "utf8");
-
-  return {
+  executionResult = {
     repoProfile,
     toolResearch,
     validationPlan: normalizedPlan,
     localValidationRecord,
-    coverageSummary,
+    coverageSummary: buildCoverageSummary(normalizedPlan, localValidationRecord),
     selectedSpecialists,
     specialistExecutions,
     finalBody
   };
+  const workspaceSnapshotAfter = await captureValidationWorkspaceSnapshot(options.cwd);
+  executionResult = applyValidationWorkspaceDrift(executionResult, detectValidationWorkspaceDrift(workspaceSnapshotBefore, workspaceSnapshotAfter));
+  await persistValidationExecutionArtifacts(options, capabilityArtifact, executionResult);
+  return executionResult;
 }
