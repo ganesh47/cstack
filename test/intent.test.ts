@@ -114,6 +114,19 @@ describe("intent router", () => {
     );
   });
 
+  it("honors explicit retry specialist overrides", () => {
+    const plan = inferRoutingPlan(
+      ["What are the gaps in this project? Can you work on closing the gaps?", "__retry_specialists__: release-pipeline-review, devsecops-review"].join(
+        "\n"
+      ),
+      "bare"
+    );
+    expect(plan.specialists.filter((specialist) => specialist.selected).map((specialist) => specialist.name)).toEqual([
+      "release-pipeline-review",
+      "devsecops-review"
+    ]);
+  });
+
   it("creates an intent run and auto-executes downstream delivery when the inferred plan warrants it", async () => {
     const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     try {

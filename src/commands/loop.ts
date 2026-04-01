@@ -5,8 +5,23 @@ import { promises as fs } from "node:fs";
 import { promisify } from "node:util";
 import { runIntent } from "../intent.js";
 import { readRun } from "../run.js";
+import type { SpecialistName } from "../types.js";
 
 const execFileAsync = promisify(execFile);
+
+const LOOP_SPECIALIST_ORDER: SpecialistName[] = [
+  "security-review",
+  "audit-review",
+  "release-pipeline-review",
+  "devsecops-review",
+  "traceability-review"
+];
+
+interface RetryGuidance {
+  summary: string;
+  targetCluster?: string;
+  specialists: SpecialistName[];
+}
 
 interface LoopCliOptions {
   repo?: string;
@@ -76,29 +91,131 @@ async function cloneIterationRepo(repo: string, branch: string | undefined, iter
   return cloneDir;
 }
 
-function buildRetryIntent(baseIntent: string, previousFinalBody: string): string {
-  const summary = previousFinalBody
+async function readJsonFile<T>(filePath: string): Promise<T | null> {
+  try {
+    return JSON.parse(await fs.readFile(filePath, "utf8")) as T;
+  } catch {
+    return null;
+  }
+}
+
+function summarizeBody(body: string): string {
+  return body
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
     .slice(0, 18)
     .join("\n");
+}
+
+function inferRetrySpecialists(text: string): SpecialistName[] {
+  const lower = text.toLowerCase();
+  const selected = LOOP_SPECIALIST_ORDER.filter((name) => {
+    switch (name) {
+      case "security-review":
+        return /\b(auth|security|secret|credential|token|permission|encrypt|vuln|exposure)\b/i.test(lower);
+      case "audit-review":
+        return /\b(audit|auditability|logging|compliance|evidence|retention)\b/i.test(lower);
+      case "release-pipeline-review":
+        return /\b(release|ship|pipeline|rollout|rollback|deploy|version)\b/i.test(lower);
+      case "devsecops-review":
+        return /\b(ci|cd|workflow|github actions|container|docker|image|sbom|runtime|supply chain)\b/i.test(lower);
+      case "traceability-review":
+        return /\b(traceability|trace|lineage|handoff|migration|regulated)\b/i.test(lower);
+    }
+  });
+  return selected.slice(0, 3);
+}
+
+async function extractRetryGuidance(cwd: string, runId: string, previousFinalBody: string): Promise<RetryGuidance> {
+  const run = await readRun(cwd, runId);
+  const runDir = path.dirname(run.finalPath);
+  const stageLineage = await readJsonFile<{
+    stages?: Array<{ status?: string; childRunId?: string }>;
+  }>(path.join(runDir, "stage-lineage.json"));
+  const childRunId =
+    stageLineage?.stages?.find((stage) => stage.status === "failed" && stage.childRunId)?.childRunId ??
+    stageLineage?.stages?.find((stage) => stage.childRunId)?.childRunId;
+
+  const baseSummary = summarizeBody(previousFinalBody);
+  if (!childRunId) {
+    return {
+      summary: baseSummary || "No prior summary was available.",
+      specialists: inferRetrySpecialists(baseSummary)
+    };
+  }
+
+  const childRun = await readRun(cwd, childRunId).catch(() => null);
+  if (!childRun) {
+    return {
+      summary: baseSummary || "No prior summary was available.",
+      specialists: inferRetrySpecialists(baseSummary)
+    };
+  }
+
+  const childRunDir = path.dirname(childRun.finalPath);
+  const reviewVerdict = await readJsonFile<{
+    gapClusters?: Array<{ title?: string }>;
+    recommendedNextSlices?: string[];
+    summary?: string;
+  }>(path.join(childRunDir, "stages", "review", "artifacts", "verdict.json"));
+  const validationPlan = await readJsonFile<{
+    summary?: string;
+    coverage?: { gaps?: string[] };
+  }>(path.join(childRunDir, "stages", "validation", "validation-plan.json"));
+
+  const targetCluster =
+    reviewVerdict?.recommendedNextSlices?.[0] ??
+    reviewVerdict?.gapClusters?.[0]?.title ??
+    validationPlan?.coverage?.gaps?.[0];
+  const guidanceSummary =
+    reviewVerdict?.summary ??
+    validationPlan?.summary ??
+    childRun.lastActivity ??
+    baseSummary ??
+    "No prior summary was available.";
+  const specialists = inferRetrySpecialists([targetCluster, guidanceSummary].filter(Boolean).join("\n"));
+
+  return {
+    summary: guidanceSummary,
+    ...(targetCluster ? { targetCluster } : {}),
+    specialists
+  };
+}
+
+function buildRetryIntent(baseIntent: string, guidance: RetryGuidance): string {
+  const summary = summarizeBody(guidance.summary);
+  const specialistOverride =
+    guidance.specialists.length > 0 ? `__retry_specialists__: ${guidance.specialists.join(", ")}` : undefined;
 
   return [
     baseIntent,
     "",
     "Use the previous failed run as context.",
-    "Backtrack from the failure, choose a different bounded option if needed, and continue instead of quitting on the first blocked path.",
-    "If the prior run surfaced more than three gap clusters, keep the top 3 in scope and defer the remainder explicitly.",
+    "Backtrack from the failure, choose one different bounded option if needed, and continue instead of quitting on the first blocked path.",
+    "For this retry, pick exactly one blocker cluster and defer the rest explicitly after closing that slice.",
+    specialistOverride,
+    ...(guidance.targetCluster
+      ? [
+          "",
+          "## Retry target (single cluster)",
+          guidance.targetCluster,
+          "",
+          "Out of scope for this retry: every other cluster from the previous run."
+        ]
+      : []),
     "",
     "## Prior run summary",
     summary || "No prior summary was available."
-  ].join("\n");
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
 }
 
 export async function runLoop(cwd: string, args: string[] = []): Promise<void> {
   const parsed = parseLoopArgs(args);
   let priorFinalBody = "";
+  let priorRunId = "";
   let succeeded = false;
   let loopWorkspace = cwd;
   const previousNoInspect = process.env.CSTACK_NO_POSTRUN_INSPECT;
@@ -112,7 +229,9 @@ export async function runLoop(cwd: string, args: string[] = []): Promise<void> {
     }
     for (let iteration = 1; iteration <= parsed.options.iterations; iteration += 1) {
       const intent =
-        iteration === 1 || !priorFinalBody ? parsed.intent : buildRetryIntent(parsed.intent, priorFinalBody);
+        iteration === 1 || !priorFinalBody || !priorRunId
+          ? parsed.intent
+          : buildRetryIntent(parsed.intent, await extractRetryGuidance(loopWorkspace, priorRunId, priorFinalBody));
 
       process.stdout.write(
         [
@@ -129,6 +248,7 @@ export async function runLoop(cwd: string, args: string[] = []): Promise<void> {
       });
       const run = await readRun(loopWorkspace, runId);
       priorFinalBody = await fs.readFile(run.finalPath, "utf8").catch(() => "");
+      priorRunId = runId;
 
       process.stdout.write(
         [

@@ -33,6 +33,18 @@ const SPECIALIST_ORDER: SpecialistName[] = [
   "traceability-review"
 ];
 
+function parseRetrySpecialistOverrides(intent: string): SpecialistName[] {
+  const match = intent.match(/__retry_specialists__:\s*([^\n]+)/i);
+  if (!match?.[1]) {
+    return [];
+  }
+  const requested = match[1]
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return SPECIALIST_ORDER.filter((name) => requested.includes(name));
+}
+
 const DIRECT_EXECUTABLE_STAGES: StageName[] = ["discover", "spec"];
 
 export interface IntentCommandOptions {
@@ -253,6 +265,18 @@ function extractIssueNumbers(intent: string): number[] {
 }
 
 export function inferSpecialists(intent: string): SpecialistSelection[] {
+  const overrideSpecialists = parseRetrySpecialistOverrides(intent);
+  if (overrideSpecialists.length > 0) {
+    const selected = new Set<SpecialistName>(overrideSpecialists);
+    return SPECIALIST_ORDER.map((name) => ({
+      name,
+      reason: selected.has(name)
+        ? "Forced by retry guidance from the previous failed loop iteration."
+        : "Not selected for this bounded retry slice.",
+      selected: selected.has(name)
+    }));
+  }
+
   const lower = intent.toLowerCase();
   const candidates: Record<SpecialistName, string | null> = {
     "security-review":
