@@ -54,21 +54,21 @@ npm install -g "https://github.com/ganesh47/cstack/releases/latest/download/csta
 ```
 
 <!-- release-version:start -->
-Current release example version: `v0.17.27`
+Current release example version: `v0.17.37`
 <!-- release-version:end -->
 
 <!-- release-examples:start -->
 Install directly from a published release tarball:
 
 ```bash
-VERSION=v0.17.27
+VERSION=v0.17.37
 npm install -g "https://github.com/ganesh47/cstack/releases/download/${VERSION}/cstack-${VERSION#v}.tgz"
 ```
 
 Download first, then install locally:
 
 ```bash
-VERSION=v0.17.27
+VERSION=v0.17.37
 curl -LO "https://github.com/ganesh47/cstack/releases/download/${VERSION}/cstack-${VERSION#v}.tgz"
 npm install -g "./cstack-${VERSION#v}.tgz"
 ```
@@ -76,7 +76,7 @@ npm install -g "./cstack-${VERSION#v}.tgz"
 Verify the downloaded tarball:
 
 ```bash
-VERSION=v0.17.27
+VERSION=v0.17.37
 curl -LO "https://github.com/ganesh47/cstack/releases/download/${VERSION}/SHA256SUMS.txt"
 sha256sum -c SHA256SUMS.txt
 ```
