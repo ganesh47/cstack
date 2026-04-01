@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 3,
+  "iteration": 1,
+  "startingRelease": "v0.1.0",
+  "endingRelease": "v0.1.0",
+  "improved": false,
+  "primaryBlockerCluster": "validation blocker",
+  "deferredClusters": [],
+  "commitSha": null,
+  "releasedTag": null,
+  "updaterValidated": false,
+  "benchmarkVerdict": "failed",
+  "branchName": null,
+  "pullRequest": null,
+  "phaseState": {
+    "baseline": true,
+    "fix": false,
+    "validate": false,
+    "candidate": false,
+    "branch-push": false,
+    "pr-create": false,
+    "pr-checks": false,
+    "merge": false,
+    "release": false,
+    "update": false,
+    "released-benchmark": false,
+    "finalize": false
+  },
+  "baselineBenchmark": {
+    "command": "/home/ganesh/projects/cstack/test/fixtures/fake-self-improvement-cstack.mjs loop --repo /tmp/tmp.6AASupHDVB --iterations 1 What are the gaps in this project? Can you work on closing the gaps?",
+    "exitCode": 1,
+    "stdout": "Loop iteration: 1/1\nWorkspace: /tmp/fake-workspace\nIntent: test intent\nResult run: intent-baseline\nStatus: failed\nFinal summary: blocked by validation\nLoop artifacts: ../../../../tmp/tmp.6AASupHDVB/.cstack/program-test-loops/fake-loop-01\n",
+    "stderr": "",
+    "workspace": "/tmp/fake-workspace",
+    "runId": "intent-baseline",
+    "status": "failed",
+    "summary": "blocked by validation",
+    "primaryBlockerCluster": "validation blocker",
+    "loopArtifactsDir": "/tmp/tmp.6AASupHDVB/.cstack/program-test-loops/fake-loop-01",
+    "benchmarkOutcome": {
+      "status": "failed",
+      "iterations": [
+        {
+          "iteration": 1,
+          "deferredClusters": []
+        }
+      ]
+    }
+  },
+  "diagnosis": null,
+  "candidateResult": null,
+  "releasedBenchmark": null,
+  "fixCommandResult": null,
+  "validateCommandResult": null,
+  "releaseCommandResult": null,
+  "updateCommandResult": null
+}

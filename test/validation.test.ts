@@ -257,4 +257,107 @@ describe("validation intelligence", () => {
     expect(pnpmCommands).toEqual(["pnpm lint", "pnpm test", "pnpm build"]);
     expect(yarnCommands).toEqual(["yarn typecheck", "yarn test:e2e"]);
   });
+
+  it("infers runnable commands for supported JS workspace targets", () => {
+    const verificationRecord: BuildVerificationRecord = {
+      status: "passed",
+      requestedCommands: [],
+      results: []
+    };
+
+    const npmWorkspaceCommands = selectDefaultLocalCommands(
+      {
+        detectedAt: new Date().toISOString(),
+        languages: ["javascript"],
+        buildSystems: ["npm"],
+        surfaces: ["library"],
+        packageManagers: ["npm"],
+        ciSystems: [],
+        runnerConstraints: ["linux-default"],
+        manifests: ["package.json"],
+        workflowFiles: [],
+        existingTests: [],
+        packageScripts: [],
+        detectedTools: ["vitest"],
+        workspaceTargets: [
+          {
+            path: ".",
+            manifests: ["package.json"],
+            languages: ["javascript"],
+            buildSystems: ["npm"],
+            surfaces: ["library"],
+            packageScripts: [],
+            detectedTools: [],
+            support: "native",
+            notes: []
+          },
+          {
+            path: "packages/api",
+            manifests: ["package.json"],
+            languages: ["javascript"],
+            buildSystems: ["npm"],
+            surfaces: ["service"],
+            packageScripts: [
+              { name: "lint", command: "eslint ." },
+              { name: "test", command: "vitest run" }
+            ],
+            detectedTools: ["vitest"],
+            support: "partial",
+            notes: []
+          }
+        ],
+        limitations: []
+      },
+      verificationRecord
+    );
+
+    const pnpmWorkspaceCommands = selectDefaultLocalCommands(
+      {
+        detectedAt: new Date().toISOString(),
+        languages: ["javascript"],
+        buildSystems: ["pnpm"],
+        surfaces: ["library"],
+        packageManagers: ["pnpm"],
+        ciSystems: [],
+        runnerConstraints: ["linux-default"],
+        manifests: ["package.json", "pnpm-lock.yaml"],
+        workflowFiles: [],
+        existingTests: [],
+        packageScripts: [],
+        detectedTools: ["vitest"],
+        workspaceTargets: [
+          {
+            path: ".",
+            manifests: ["package.json", "pnpm-lock.yaml"],
+            languages: ["javascript"],
+            buildSystems: ["pnpm"],
+            surfaces: ["library"],
+            packageScripts: [],
+            detectedTools: [],
+            support: "native",
+            notes: []
+          },
+          {
+            path: "packages/web",
+            manifests: ["package.json"],
+            languages: ["javascript"],
+            buildSystems: ["pnpm"],
+            surfaces: ["web-app"],
+            packageScripts: [
+              { name: "typecheck", command: "tsc --noEmit" },
+              { name: "test:e2e", command: "playwright test" }
+            ],
+            detectedTools: ["playwright"],
+            support: "partial",
+            notes: []
+          }
+        ],
+        limitations: []
+      },
+      verificationRecord
+    );
+
+    expect(npmWorkspaceCommands).toEqual(["npm --prefix packages/api run lint", "npm --prefix packages/api test"]);
+    expect(pnpmWorkspaceCommands).toEqual(["pnpm --dir packages/web typecheck", "pnpm --dir packages/web test:e2e"]);
+  });
 });

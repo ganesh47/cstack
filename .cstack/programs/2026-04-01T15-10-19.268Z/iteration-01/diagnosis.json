@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "iteration": 1,
+  "primaryBlockerCluster": "unclassified blocker",
+  "classificationReason": "Selected the highest-priority blocker from the released benchmark: unclassified blocker.",
+  "selectedWriteScope": [
+    "src",
+    "scripts",
+    "test"
+  ],
+  "selectedAgents": [
+    "Harness lead",
+    "Failure analyst",
+    "Implementer",
+    "Release verifier"
+  ],
+  "acceptanceCondition": "Reduce or remove the blocker cluster 'unclassified blocker' in the next candidate result.",
+  "deferredClusters": [],
+  "blockerClass": "orchestration"
+}

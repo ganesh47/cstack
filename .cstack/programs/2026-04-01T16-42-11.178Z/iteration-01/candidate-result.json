@@ -1,0 +1,14 @@
+{
+  "status": "failed",
+  "summary": "Intent run finished with downstream workflow failures",
+  "primaryBlockerCluster": null,
+  "runId": "2026-04-01T16-57-30-582Z-intent-what-are-the-gaps-in-this-project-can-you-work-o",
+  "changedFiles": [
+    "src/validation.ts",
+    "test/validation.test.ts"
+  ],
+  "commitSha": "c2a9aba",
+  "deferredClusters": [],
+  "improved": null,
+  "benchmarkCommand": "node bin/cstack.js loop --repo git@github.com:ganesh47/sqlite-metadata-proposal.git --iterations 1 What are the gaps in this project? Can you work on closing the gaps?"
+}

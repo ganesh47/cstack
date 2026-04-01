@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 3,
+  "programId": "2026-04-01T16-42-11.178Z",
+  "repo": "git@github.com:ganesh47/sqlite-metadata-proposal.git",
+  "branch": null,
+  "intent": "What are the gaps in this project? Can you work on closing the gaps?",
+  "iterationsRequested": 1,
+  "benchmarkIterations": 1,
+  "cstackBin": "cstack",
+  "fixCommand": "node '/home/ganesh/projects/cstack/scripts/program-fix.mjs'",
+  "validateCommand": "node '/home/ganesh/projects/cstack/scripts/program-validate.mjs'",
+  "candidateCommand": "node '/home/ganesh/projects/cstack/scripts/program-candidate.mjs'",
+  "releaseCommand": "node '/home/ganesh/projects/cstack/scripts/program-release.mjs'",
+  "updateCommand": "node '/home/ganesh/projects/cstack/scripts/program-update-validate.mjs'",
+  "iterationsCompleted": 0,
+  "startingRelease": "v0.17.30",
+  "endingRelease": "v0.17.30",
+  "status": "running",
+  "currentPhase": "branch-push",
+  "lastSuccessfulIteration": 0,
+  "iterations": [
+    {
+      "iteration": 1,
+      "improved": true,
+      "primaryBlockerCluster": null,
+      "benchmarkVerdict": "failed",
+      "releasedTag": null
+    }
+  ]
+}

@@ -638,6 +638,23 @@ function buildPackageScriptCommand(packageManager: "npm" | "pnpm" | "yarn", scri
   return packageManager === "npm" ? `npm run ${scriptName}` : `${packageManager} ${scriptName}`;
 }
 
+function buildWorkspacePackageScriptCommand(
+  packageManager: "npm" | "pnpm" | "yarn",
+  targetPath: string,
+  scriptName: string
+): string {
+  if (packageManager === "pnpm") {
+    return `pnpm --dir ${targetPath} ${scriptName === "test" ? "test" : scriptName}`;
+  }
+  if (packageManager === "yarn") {
+    return `yarn --cwd ${targetPath} ${scriptName}`;
+  }
+  if (scriptName === "test") {
+    return `npm --prefix ${targetPath} test`;
+  }
+  return `npm --prefix ${targetPath} run ${scriptName}`;
+}
+
 function detectSurfaces(options: {
   pkg: Record<string, unknown> | null;
   manifests: string[];
@@ -1092,6 +1109,20 @@ export function selectDefaultLocalCommands(profile: ValidationRepoProfile, build
   }
   if (profile.buildSystems.includes("python")) {
     add("pytest");
+  }
+
+  const preferredWorkspaceScripts = ["lint", "typecheck", "test", "test:unit", "test:integration", "test:e2e", "ci:e2e", "build", "smoke:packaged"];
+  for (const target of profile.workspaceTargets) {
+    if (target.path === "." || target.support === "inventory-only" || !target.manifests.includes("package.json")) {
+      continue;
+    }
+    const workspaceScripts = new Set(target.packageScripts.map((script) => script.name));
+    for (const scriptName of preferredWorkspaceScripts) {
+      if (!workspaceScripts.has(scriptName)) {
+        continue;
+      }
+      add(buildWorkspacePackageScriptCommand(packageManager, target.path, scriptName));
+    }
   }
   return commands;
 }

@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 3,
+  "programId": "2026-04-01T15-07-01.448Z",
+  "repo": "/tmp/tmp.6AASupHDVB",
+  "branch": null,
+  "intent": "What are the gaps in this project? Can you work on closing the gaps?",
+  "iterationsRequested": 1,
+  "benchmarkIterations": 1,
+  "cstackBin": "/home/ganesh/projects/cstack/test/fixtures/fake-self-improvement-cstack.mjs",
+  "fixCommand": "node '/home/ganesh/projects/cstack/scripts/program-fix.mjs'",
+  "validateCommand": "printf 'validated\\n'",
+  "candidateCommand": "cat > \"$CSTACK_CANDIDATE_RESULT_PATH\" <<'JSON'\n{\"status\":\"completed\",\"summary\":\"candidate improved\",\"primaryBlockerCluster\":null}\nJSON",
+  "releaseCommand": "printf '{\"releasedTag\":\"v0.1.1\"}\\n' > \"$CSTACK_RELEASE_RESULT_PATH\" && printf 'v0.1.1\\n' | tee \"$tmp/release.log\"",
+  "updateCommand": "printf 'updated\\n' > \"$tmp/update.log\"",
+  "iterationsCompleted": 0,
+  "startingRelease": "v0.1.0",
+  "endingRelease": "v0.1.0",
+  "status": "running",
+  "currentPhase": "fix",
+  "lastSuccessfulIteration": 0,
+  "iterations": [
+    {
+      "iteration": 1,
+      "improved": false,
+      "primaryBlockerCluster": "validation blocker",
+      "benchmarkVerdict": "failed",
+      "releasedTag": null
+    }
+  ]
+}
