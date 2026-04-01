@@ -427,6 +427,7 @@ allowTestScaffolding = true
 
 [workflows.deliver.stageTimeoutSeconds]
 build = 900
+validation = 600
 review = 600
 ship = 600
 

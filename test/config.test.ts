@@ -180,7 +180,7 @@ blockSeverities = ["medium", "high", "critical"]
     expect(config.workflows.deliver.allowDirty).toBe(true);
     expect(config.workflows.deliver.timeoutSeconds).toBe(900);
     expect(config.workflows.deliver.stageTimeoutSeconds?.build).toBe(900);
-    expect(config.workflows.deliver.stageTimeoutSeconds?.validation).toBe(300);
+    expect(config.workflows.deliver.stageTimeoutSeconds?.validation).toBe(600);
     expect(config.workflows.deliver.github?.enabled).toBe(false);
     expect(config.workflows.deliver.github?.mode).toBe("merge-ready");
     expect(config.workflows.deliver.github?.pushBranch).toBe(false);

@@ -91,7 +91,7 @@ const DEFAULT_CONFIG: CstackConfig = {
       },
       stageTimeoutSeconds: {
         build: 900,
-        validation: 300,
+        validation: 600,
         review: 600,
         ship: 600
       },
