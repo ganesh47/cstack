@@ -7,8 +7,10 @@ import {
   detectValidationBootstrapTools,
   prepareValidationToolBin,
   profileValidationRepository,
+  selectDefaultLocalCommands,
   selectValidationSpecialists
 } from "../src/validation.js";
+import type { BuildVerificationRecord } from "../src/types.js";
 
 describe("validation intelligence", () => {
   let repoDir: string;
@@ -122,6 +124,32 @@ describe("validation intelligence", () => {
     expect(profile.limitations.join("\n")).toContain("packages/cli");
   });
 
+  it("detects declared package managers from package.json metadata", async () => {
+    await fs.writeFile(
+      path.join(repoDir, "package.json"),
+      JSON.stringify(
+        {
+          name: "fixture-pnpm",
+          private: true,
+          packageManager: "pnpm@9.12.0",
+          scripts: {
+            test: "vitest run"
+          },
+          devDependencies: {
+            vitest: "^3.2.4"
+          }
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    const profile = await profileValidationRepository(repoDir);
+
+    expect(profile.packageManagers).toContain("pnpm");
+  });
+
   it("selects OSS tool research aligned with the repo profile", async () => {
     await fs.writeFile(
       path.join(repoDir, "package.json"),
@@ -170,5 +198,63 @@ describe("validation intelligence", () => {
     await expect(fs.access(path.join(prepared.binDir!, "actionlint"))).resolves.toBeUndefined();
     await expect(fs.access(path.join(prepared.binDir!, "hadolint"))).resolves.toBeUndefined();
     await expect(fs.access(path.join(prepared.binDir!, "zizmor"))).resolves.toBeUndefined();
+  });
+
+  it("selects local JS validation commands with the repo package manager", () => {
+    const verificationRecord: BuildVerificationRecord = {
+      status: "passed",
+      requestedCommands: [],
+      results: []
+    };
+
+    const pnpmCommands = selectDefaultLocalCommands(
+      {
+        detectedAt: new Date().toISOString(),
+        languages: ["javascript"],
+        buildSystems: ["npm", "pnpm"],
+        surfaces: ["library"],
+        packageManagers: ["pnpm"],
+        ciSystems: [],
+        runnerConstraints: ["linux-default"],
+        manifests: ["package.json", "pnpm-lock.yaml"],
+        workflowFiles: [],
+        existingTests: [],
+        packageScripts: [
+          { name: "lint", command: "eslint ." },
+          { name: "test", command: "vitest run" },
+          { name: "build", command: "tsc -p tsconfig.json" }
+        ],
+        detectedTools: ["vitest"],
+        workspaceTargets: [],
+        limitations: []
+      },
+      verificationRecord
+    );
+
+    const yarnCommands = selectDefaultLocalCommands(
+      {
+        detectedAt: new Date().toISOString(),
+        languages: ["javascript"],
+        buildSystems: ["npm", "yarn"],
+        surfaces: ["library"],
+        packageManagers: ["yarn"],
+        ciSystems: [],
+        runnerConstraints: ["linux-default"],
+        manifests: ["package.json", "yarn.lock"],
+        workflowFiles: [],
+        existingTests: [],
+        packageScripts: [
+          { name: "typecheck", command: "tsc --noEmit" },
+          { name: "test:e2e", command: "playwright test" }
+        ],
+        detectedTools: ["playwright"],
+        workspaceTargets: [],
+        limitations: []
+      },
+      verificationRecord
+    );
+
+    expect(pnpmCommands).toEqual(["pnpm lint", "pnpm test", "pnpm build"]);
+    expect(yarnCommands).toEqual(["yarn typecheck", "yarn test:e2e"]);
   });
 });

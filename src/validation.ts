@@ -578,8 +578,18 @@ function detectBuildSystems(manifests: string[], pkg: Record<string, unknown> | 
   return [...new Set(systems)];
 }
 
-function detectPackageManagers(manifests: string[]): string[] {
+function detectPackageManagers(manifests: string[], pkg: Record<string, unknown> | null): string[] {
   const managers: string[] = [];
+  const declaredPackageManager = typeof pkg?.packageManager === "string" ? pkg.packageManager.toLowerCase() : "";
+  if (declaredPackageManager.startsWith("npm@")) {
+    managers.push("npm");
+  }
+  if (declaredPackageManager.startsWith("pnpm@")) {
+    managers.push("pnpm");
+  }
+  if (declaredPackageManager.startsWith("yarn@")) {
+    managers.push("yarn");
+  }
   if (manifests.includes("package-lock.json")) {
     managers.push("npm");
   }
@@ -599,6 +609,33 @@ function detectPackageManagers(manifests: string[]): string[] {
     managers.push("pip/pyproject");
   }
   return [...new Set(managers)];
+}
+
+function detectNodePackageManager(pkg: Record<string, unknown> | null, manifests: string[]): "npm" | "pnpm" | "yarn" {
+  const declaredPackageManager = typeof pkg?.packageManager === "string" ? pkg.packageManager.toLowerCase() : "";
+  if (declaredPackageManager.startsWith("pnpm@")) {
+    return "pnpm";
+  }
+  if (declaredPackageManager.startsWith("yarn@")) {
+    return "yarn";
+  }
+  if (declaredPackageManager.startsWith("npm@")) {
+    return "npm";
+  }
+  if (manifests.includes("pnpm-lock.yaml")) {
+    return "pnpm";
+  }
+  if (manifests.includes("yarn.lock")) {
+    return "yarn";
+  }
+  return "npm";
+}
+
+function buildPackageScriptCommand(packageManager: "npm" | "pnpm" | "yarn", scriptName: string): string {
+  if (scriptName === "test") {
+    return packageManager === "npm" ? "npm test" : `${packageManager} test`;
+  }
+  return packageManager === "npm" ? `npm run ${scriptName}` : `${packageManager} ${scriptName}`;
 }
 
 function detectSurfaces(options: {
@@ -808,7 +845,7 @@ export async function profileValidationRepository(cwd: string): Promise<Validati
   const scripts = extractPackageScripts(pkg);
   const languages = detectLanguages(manifests, pkg);
   const buildSystems = detectBuildSystems(manifests, pkg);
-  const packageManagers = detectPackageManagers(manifests);
+  const packageManagers = detectPackageManagers(manifests, pkg);
   const existingTests = buildExistingSuites({ testFiles, workflowFiles, packageTools });
   const surfaces = detectSurfaces({
     pkg,
@@ -995,9 +1032,22 @@ export function selectValidationSpecialists(profile: ValidationRepoProfile, inpu
   return selections.slice(0, 3);
 }
 
-function selectDefaultLocalCommands(profile: ValidationRepoProfile, buildVerificationRecord: BuildVerificationRecord): string[] {
+export function selectDefaultLocalCommands(profile: ValidationRepoProfile, buildVerificationRecord: BuildVerificationRecord): string[] {
   const commands: string[] = [];
   const scriptMap = new Map(profile.packageScripts.map((script) => [script.name, script.command]));
+  const packageManager = detectNodePackageManager(
+    profile.manifests.includes("package.json")
+      ? {
+          packageManager:
+            profile.packageManagers.includes("pnpm")
+              ? "pnpm"
+              : profile.packageManagers.includes("yarn")
+                ? "yarn"
+                : "npm"
+        }
+      : null,
+    profile.manifests
+  );
   const add = (command: string) => {
     if (command && !commands.includes(command)) {
       commands.push(command);
@@ -1008,31 +1058,31 @@ function selectDefaultLocalCommands(profile: ValidationRepoProfile, buildVerific
     add(command);
   }
   if (scriptMap.has("lint")) {
-    add("npm run lint");
+    add(buildPackageScriptCommand(packageManager, "lint"));
   }
   if (scriptMap.has("typecheck")) {
-    add("npm run typecheck");
+    add(buildPackageScriptCommand(packageManager, "typecheck"));
   }
   if (scriptMap.has("test")) {
-    add("npm test");
+    add(buildPackageScriptCommand(packageManager, "test"));
   }
   if (scriptMap.has("test:unit")) {
-    add("npm run test:unit");
+    add(buildPackageScriptCommand(packageManager, "test:unit"));
   }
   if (scriptMap.has("test:integration")) {
-    add("npm run test:integration");
+    add(buildPackageScriptCommand(packageManager, "test:integration"));
   }
   if (scriptMap.has("test:e2e")) {
-    add("npm run test:e2e");
+    add(buildPackageScriptCommand(packageManager, "test:e2e"));
   }
   if (scriptMap.has("ci:e2e")) {
-    add("npm run ci:e2e");
+    add(buildPackageScriptCommand(packageManager, "ci:e2e"));
   }
   if (scriptMap.has("build")) {
-    add("npm run build");
+    add(buildPackageScriptCommand(packageManager, "build"));
   }
   if (scriptMap.has("smoke:packaged")) {
-    add("npm run smoke:packaged");
+    add(buildPackageScriptCommand(packageManager, "smoke:packaged"));
   }
   if (profile.buildSystems.includes("cargo")) {
     add("cargo test");

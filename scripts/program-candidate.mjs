@@ -215,7 +215,7 @@ async function main() {
     primaryBlockerCluster:
       Object.prototype.hasOwnProperty.call(cycleRecord ?? {}, "primaryBlockerCluster")
         ? cycleRecord.primaryBlockerCluster
-        : artifactFallback.primaryBlockerCluster ?? process.env.CSTACK_PRIMARY_BLOCKER_CLUSTER || null,
+        : (artifactFallback.primaryBlockerCluster ?? process.env.CSTACK_PRIMARY_BLOCKER_CLUSTER ?? null),
     runId: parsed.runId,
     changedFiles: await changedFiles(process.cwd()),
     commitSha: await currentCommitSha(process.cwd()),
