@@ -141,6 +141,7 @@ interface CodexRetryContext {
   reason: string;
   missingTools: string[];
   remediationCommands: string[];
+  failureHints: string[];
 }
 
 interface CodexAttemptOutcome {
@@ -225,6 +226,20 @@ function makeCodexRetryHint(attemptNumber: number, maxAttempts: number, previous
     .join(" ");
 }
 
+function extractFailureHintsFromText(text: string): string[] {
+  const hints: string[] = [];
+  if (/apply_patch verification failed/i.test(text)) {
+    hints.push("Prior attempt hit apply_patch verification failures; do not retry the same hunk unchanged.");
+  }
+  if (/failed to find expected lines/i.test(text)) {
+    hints.push("Patch context drifted; re-read the exact file slice and use a scripted replacement or full-file rewrite if needed.");
+  }
+  if (/\bmixed line endings\b|\bcrlf\b|\blf\b/i.test(text)) {
+    hints.push("The target file may have mixed line endings; detect and normalize EOLs before editing.");
+  }
+  return uniqueLines(hints);
+}
+
 function normalizeToolName(tool: string): string {
   return tool
     .toLowerCase()
@@ -270,15 +285,17 @@ function getRemediationCommands(missingTools: string[]): string[] {
 function inferRetryRemediation(
   assessment: BuildEnvironmentAssessment,
   previousOutcome: CodexAttemptOutcome | null
-): { missingTools: string[]; remediationCommands: string[] } {
-  const outcomeBasedTools = extractMissingToolsFromText(`${previousOutcome?.stderrTail ?? ""}\n${previousOutcome?.finalBody ?? ""}`);
+): { missingTools: string[]; remediationCommands: string[]; failureHints: string[] } {
+  const previousSignals = `${previousOutcome?.stderrTail ?? ""}\n${previousOutcome?.finalBody ?? ""}`;
+  const outcomeBasedTools = extractMissingToolsFromText(previousSignals);
   const missingTools = uniqueLines([...assessment.missingTools, ...outcomeBasedTools]).filter((tool) =>
     !MISSING_TOOL_REMEDIATION_FILTER.has(normalizeToolName(tool))
   );
 
   return {
     missingTools,
-    remediationCommands: getRemediationCommands(missingTools)
+    remediationCommands: getRemediationCommands(missingTools),
+    failureHints: extractFailureHintsFromText([previousSignals, ...assessment.notes, ...assessment.evidence].join("\n"))
   };
 }
 
@@ -1142,7 +1159,8 @@ export async function runBuildExecution(options: BuildExecutionOptions): Promise
               maxAttempts: retryContext.maxAttempts,
               reason: retryContext.reason,
               ...(retryContext.missingTools.length ? { missingTools: retryContext.missingTools } : {}),
-              ...(retryContext.remediationCommands.length ? { remediationCommands: retryContext.remediationCommands } : {})
+              ...(retryContext.remediationCommands.length ? { remediationCommands: retryContext.remediationCommands } : {}),
+              ...(retryContext.failureHints.length ? { failureHints: retryContext.failureHints } : {})
             }
           }
         : {})
@@ -1165,7 +1183,8 @@ export async function runBuildExecution(options: BuildExecutionOptions): Promise
             ...(remediation.missingTools.length ? { missingTools: remediation.missingTools } : { missingTools: [] }),
             ...(remediation.remediationCommands.length
               ? { remediationCommands: remediation.remediationCommands }
-              : { remediationCommands: [] })
+              : { remediationCommands: [] }),
+            ...(remediation.failureHints.length ? { failureHints: remediation.failureHints } : { failureHints: [] })
           }
         : undefined;
     if (attemptNumber > 1 && remediation.remediationCommands.length > 0) {

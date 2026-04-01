@@ -227,6 +227,7 @@ export async function buildBuildPrompt(options: {
     reason?: string;
     missingTools?: string[];
     remediationCommands?: string[];
+    failureHints?: string[];
   };
 }): Promise<{ prompt: string; context: string }> {
   const {
@@ -288,6 +289,15 @@ export async function buildBuildPrompt(options: {
                   "- If a command fails, capture the exact error and choose a safer fallback command for the same tool."
                 ]
               : []),
+            ...(retryAttempt.failureHints?.length
+              ? [
+                  "### Patch resilience",
+                  ...retryAttempt.failureHints.map((hint) => `- ${hint}`),
+                  "- Before editing a file after a patch mismatch, inspect the exact target slice and detect its line endings.",
+                  "- If `apply_patch` fails once, do not retry the same hunk unchanged; switch to a scripted replacement or a full-file rewrite.",
+                  "- If the file has mixed line endings, normalize them once before editing and keep the final file consistent."
+                ]
+              : []),
             "- Prioritise writing the final artifact even if implementation is incomplete.",
             ""
           ]
@@ -307,7 +317,8 @@ export async function buildBuildPrompt(options: {
       ...(retryAttempt
         ? [
             `Retry attempt: ${retryAttempt.attemptNumber}/${retryAttempt.maxAttempts}`,
-            ...(retryAttempt.missingTools?.length ? [`Retry missing tools: ${retryAttempt.missingTools.join(", ")}`] : [])
+            ...(retryAttempt.missingTools?.length ? [`Retry missing tools: ${retryAttempt.missingTools.join(", ")}`] : []),
+            ...(retryAttempt.failureHints?.length ? [`Retry failure hints: ${retryAttempt.failureHints.join(" | ")}`] : [])
           ]
         : [])
     ].join("\n")

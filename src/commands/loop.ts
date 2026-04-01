@@ -159,25 +159,46 @@ async function extractRetryGuidance(cwd: string, runId: string, previousFinalBod
     recommendedNextSlices?: string[];
     summary?: string;
   }>(path.join(childRunDir, "stages", "review", "artifacts", "verdict.json"));
+  const buildFailureDiagnosis = await readJsonFile<{
+    summary?: string;
+    recommendedActions?: string[];
+  }>(path.join(childRunDir, "stages", "build", "artifacts", "failure-diagnosis.json"));
   const validationPlan = await readJsonFile<{
     summary?: string;
     coverage?: { gaps?: string[] };
   }>(path.join(childRunDir, "stages", "validation", "validation-plan.json"));
+  const buildStderr = await fs
+    .readFile(path.join(childRunDir, "stages", "build", "stderr.log"), "utf8")
+    .catch(() => "");
+
+  const patchHintSummary = [
+    /apply_patch verification failed/i.test(buildStderr) ? "Build retry note: prior attempt hit apply_patch verification failures." : "",
+    /failed to find expected lines/i.test(buildStderr)
+      ? "Build retry note: previous patch context did not match the target file."
+      : "",
+    /\bmixed line endings\b|\bcrlf\b/i.test(buildStderr)
+      ? "Build retry note: a target file had mixed line endings."
+      : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   const targetCluster =
     reviewVerdict?.recommendedNextSlices?.[0] ??
     reviewVerdict?.gapClusters?.[0]?.title ??
+    buildFailureDiagnosis?.recommendedActions?.[0] ??
     validationPlan?.coverage?.gaps?.[0];
   const guidanceSummary =
     reviewVerdict?.summary ??
     validationPlan?.summary ??
+    buildFailureDiagnosis?.summary ??
     childRun.lastActivity ??
     baseSummary ??
     "No prior summary was available.";
   const specialists = inferRetrySpecialists([targetCluster, guidanceSummary].filter(Boolean).join("\n"));
 
   return {
-    summary: guidanceSummary,
+    summary: [guidanceSummary, patchHintSummary].filter(Boolean).join("\n"),
     ...(targetCluster ? { targetCluster } : {}),
     specialists
   };
