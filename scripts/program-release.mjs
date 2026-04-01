@@ -2,7 +2,6 @@
 
 import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
-import path from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -47,22 +46,51 @@ function bumpPatch(version) {
   if (!match) {
     throw new Error(`Cannot derive next patch version from ${version}`);
   }
-  const major = Number.parseInt(match[1], 10);
-  const minor = Number.parseInt(match[2], 10);
-  const patch = Number.parseInt(match[3], 10);
-  const suffix = match[4] ?? "";
-  return `${major}.${minor}.${patch + 1}${suffix}`;
+  return `${match[1]}.${match[2]}.${Number.parseInt(match[3], 10) + 1}${match[4] ?? ""}`;
 }
 
-async function readJson(filePath, fallback = null) {
-  try {
-    return JSON.parse(await fs.readFile(filePath, "utf8"));
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-      return fallback;
-    }
-    throw error;
+async function ghRepo(cwd) {
+  const result = await runExec("gh", ["repo", "view", "--json", "nameWithOwner"], cwd);
+  if (result.code !== 0) {
+    throw new Error(result.stderr.trim() || "failed to resolve GitHub repository");
   }
+  return JSON.parse(result.stdout).nameWithOwner;
+}
+
+async function ghApiJson(cwd, endpoint) {
+  const result = await runExec("gh", ["api", endpoint], cwd);
+  if (result.code !== 0) {
+    throw new Error(result.stderr.trim() || `failed gh api call for ${endpoint}`);
+  }
+  return JSON.parse(result.stdout);
+}
+
+async function maxRunId(cwd, repo, workflowFile) {
+  const payload = await ghApiJson(cwd, `repos/${repo}/actions/workflows/${workflowFile}/runs?per_page=20`);
+  return Math.max(0, ...((payload.workflow_runs ?? []).map((run) => run.id)));
+}
+
+async function waitForNewRun(cwd, repo, workflowFile, previousId) {
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    const payload = await ghApiJson(cwd, `repos/${repo}/actions/workflows/${workflowFile}/runs?per_page=20`);
+    const run = (payload.workflow_runs ?? []).find((entry) => entry.id > previousId);
+    if (run) {
+      return run;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+  }
+  throw new Error(`timed out waiting for ${workflowFile} run`);
+}
+
+async function waitForReleaseTag(cwd, tag) {
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    const view = await runExec("gh", ["release", "view", tag, "--json", "tagName,url,isDraft,assets"], cwd);
+    if (view.code === 0) {
+      return JSON.parse(view.stdout);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+  }
+  throw new Error(`timed out waiting for GitHub release ${tag}`);
 }
 
 async function main() {
@@ -77,37 +105,47 @@ async function main() {
     if (result.code !== 0) {
       throw new Error(result.stderr.trim() || result.stdout.trim() || "program release hook failed");
     }
-    const existing = await readJson(resultPath, null);
-    if (existing?.releasedTag) {
-      process.stdout.write(`${existing.releasedTag}\n`);
-      return;
-    }
+    process.stdout.write(`${process.env.CSTACK_RELEASED_TAG ?? ""}\n`);
+    return;
   }
 
   const startingRelease = process.env.CSTACK_STARTING_RELEASE ?? "v0.0.0";
   const nextVersion = process.env.CSTACK_NEXT_VERSION ?? bumpPatch(startingRelease);
   const releasedTag = `v${stripLeadingV(nextVersion)}`;
-  const mode = process.env.CSTACK_PROGRAM_RELEASE_MODE ?? "dry-run";
+  const repo = await ghRepo(process.cwd());
 
+  const previousPrepareId = await maxRunId(process.cwd(), repo, "prepare-release.yml");
+  const previousReleaseId = await maxRunId(process.cwd(), repo, "release.yml");
+  const dispatch = await runExec("gh", ["workflow", "run", "prepare-release.yml", "-f", `version=${stripLeadingV(nextVersion)}`], process.cwd());
+  if (dispatch.code !== 0) {
+    throw new Error(dispatch.stderr.trim() || dispatch.stdout.trim() || "failed to dispatch prepare-release workflow");
+  }
+
+  const prepareRun = await waitForNewRun(process.cwd(), repo, "prepare-release.yml", previousPrepareId);
+  const watchedPrepare = await runExec("gh", ["run", "watch", String(prepareRun.id), "--exit-status"], process.cwd());
+  if (watchedPrepare.code !== 0) {
+    throw new Error(watchedPrepare.stderr.trim() || watchedPrepare.stdout.trim() || "prepare-release workflow failed");
+  }
+
+  const releaseRun = await waitForNewRun(process.cwd(), repo, "release.yml", previousReleaseId);
+  const watchedRelease = await runExec("gh", ["run", "watch", String(releaseRun.id), "--exit-status"], process.cwd());
+  if (watchedRelease.code !== 0) {
+    throw new Error(watchedRelease.stderr.trim() || watchedRelease.stdout.trim() || "release workflow failed");
+  }
+
+  const release = await waitForReleaseTag(process.cwd(), releasedTag);
   const record = {
     schemaVersion: 1,
-    mode,
+    mode: "gh",
     startingRelease,
     releasedTag,
     prepareReleaseWorkflow: "prepare-release.yml",
     releaseWorkflow: "release.yml",
-    status: mode === "dry-run" ? "simulated" : "pending"
+    status: "released",
+    prepareRunId: prepareRun.id,
+    releaseRunId: releaseRun.id,
+    release
   };
-
-  if (mode === "gh") {
-    const dispatch = await runExec("gh", ["workflow", "run", "prepare-release.yml", "-f", `version=${stripLeadingV(nextVersion)}`], process.cwd(), process.env);
-    if (dispatch.code !== 0) {
-      throw new Error(dispatch.stderr.trim() || dispatch.stdout.trim() || "failed to dispatch prepare-release workflow");
-    }
-    record.status = "dispatched";
-    record.dispatch = dispatch;
-  }
-
   await fs.writeFile(resultPath, `${JSON.stringify(record, null, 2)}\n`, "utf8");
   process.stdout.write(`${releasedTag}\n`);
 }

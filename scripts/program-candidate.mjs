@@ -2,25 +2,14 @@
 
 import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
+import path from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-async function readJson(filePath, fallback = null) {
+async function runExec(command, args, cwd, env = {}) {
   try {
-    return JSON.parse(await fs.readFile(filePath, "utf8"));
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-      return fallback;
-    }
-    throw error;
-  }
-}
-
-async function runShell(command, cwd, env) {
-  const shell = process.env.SHELL || "/bin/sh";
-  try {
-    const result = await execFileAsync(shell, ["-lc", command], {
+    const result = await execFileAsync(command, args, {
       cwd,
       env: {
         ...process.env,
@@ -43,9 +32,67 @@ async function runShell(command, cwd, env) {
   }
 }
 
+async function runShell(command, cwd, env = {}) {
+  const shell = process.env.SHELL || "/bin/sh";
+  return runExec(shell, ["-lc", command], cwd, env);
+}
+
 async function currentCommitSha(cwd) {
-  const result = await runShell("git rev-parse --short HEAD", cwd, process.env);
+  const result = await runExec("git", ["rev-parse", "--short", "HEAD"], cwd);
   return result.code === 0 ? result.stdout.trim() : null;
+}
+
+async function changedFiles(cwd) {
+  const result = await runExec("git", ["status", "--short"], cwd);
+  if (result.code !== 0) {
+    return [];
+  }
+  return result.stdout
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => line.slice(3).trim())
+    .filter(Boolean);
+}
+
+async function readJsonIfExists(targetPath) {
+  try {
+    return JSON.parse(await fs.readFile(targetPath, "utf8"));
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function parseBenchmarkOutput(stdout, cwd) {
+  const lines = stdout.split(/\r?\n/);
+  const runId =
+    lines
+      .filter((line) => line.startsWith("Result run: "))
+      .map((line) => line.slice("Result run: ".length))
+      .at(-1) ?? null;
+  const status =
+    lines
+      .filter((line) => line.startsWith("Status: "))
+      .map((line) => line.slice("Status: ".length))
+      .at(-1) ?? "failed";
+  const summary =
+    lines
+      .filter((line) => line.startsWith("Final summary: "))
+      .map((line) => line.slice("Final summary: ".length))
+      .at(-1) ?? "";
+  const artifactsLine =
+    lines
+      .filter((line) => line.startsWith("Loop artifacts: "))
+      .map((line) => line.slice("Loop artifacts: ".length))
+      .at(-1) ?? null;
+  return {
+    runId,
+    status,
+    summary,
+    loopArtifactsDir: artifactsLine ? path.resolve(cwd, artifactsLine) : null
+  };
 }
 
 async function main() {
@@ -60,13 +107,18 @@ async function main() {
     if (result.code !== 0) {
       throw new Error(result.stderr.trim() || result.stdout.trim() || "program candidate hook failed");
     }
-  }
-
-  const existing = await readJson(candidatePath, null);
-  if (existing) {
     return;
   }
 
+  const args = ["bin/cstack.js", "loop", "--repo", process.env.CSTACK_BENCHMARK_REPO, "--iterations", process.env.CSTACK_BENCHMARK_ITERATIONS ?? "1"];
+  if (process.env.CSTACK_BRANCH) {
+    args.push("--branch", process.env.CSTACK_BRANCH);
+  }
+  args.push(process.env.CSTACK_BENCHMARK_INTENT);
+
+  const benchmark = await runExec("node", args, process.cwd(), process.env);
+  const parsed = parseBenchmarkOutput(benchmark.stdout, process.cwd());
+  const cycleRecord = parsed.loopArtifactsDir ? await readJsonIfExists(path.join(parsed.loopArtifactsDir, "cycle-record.json")) : null;
   const deferredClusters = (() => {
     try {
       return JSON.parse(process.env.CSTACK_DEFERRED_CLUSTERS ?? "[]");
@@ -74,17 +126,29 @@ async function main() {
       return [];
     }
   })();
-  const fallback = {
-    status: process.env.CSTACK_BASELINE_STATUS ?? "failed",
-    summary: "Candidate benchmark hook did not produce a new result; keeping the baseline verdict.",
-    primaryBlockerCluster: process.env.CSTACK_PRIMARY_BLOCKER_CLUSTER || null,
-    runId: null,
-    changedFiles: [],
+  const result = {
+    status: cycleRecord?.status ?? parsed.status,
+    summary: cycleRecord?.latestSummary ?? parsed.summary,
+    primaryBlockerCluster:
+      Object.prototype.hasOwnProperty.call(cycleRecord ?? {}, "primaryBlockerCluster")
+        ? cycleRecord.primaryBlockerCluster
+        : process.env.CSTACK_PRIMARY_BLOCKER_CLUSTER || null,
+    runId: parsed.runId,
+    changedFiles: await changedFiles(process.cwd()),
     commitSha: await currentCommitSha(process.cwd()),
     deferredClusters,
-    improved: false
+    improved: null,
+    benchmarkCommand: ["node", ...args].join(" ")
   };
-  await fs.writeFile(candidatePath, `${JSON.stringify(fallback, null, 2)}\n`, "utf8");
+  await fs.writeFile(candidatePath, `${JSON.stringify(result, null, 2)}\n`, "utf8");
+  await fs.writeFile(
+    path.join(process.env.CSTACK_ITERATION_DIR, "candidate-benchmark.json"),
+    `${JSON.stringify({ benchmark, parsed }, null, 2)}\n`,
+    "utf8"
+  );
+  if (benchmark.code !== 0 && result.status === "failed") {
+    process.exitCode = 0;
+  }
 }
 
 main().catch((error) => {

@@ -7,21 +7,9 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-async function readJson(filePath, fallback = null) {
+async function runExec(command, args, cwd, env = {}) {
   try {
-    return JSON.parse(await fs.readFile(filePath, "utf8"));
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-      return fallback;
-    }
-    throw error;
-  }
-}
-
-async function runShell(command, cwd, env) {
-  const shell = process.env.SHELL || "/bin/sh";
-  try {
-    const result = await execFileAsync(shell, ["-lc", command], {
+    const result = await execFileAsync(command, args, {
       cwd,
       env: {
         ...process.env,
@@ -44,6 +32,11 @@ async function runShell(command, cwd, env) {
   }
 }
 
+async function runShell(command, cwd, env = {}) {
+  const shell = process.env.SHELL || "/bin/sh";
+  return runExec(shell, ["-lc", command], cwd, env);
+}
+
 function classifyBlocker(cluster) {
   const lower = cluster.toLowerCase();
   if (lower.includes("validation")) {
@@ -61,6 +54,32 @@ function classifyBlocker(cluster) {
   return "orchestration";
 }
 
+function parseDeferredClusters() {
+  try {
+    return JSON.parse(process.env.CSTACK_DEFERRED_CLUSTERS ?? "[]");
+  } catch {
+    return [];
+  }
+}
+
+function buildPrompt(primary, deferredClusters) {
+  return [
+    "Implement one bounded cstack self-improvement slice.",
+    "",
+    `Primary blocker cluster: ${primary}`,
+    `Deferred blocker clusters: ${deferredClusters.join(", ") || "none"}`,
+    `Benchmark repo: ${process.env.CSTACK_BENCHMARK_REPO}`,
+    `Benchmark intent: ${process.env.CSTACK_BENCHMARK_INTENT}`,
+    "",
+    "Constraints:",
+    "- Change only cstack, not the benchmark repo.",
+    "- Fix only the primary blocker cluster or the narrowest enabling dependency for it.",
+    "- Keep the slice bounded and releaseable.",
+    "- Add or update tests if the slice changes behavior.",
+    "- Do not attempt unrelated cleanup."
+  ].join("\n");
+}
+
 async function main() {
   const iterationDir = process.env.CSTACK_ITERATION_DIR;
   const diagnosisPath = process.env.CSTACK_DIAGNOSIS_PATH;
@@ -68,20 +87,14 @@ async function main() {
     throw new Error("Missing iteration context for program-fix");
   }
 
-  const backlog = (() => {
-    try {
-      return JSON.parse(process.env.CSTACK_DEFERRED_CLUSTERS ?? "[]");
-    } catch {
-      return [];
-    }
-  })();
+  const backlog = parseDeferredClusters();
   const primary = process.env.CSTACK_PRIMARY_BLOCKER_CLUSTER?.trim() || "unclassified blocker";
   const diagnosis = {
     schemaVersion: 1,
     iteration: Number.parseInt(process.env.CSTACK_ITERATION ?? "0", 10) || null,
     primaryBlockerCluster: primary,
     classificationReason: `Selected the highest-priority blocker from the released benchmark: ${primary}.`,
-    selectedWriteScope: [path.relative(process.cwd(), path.join(process.cwd(), "scripts"))],
+    selectedWriteScope: ["src", "scripts", "test"],
     selectedAgents: ["Harness lead", "Failure analyst", "Implementer", "Release verifier"],
     acceptanceCondition: `Reduce or remove the blocker cluster '${primary}' in the next candidate result.`,
     deferredClusters: backlog,
@@ -90,31 +103,17 @@ async function main() {
   await fs.writeFile(diagnosisPath, `${JSON.stringify(diagnosis, null, 2)}\n`, "utf8");
 
   const customCommand = process.env.CSTACK_PROGRAM_FIX_COMMAND;
-  if (!customCommand) {
-    return;
+  let result;
+  if (customCommand) {
+    result = await runShell(customCommand, process.cwd(), process.env);
+  } else {
+    const prompt = buildPrompt(primary, backlog);
+    result = await runExec("node", ["bin/cstack.js", "build", "--exec", "--allow-dirty", prompt], process.cwd(), process.env);
   }
 
-  const result = await runShell(customCommand, process.cwd(), process.env);
   await fs.writeFile(path.join(iterationDir, "fix-worker-result.json"), `${JSON.stringify(result, null, 2)}\n`, "utf8");
   if (result.code !== 0) {
     throw new Error(result.stderr.trim() || result.stdout.trim() || "program fix hook failed");
-  }
-
-  const candidatePath = process.env.CSTACK_CANDIDATE_RESULT_PATH;
-  if (candidatePath) {
-    const existing = await readJson(candidatePath, null);
-    if (!existing) {
-      const fallback = {
-        status: process.env.CSTACK_BASELINE_STATUS ?? "failed",
-        summary: `Fix hook completed without producing a candidate delta for ${primary}.`,
-        primaryBlockerCluster: primary,
-        runId: null,
-        changedFiles: [],
-        commitSha: null,
-        deferredClusters: backlog
-      };
-      await fs.writeFile(candidatePath, `${JSON.stringify(fallback, null, 2)}\n`, "utf8");
-    }
   }
 }
 

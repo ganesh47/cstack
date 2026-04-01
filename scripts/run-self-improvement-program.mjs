@@ -8,8 +8,24 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+const PHASES = [
+  "baseline",
+  "fix",
+  "validate",
+  "candidate",
+  "branch-push",
+  "pr-create",
+  "pr-checks",
+  "merge",
+  "release",
+  "update",
+  "released-benchmark",
+  "finalize"
+];
 
-const PHASES = ["baseline", "fix", "validate", "candidate", "release", "update", "released-benchmark", "finalize"];
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", `'\\''`)}'`;
+}
 
 function parseArgs(argv) {
   const options = {
@@ -23,7 +39,7 @@ function parseArgs(argv) {
     startVersion: null,
     resume: null,
     fixCommand: `node ${shellQuote(path.join(scriptDir, "program-fix.mjs"))}`,
-    validateCommand: null,
+    validateCommand: `node ${shellQuote(path.join(scriptDir, "program-validate.mjs"))}`,
     candidateCommand: `node ${shellQuote(path.join(scriptDir, "program-candidate.mjs"))}`,
     releaseCommand: `node ${shellQuote(path.join(scriptDir, "program-release.mjs"))}`,
     updateCommand: `node ${shellQuote(path.join(scriptDir, "program-update-validate.mjs"))}`
@@ -100,21 +116,11 @@ function parseArgs(argv) {
   if (!Number.isInteger(options.benchmarkIterations) || options.benchmarkIterations < 1) {
     throw new Error("--benchmark-iterations must be a positive integer");
   }
-
   return options;
-}
-
-function shellQuote(value) {
-  return `'${String(value).replaceAll("'", `'\\''`)}'`;
 }
 
 function createProgramId() {
   return new Date().toISOString().replaceAll(":", "-");
-}
-
-async function writeJson(targetPath, value) {
-  await fs.mkdir(path.dirname(targetPath), { recursive: true });
-  await fs.writeFile(targetPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
 function lastNonEmptyLine(text) {
@@ -123,6 +129,22 @@ function lastNonEmptyLine(text) {
     .map((line) => line.trim())
     .filter(Boolean)
     .at(-1) ?? "";
+}
+
+async function writeJson(targetPath, value) {
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  await fs.writeFile(targetPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+async function readJsonIfExists(targetPath) {
+  try {
+    return JSON.parse(await fs.readFile(targetPath, "utf8"));
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
 }
 
 async function runExec(command, args, cwd, env = {}) {
@@ -153,17 +175,6 @@ async function runExec(command, args, cwd, env = {}) {
 async function runShell(command, cwd, env = {}) {
   const shell = process.env.SHELL || "/bin/sh";
   return runExec(shell, ["-lc", command], cwd, env);
-}
-
-async function readJsonIfExists(targetPath) {
-  try {
-    return JSON.parse(await fs.readFile(targetPath, "utf8"));
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-      return null;
-    }
-    throw error;
-  }
 }
 
 async function detectCurrentVersion(cstackBin, cwd) {
@@ -226,7 +237,6 @@ async function runReleasedBenchmark(options) {
   const benchmarkOutcome = parsed.loopArtifactsDir
     ? await readJsonIfExists(path.join(parsed.loopArtifactsDir, "benchmark-outcome.json"))
     : null;
-
   return {
     command: [options.cstackBin, ...args].join(" "),
     exitCode: result.code,
@@ -243,15 +253,14 @@ async function runReleasedBenchmark(options) {
 }
 
 function benchmarkProgressScore(result) {
-  const statusRank = {
-    failed: 0,
-    partial: 1,
-    completed: 2
-  };
-  return statusRank[result?.status] ?? 0;
+  const rank = { failed: 0, partial: 1, completed: 2 };
+  return rank[result?.status] ?? 0;
 }
 
 function compareBenchmarkResults(baseline, candidate) {
+  if (candidate?.improved === true) {
+    return true;
+  }
   if (benchmarkProgressScore(candidate) > benchmarkProgressScore(baseline)) {
     return true;
   }
@@ -287,55 +296,28 @@ async function currentCommitSha(cwd) {
   return result.code === 0 ? lastNonEmptyLine(result.stdout) : null;
 }
 
-function iterationKey(iteration) {
-  return `iteration-${String(iteration).padStart(2, "0")}`;
+async function changedFiles(cwd) {
+  const result = await runExec("git", ["status", "--short"], cwd);
+  if (result.code !== 0) {
+    return [];
+  }
+  return result.stdout
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => line.slice(3).trim())
+    .filter(Boolean);
 }
 
-async function loadOrCreateProgram(options, cwd) {
-  if (!options.resume) {
-    const id = createProgramId();
-    const rootDir = path.resolve(cwd, options.programDir, id);
-    const startingRelease = options.startVersion ?? (await detectCurrentVersion(options.cstackBin, cwd));
-    const programRecord = {
-      schemaVersion: 2,
-      programId: id,
-      repo: options.repo,
-      branch: options.branch,
-      intent: options.intent,
-      iterationsRequested: options.iterations,
-      benchmarkIterations: options.benchmarkIterations,
-      cstackBin: options.cstackBin,
-      iterationsCompleted: 0,
-      startingRelease,
-      endingRelease: startingRelease,
-      status: "running",
-      currentPhase: "baseline",
-      lastSuccessfulIteration: 0,
-      iterations: []
-    };
-    await writeJson(path.join(rootDir, "program-record.json"), programRecord);
-    return { id, rootDir, programRecord, currentRelease: startingRelease };
-  }
+function slugify(value) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32) || "slice";
+}
 
-  const resumePath = path.isAbsolute(options.resume)
-    ? options.resume
-    : path.resolve(cwd, options.resume.includes(path.sep) ? options.resume : path.join(options.programDir, options.resume));
-  const programRecord = await readJsonIfExists(path.join(resumePath, "program-record.json"));
-  if (!programRecord) {
-    throw new Error(`Program record not found at ${resumePath}`);
-  }
-  options.repo = options.repo ?? programRecord.repo;
-  options.branch = options.branch ?? programRecord.branch ?? null;
-  options.intent = options.intent ?? programRecord.intent;
-  options.iterations = programRecord.iterationsRequested;
-  options.benchmarkIterations = programRecord.benchmarkIterations ?? options.benchmarkIterations;
-  options.cstackBin = programRecord.cstackBin ?? options.cstackBin;
-  return {
-    id: programRecord.programId,
-    rootDir: resumePath,
-    programRecord,
-    currentRelease: programRecord.endingRelease
-  };
+function iterationKey(iteration) {
+  return `iteration-${String(iteration).padStart(2, "0")}`;
 }
 
 async function writeProgramSummary(rootDir, programRecord) {
@@ -363,9 +345,67 @@ async function writeProgramSummary(rootDir, programRecord) {
   await fs.writeFile(path.join(rootDir, "summary.md"), `${summary}\n`, "utf8");
 }
 
+async function loadOrCreateProgram(options, cwd) {
+  if (!options.resume) {
+    const id = createProgramId();
+    const rootDir = path.resolve(cwd, options.programDir, id);
+    const startingRelease = options.startVersion ?? (await detectCurrentVersion(options.cstackBin, cwd));
+    const programRecord = {
+      schemaVersion: 3,
+      programId: id,
+      repo: options.repo,
+      branch: options.branch,
+      intent: options.intent,
+      iterationsRequested: options.iterations,
+      benchmarkIterations: options.benchmarkIterations,
+      cstackBin: options.cstackBin,
+      fixCommand: options.fixCommand,
+      validateCommand: options.validateCommand,
+      candidateCommand: options.candidateCommand,
+      releaseCommand: options.releaseCommand,
+      updateCommand: options.updateCommand,
+      iterationsCompleted: 0,
+      startingRelease,
+      endingRelease: startingRelease,
+      status: "running",
+      currentPhase: "baseline",
+      lastSuccessfulIteration: 0,
+      iterations: []
+    };
+    await writeJson(path.join(rootDir, "program-record.json"), programRecord);
+    await writeProgramSummary(rootDir, programRecord);
+    return { id, rootDir, programRecord, currentRelease: startingRelease };
+  }
+
+  const resumePath = path.isAbsolute(options.resume)
+    ? options.resume
+    : path.resolve(cwd, options.resume.includes(path.sep) ? options.resume : path.join(options.programDir, options.resume));
+  const programRecord = await readJsonIfExists(path.join(resumePath, "program-record.json"));
+  if (!programRecord) {
+    throw new Error(`Program record not found at ${resumePath}`);
+  }
+  options.repo = options.repo ?? programRecord.repo;
+  options.branch = options.branch ?? programRecord.branch ?? null;
+  options.intent = options.intent ?? programRecord.intent;
+  options.iterations = programRecord.iterationsRequested;
+  options.benchmarkIterations = programRecord.benchmarkIterations ?? options.benchmarkIterations;
+  options.cstackBin = programRecord.cstackBin ?? options.cstackBin;
+  options.fixCommand = programRecord.fixCommand ?? options.fixCommand;
+  options.validateCommand = programRecord.validateCommand ?? options.validateCommand;
+  options.candidateCommand = programRecord.candidateCommand ?? options.candidateCommand;
+  options.releaseCommand = programRecord.releaseCommand ?? options.releaseCommand;
+  options.updateCommand = programRecord.updateCommand ?? options.updateCommand;
+  return {
+    id: programRecord.programId,
+    rootDir: resumePath,
+    programRecord,
+    currentRelease: programRecord.endingRelease
+  };
+}
+
 async function loadIterationRecord(iterationDir, iteration, currentRelease) {
   const existing = (await readJsonIfExists(path.join(iterationDir, "iteration-record.json"))) ?? {
-    schemaVersion: 2,
+    schemaVersion: 3,
     iteration,
     startingRelease: currentRelease,
     endingRelease: currentRelease,
@@ -376,6 +416,8 @@ async function loadIterationRecord(iterationDir, iteration, currentRelease) {
     releasedTag: null,
     updaterValidated: false,
     benchmarkVerdict: "failed",
+    branchName: null,
+    pullRequest: null,
     phaseState: Object.fromEntries(PHASES.map((phase) => [phase, false])),
     baselineBenchmark: null,
     diagnosis: null,
@@ -388,15 +430,12 @@ async function loadIterationRecord(iterationDir, iteration, currentRelease) {
   };
   existing.phaseState ??= Object.fromEntries(PHASES.map((phase) => [phase, false]));
   for (const phase of PHASES) {
-    if (existing.phaseState[phase] !== true) {
-      existing.phaseState[phase] = false;
-    }
+    existing.phaseState[phase] = existing.phaseState[phase] === true;
   }
   return existing;
 }
 
 async function persistIteration(rootDir, iterationDir, programRecord, record) {
-  const summaryIndex = programRecord.iterations.findIndex((entry) => entry.iteration === record.iteration);
   const summaryEntry = {
     iteration: record.iteration,
     improved: record.improved,
@@ -404,6 +443,7 @@ async function persistIteration(rootDir, iterationDir, programRecord, record) {
     benchmarkVerdict: record.benchmarkVerdict,
     releasedTag: record.releasedTag
   };
+  const summaryIndex = programRecord.iterations.findIndex((entry) => entry.iteration === record.iteration);
   if (summaryIndex >= 0) {
     programRecord.iterations[summaryIndex] = summaryEntry;
   } else {
@@ -411,9 +451,7 @@ async function persistIteration(rootDir, iterationDir, programRecord, record) {
     programRecord.iterations.sort((left, right) => left.iteration - right.iteration);
   }
   await writeJson(path.join(iterationDir, "iteration-record.json"), record);
-  await writeJson(path.join(iterationDir, "backlog.json"), {
-    deferredClusters: record.deferredClusters
-  });
+  await writeJson(path.join(iterationDir, "backlog.json"), { deferredClusters: record.deferredClusters });
   await writeJson(path.join(rootDir, "program-record.json"), programRecord);
   await writeProgramSummary(rootDir, programRecord);
 }
@@ -429,6 +467,115 @@ async function runPhase(command, cwd, env, artifactPath) {
   return result;
 }
 
+async function ensureGitIdentity(cwd) {
+  await runExec("git", ["config", "user.name", "cstack program"], cwd);
+  await runExec("git", ["config", "user.email", "cstack-program@example.com"], cwd);
+}
+
+async function createBranchAndCommit(cwd, branchName, commitMessage) {
+  const existingBranch = await runExec("git", ["rev-parse", "--verify", branchName], cwd);
+  if (existingBranch.code === 0) {
+    await runExec("git", ["checkout", branchName], cwd);
+  } else {
+    const checkout = await runExec("git", ["checkout", "-b", branchName], cwd);
+    if (checkout.code !== 0) {
+      throw new Error(lastNonEmptyLine(checkout.stderr) || "failed to create iteration branch");
+    }
+  }
+  const files = await changedFiles(cwd);
+  if (files.length === 0) {
+    throw new Error("Candidate reported improvement but no repo-tracked changes are present.");
+  }
+  const add = await runExec("git", ["add", "-A"], cwd);
+  if (add.code !== 0) {
+    throw new Error(lastNonEmptyLine(add.stderr) || "failed to stage candidate changes");
+  }
+  const commit = await runExec("git", ["commit", "-m", commitMessage], cwd);
+  if (commit.code !== 0) {
+    throw new Error(lastNonEmptyLine(commit.stderr) || "failed to commit candidate changes");
+  }
+  const push = await runExec("git", ["push", "-u", "origin", branchName], cwd);
+  if (push.code !== 0) {
+    throw new Error(lastNonEmptyLine(push.stderr) || "failed to push iteration branch");
+  }
+  return {
+    changedFiles: files,
+    commitSha: await currentCommitSha(cwd),
+    commit,
+    push
+  };
+}
+
+async function hasOriginRemote(cwd) {
+  const result = await runExec("git", ["remote", "get-url", "origin"], cwd);
+  return result.code === 0;
+}
+
+async function ghJson(cwd, args, fallbackMessage) {
+  const result = await runExec("gh", args, cwd);
+  if (result.code !== 0) {
+    throw new Error(lastNonEmptyLine(result.stderr) || fallbackMessage);
+  }
+  return JSON.parse(result.stdout);
+}
+
+async function ensurePullRequest(cwd, branchName, title, bodyPath) {
+  const existing = await ghJson(cwd, ["pr", "list", "--head", branchName, "--json", "number,url,state", "--limit", "1"], "failed to inspect pull requests");
+  if (Array.isArray(existing) && existing.length > 0) {
+    return existing[0];
+  }
+  const create = await runExec(
+    "gh",
+    ["pr", "create", "--base", "main", "--head", branchName, "--title", title, "--body-file", bodyPath],
+    cwd
+  );
+  if (create.code !== 0) {
+    throw new Error(lastNonEmptyLine(create.stderr) || "failed to create pull request");
+  }
+  const created = await ghJson(cwd, ["pr", "list", "--head", branchName, "--json", "number,url,state", "--limit", "1"], "failed to load created pull request");
+  if (!Array.isArray(created) || created.length === 0) {
+    throw new Error("pull request was created but could not be reloaded");
+  }
+  return created[0];
+}
+
+async function waitForPrChecksAndMerge(cwd, number) {
+  const checks = await runExec("gh", ["pr", "checks", String(number), "--watch", "--interval", "10"], cwd);
+  if (checks.code !== 0) {
+    throw new Error(lastNonEmptyLine(checks.stderr) || "pull request checks failed");
+  }
+  const merge = await runExec("gh", ["pr", "merge", String(number), "--squash", "--delete-branch"], cwd);
+  if (merge.code !== 0) {
+    throw new Error(lastNonEmptyLine(merge.stderr) || "failed to merge pull request");
+  }
+  const checkoutMain = await runExec("git", ["checkout", "main"], cwd);
+  if (checkoutMain.code !== 0) {
+    throw new Error(lastNonEmptyLine(checkoutMain.stderr) || "failed to return to main");
+  }
+  const pullMain = await runExec("git", ["pull", "--ff-only", "origin", "main"], cwd);
+  if (pullMain.code !== 0) {
+    throw new Error(lastNonEmptyLine(pullMain.stderr) || "failed to fast-forward local main");
+  }
+  return {
+    checks,
+    merge
+  };
+}
+
+async function writePrBody(iterationDir, record) {
+  const prBodyPath = path.join(iterationDir, "pr-body.md");
+  const content = [
+    `## Program iteration ${record.iteration}`,
+    "",
+    `- Primary blocker: ${record.primaryBlockerCluster ?? "none"}`,
+    `- Candidate summary: ${record.candidateResult?.summary ?? "n/a"}`,
+    `- Deferred clusters: ${(record.deferredClusters ?? []).join(", ") || "none"}`,
+    `- Benchmark verdict: ${record.benchmarkVerdict}`
+  ].join("\n");
+  await fs.writeFile(prBodyPath, `${content}\n`, "utf8");
+  return prBodyPath;
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const cwd = process.cwd();
@@ -438,7 +585,9 @@ async function main() {
   for (let iteration = 1; iteration <= programRecord.iterationsRequested; iteration += 1) {
     const iterationDir = path.join(rootDir, iterationKey(iteration));
     await fs.mkdir(iterationDir, { recursive: true });
+    await ensureGitIdentity(cwd);
     const record = await loadIterationRecord(iterationDir, iteration, currentRelease);
+    record.startingRelease ??= currentRelease;
 
     const candidateResultPath = path.join(iterationDir, "candidate-result.json");
     const releaseResultPath = path.join(iterationDir, "release-result.json");
@@ -468,19 +617,14 @@ async function main() {
         benchmarkIterations: options.benchmarkIterations,
         intent: options.intent,
         cwd,
-        env: {
-          ...baseEnv
-        }
+        env: { ...baseEnv }
       });
       record.baselineBenchmark = baselineBenchmark;
       record.primaryBlockerCluster = baselineBenchmark.primaryBlockerCluster;
       record.deferredClusters = baselineBenchmark.benchmarkOutcome?.iterations?.at(-1)?.deferredClusters ?? [];
       record.phaseState.baseline = true;
       programRecord.currentPhase = "fix";
-      await writeJson(path.join(iterationDir, "benchmark-record.json"), {
-        phase: "baseline",
-        ...baselineBenchmark
-      });
+      await writeJson(path.join(iterationDir, "benchmark-record.json"), { phase: "baseline", ...baselineBenchmark });
       await persistIteration(rootDir, iterationDir, programRecord, record);
     }
 
@@ -488,6 +632,7 @@ async function main() {
       ...baseEnv,
       CSTACK_BASELINE_RUN_ID: record.baselineBenchmark?.runId ?? "",
       CSTACK_BASELINE_STATUS: record.baselineBenchmark?.status ?? "failed",
+      CSTACK_BASELINE_LOOP_ARTIFACTS_DIR: record.baselineBenchmark?.loopArtifactsDir ?? "",
       CSTACK_PRIMARY_BLOCKER_CLUSTER: record.primaryBlockerCluster ?? "",
       CSTACK_DEFERRED_CLUSTERS: JSON.stringify(record.deferredClusters ?? [])
     };
@@ -496,7 +641,7 @@ async function main() {
       record.fixCommandResult = await runPhase(options.fixCommand, cwd, phaseEnv, path.join(iterationDir, "fix-command.json"));
       record.diagnosis = await readJsonIfExists(diagnosisPath);
       record.phaseState.fix = true;
-      programRecord.currentPhase = options.validateCommand ? "validate" : "candidate";
+      programRecord.currentPhase = "validate";
       await persistIteration(rootDir, iterationDir, programRecord, record);
     }
 
@@ -524,16 +669,64 @@ async function main() {
         deferredClusters: record.deferredClusters,
         improved: null
       });
-      record.improved = record.candidateResult.improved ?? compareBenchmarkResults(record.baselineBenchmark, record.candidateResult);
-      record.commitSha = record.candidateResult.commitSha ?? (await currentCommitSha(cwd));
-      if (record.candidateResult.primaryBlockerCluster) {
+      record.improved = compareBenchmarkResults(record.baselineBenchmark, record.candidateResult);
+      if (record.candidateResult.primaryBlockerCluster !== undefined) {
         record.primaryBlockerCluster = record.candidateResult.primaryBlockerCluster;
       }
       if (record.candidateResult.deferredClusters.length > 0) {
         record.deferredClusters = record.candidateResult.deferredClusters;
       }
       record.phaseState.candidate = true;
-      programRecord.currentPhase = record.improved ? "release" : "finalize";
+      programRecord.currentPhase = record.improved ? "branch-push" : "finalize";
+      await persistIteration(rootDir, iterationDir, programRecord, record);
+    }
+
+    if (record.improved && !record.phaseState["branch-push"]) {
+      const remoteCapable = await hasOriginRemote(cwd);
+      if (remoteCapable) {
+        record.branchName ??= `cstack/program-${id.slice(0, 8)}/iter-${String(iteration).padStart(2, "0")}-${slugify(record.primaryBlockerCluster ?? "slice")}`;
+        const commitMessage = `fix: program iteration ${String(iteration).padStart(2, "0")} ${slugify(record.primaryBlockerCluster ?? "slice")}`;
+        const branchResult = await createBranchAndCommit(cwd, record.branchName, commitMessage);
+        record.commitSha = branchResult.commitSha;
+        if ((record.candidateResult?.changedFiles?.length ?? 0) === 0) {
+          record.candidateResult.changedFiles = branchResult.changedFiles;
+        }
+        await writeJson(path.join(iterationDir, "branch-push.json"), branchResult);
+      } else {
+        record.branchName = null;
+        record.commitSha = record.candidateResult?.commitSha ?? (await currentCommitSha(cwd));
+        await writeJson(path.join(iterationDir, "branch-push.json"), {
+          skipped: true,
+          reason: "origin remote is not configured; branch push skipped for local-only run"
+        });
+      }
+      record.phaseState["branch-push"] = true;
+      programRecord.currentPhase = "pr-create";
+      await persistIteration(rootDir, iterationDir, programRecord, record);
+    }
+
+    if (record.improved && !record.phaseState["pr-create"]) {
+      if (record.branchName) {
+        const prTitle = `Program iteration ${String(iteration).padStart(2, "0")}: ${record.primaryBlockerCluster ?? "bounded improvement"}`;
+        const prBodyPath = await writePrBody(iterationDir, record);
+        record.pullRequest = await ensurePullRequest(cwd, record.branchName, prTitle, prBodyPath);
+      } else {
+        record.pullRequest = null;
+      }
+      record.phaseState["pr-create"] = true;
+      programRecord.currentPhase = "pr-checks";
+      await writeJson(path.join(iterationDir, "pull-request.json"), record.pullRequest);
+      await persistIteration(rootDir, iterationDir, programRecord, record);
+    }
+
+    if (record.improved && !record.phaseState["pr-checks"]) {
+      const prCheckResult = record.pullRequest
+        ? await waitForPrChecksAndMerge(cwd, record.pullRequest.number)
+        : { skipped: true, reason: "pull request phases skipped for local-only run" };
+      record.phaseState["pr-checks"] = true;
+      record.phaseState.merge = true;
+      programRecord.currentPhase = "release";
+      await writeJson(path.join(iterationDir, "pull-request-checks.json"), prCheckResult);
       await persistIteration(rootDir, iterationDir, programRecord, record);
     }
 
@@ -555,7 +748,7 @@ async function main() {
         record.endingRelease = currentRelease;
       }
       record.phaseState.release = true;
-      programRecord.currentPhase = options.updateCommand ? "update" : "released-benchmark";
+      programRecord.currentPhase = "update";
       await persistIteration(rootDir, iterationDir, programRecord, record);
     }
 
@@ -565,7 +758,8 @@ async function main() {
         cwd,
         {
           ...phaseEnv,
-          CSTACK_RELEASED_TAG: record.releasedTag ?? ""
+          CSTACK_RELEASED_TAG: record.releasedTag ?? "",
+          CSTACK_STARTING_RELEASE: record.startingRelease
         },
         path.join(iterationDir, "update-command.json")
       );
@@ -613,6 +807,19 @@ async function main() {
       if (iteration === programRecord.iterationsRequested) {
         programRecord.status = "completed";
       }
+      await fs.writeFile(
+        path.join(iterationDir, "summary.md"),
+        [
+          `# Iteration ${String(iteration).padStart(2, "0")} Summary`,
+          "",
+          `- primary blocker: ${record.primaryBlockerCluster ?? "none"}`,
+          `- improved: ${record.improved ? "yes" : "no"}`,
+          `- benchmark verdict: ${record.benchmarkVerdict}`,
+          `- released tag: ${record.releasedTag ?? "none"}`,
+          `- pull request: ${record.pullRequest?.url ?? "none"}`
+        ].join("\n") + "\n",
+        "utf8"
+      );
       await persistIteration(rootDir, iterationDir, programRecord, record);
     }
   }

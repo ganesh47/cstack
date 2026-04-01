@@ -75,6 +75,10 @@ describe("self-improvement program script", () => {
         fakeCstackPath,
         "--start-version",
         "v0.1.0",
+        "--fix-command",
+        "printf 'fixed\\n'",
+        "--validate-command",
+        "printf 'validated\\n'",
         "--candidate-command",
         `cat > "$CSTACK_CANDIDATE_RESULT_PATH" <<'JSON'\n{"status":"completed","summary":"candidate improved","primaryBlockerCluster":null}\nJSON`,
         "--release-command",
@@ -149,6 +153,10 @@ describe("self-improvement program script", () => {
         fakeCstackPath,
         "--start-version",
         "v0.1.0",
+        "--fix-command",
+        "printf 'fixed\\n'",
+        "--validate-command",
+        "printf 'validated\\n'",
         "--candidate-command",
         `cat > "$CSTACK_CANDIDATE_RESULT_PATH" <<'JSON'\n{"status":"failed","summary":"still blocked","primaryBlockerCluster":"validation blocker"}\nJSON`,
         "--release-command",
@@ -218,7 +226,9 @@ describe("self-improvement program script", () => {
         "--cstack-bin",
         fakeCstackPath,
         "--start-version",
-        "v0.1.0"
+        "v0.1.0",
+        "--validate-command",
+        "printf 'validated\\n'"
       ],
       {
         cwd: repoDir,
@@ -226,6 +236,7 @@ describe("self-improvement program script", () => {
           ...process.env,
           FAKE_SELF_IMPROVEMENT_SCENARIO: scenarioPath,
           FAKE_SELF_IMPROVEMENT_STATE: statePath,
+          CSTACK_PROGRAM_FIX_COMMAND: "printf 'fixed via default hook\\n'",
           CSTACK_PROGRAM_CANDIDATE_COMMAND:
             `cat > "$CSTACK_CANDIDATE_RESULT_PATH" <<'JSON'\n{"status":"partial","summary":"candidate moved the blocker","primaryBlockerCluster":"validation blocker","deferredClusters":["release blocker"],"improved":true}\nJSON`,
           CSTACK_PROGRAM_RELEASE_COMMAND:
@@ -296,7 +307,9 @@ describe("self-improvement program script", () => {
           "--cstack-bin",
           fakeCstackPath,
           "--start-version",
-          "v0.1.0"
+          "v0.1.0",
+          "--validate-command",
+          "printf 'validated\\n'"
         ],
         {
           cwd: repoDir,
