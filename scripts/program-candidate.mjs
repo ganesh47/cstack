@@ -223,6 +223,9 @@ async function main() {
     improved: null,
     benchmarkCommand: ["node", ...args].join(" ")
   };
+  if (result.status === "failed" && !result.primaryBlockerCluster) {
+    result.primaryBlockerCluster = process.env.CSTACK_PRIMARY_BLOCKER_CLUSTER || "unknown-failed-benchmark";
+  }
   await fs.writeFile(candidatePath, `${JSON.stringify(result, null, 2)}\n`, "utf8");
   await fs.writeFile(
     path.join(process.env.CSTACK_ITERATION_DIR, "candidate-benchmark.json"),

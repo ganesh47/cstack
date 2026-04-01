@@ -350,6 +350,9 @@ function compareBenchmarkResults(baseline, candidate) {
   if (candidate?.improved === true) {
     return true;
   }
+  if ((candidate?.status ?? "failed") === "failed") {
+    return false;
+  }
   if (benchmarkProgressScore(candidate) > benchmarkProgressScore(baseline)) {
     return true;
   }
@@ -516,7 +519,10 @@ async function loadIterationRecord(iterationDir, iteration, currentRelease) {
     fixCommandResult: null,
     validateCommandResult: null,
     releaseCommandResult: null,
-    updateCommandResult: null
+    updateCommandResult: null,
+    failedPhase: null,
+    phaseErrorSummary: null,
+    recoverable: null
   };
   existing.phaseState ??= Object.fromEntries(PHASES.map((phase) => [phase, false]));
   for (const phase of PHASES) {
@@ -544,6 +550,21 @@ async function persistIteration(rootDir, iterationDir, programRecord, record) {
   await writeJson(path.join(iterationDir, "backlog.json"), { deferredClusters: record.deferredClusters });
   await writeJson(path.join(rootDir, "program-record.json"), programRecord);
   await writeProgramSummary(rootDir, programRecord);
+}
+
+async function recordPhaseError(rootDir, iterationDir, programRecord, record, failedPhase, error) {
+  const message = error instanceof Error ? error.message : String(error);
+  record.failedPhase = failedPhase;
+  record.phaseErrorSummary = message;
+  record.recoverable = ["pr-checks", "merge", "release", "update", "released-benchmark"].includes(failedPhase);
+  programRecord.currentPhase = failedPhase;
+  programRecord.status = "failed";
+  await writeJson(path.join(iterationDir, "phase-error.json"), {
+    failedPhase,
+    message,
+    recoverable: record.recoverable
+  });
+  await persistIteration(rootDir, iterationDir, programRecord, record);
 }
 
 async function runPhase(command, cwd, env, artifactPath) {
@@ -576,7 +597,10 @@ async function createBranchAndCommit(cwd, branchName, commitMessage) {
   if (files.length === 0) {
     throw new Error("Candidate reported improvement but no repo-tracked changes are present.");
   }
-  const add = await runExec("git", ["add", "-A"], cwd);
+  if (files.some((file) => file.startsWith(".cstack/"))) {
+    throw new Error("Program artifacts leaked into candidate staging.");
+  }
+  const add = await runExec("git", ["add", "--", ...files], cwd);
   if (add.code !== 0) {
     throw new Error(lastNonEmptyLine(add.stderr) || "failed to stage candidate changes");
   }
@@ -699,189 +723,194 @@ async function main() {
       CSTACK_BRANCH: options.branch ?? ""
     };
 
-    if (!record.phaseState.baseline) {
-      const baselineBenchmark = await runReleasedBenchmark({
-        cstackBin: options.cstackBin,
-        repo: options.repo,
-        branch: options.branch,
-        benchmarkIterations: options.benchmarkIterations,
-        intent: options.intent,
-        cwd,
-        env: { ...baseEnv }
-      });
-      record.baselineBenchmark = baselineBenchmark;
-      record.primaryBlockerCluster = baselineBenchmark.primaryBlockerCluster;
-      record.deferredClusters = baselineBenchmark.benchmarkOutcome?.iterations?.at(-1)?.deferredClusters ?? [];
-      record.phaseState.baseline = true;
-      programRecord.currentPhase = "fix";
-      await writeJson(path.join(iterationDir, "benchmark-record.json"), { phase: "baseline", ...baselineBenchmark });
-      await persistIteration(rootDir, iterationDir, programRecord, record);
-    }
-
-    const phaseEnv = {
-      ...baseEnv,
-      CSTACK_BASELINE_RUN_ID: record.baselineBenchmark?.runId ?? "",
-      CSTACK_BASELINE_STATUS: record.baselineBenchmark?.status ?? "failed",
-      CSTACK_BASELINE_LOOP_ARTIFACTS_DIR: record.baselineBenchmark?.loopArtifactsDir ?? "",
-      CSTACK_PRIMARY_BLOCKER_CLUSTER: record.primaryBlockerCluster ?? "",
-      CSTACK_DEFERRED_CLUSTERS: JSON.stringify(record.deferredClusters ?? [])
-    };
-
-    if (!record.phaseState.fix && options.fixCommand) {
-      record.fixCommandResult = await runPhase(options.fixCommand, cwd, phaseEnv, path.join(iterationDir, "fix-command.json"));
-      record.diagnosis = await readJsonIfExists(diagnosisPath);
-      record.phaseState.fix = true;
-      programRecord.currentPhase = "validate";
-      await persistIteration(rootDir, iterationDir, programRecord, record);
-    }
-
-    if (!record.phaseState.validate && options.validateCommand) {
-      record.validateCommandResult = await runPhase(
-        options.validateCommand,
-        cwd,
-        phaseEnv,
-        path.join(iterationDir, "validate-command.json")
-      );
-      record.phaseState.validate = true;
-      programRecord.currentPhase = "candidate";
-      await persistIteration(rootDir, iterationDir, programRecord, record);
-    }
-
-    if (!record.phaseState.candidate && options.candidateCommand) {
-      await runPhase(options.candidateCommand, cwd, phaseEnv, path.join(iterationDir, "candidate-command.json"));
-      record.candidateResult = await readCandidateResult(candidateResultPath, {
-        status: record.baselineBenchmark?.status ?? "failed",
-        summary: record.baselineBenchmark?.summary ?? "",
-        primaryBlockerCluster: record.primaryBlockerCluster,
-        runId: null,
-        changedFiles: [],
-        commitSha: null,
-        deferredClusters: record.deferredClusters,
-        improved: null
-      });
-      record.improved = compareBenchmarkResults(record.baselineBenchmark, record.candidateResult);
-      if (record.candidateResult.primaryBlockerCluster !== undefined) {
-        record.primaryBlockerCluster = record.candidateResult.primaryBlockerCluster;
-      }
-      if (record.candidateResult.deferredClusters.length > 0) {
-        record.deferredClusters = record.candidateResult.deferredClusters;
-      }
-      record.phaseState.candidate = true;
-      programRecord.currentPhase = record.improved ? "branch-push" : "finalize";
-      await persistIteration(rootDir, iterationDir, programRecord, record);
-    }
-
-    if (record.improved && !record.phaseState["branch-push"]) {
-      const remoteCapable = await hasOriginRemote(cwd);
-      if (remoteCapable) {
-        record.branchName ??= `cstack/program-${id.slice(0, 8)}/iter-${String(iteration).padStart(2, "0")}-${slugify(record.primaryBlockerCluster ?? "slice")}`;
-        const commitMessage = `fix: program iteration ${String(iteration).padStart(2, "0")} ${slugify(record.primaryBlockerCluster ?? "slice")}`;
-        const branchResult = await createBranchAndCommit(cwd, record.branchName, commitMessage);
-        record.commitSha = branchResult.commitSha;
-        if ((record.candidateResult?.changedFiles?.length ?? 0) === 0) {
-          record.candidateResult.changedFiles = branchResult.changedFiles;
-        }
-        await writeJson(path.join(iterationDir, "branch-push.json"), branchResult);
-      } else {
-        record.branchName = null;
-        record.commitSha = record.candidateResult?.commitSha ?? (await currentCommitSha(cwd));
-        await writeJson(path.join(iterationDir, "branch-push.json"), {
-          skipped: true,
-          reason: "origin remote is not configured; branch push skipped for local-only run"
+    try {
+      if (!record.phaseState.baseline) {
+        const baselineBenchmark = await runReleasedBenchmark({
+          cstackBin: options.cstackBin,
+          repo: options.repo,
+          branch: options.branch,
+          benchmarkIterations: options.benchmarkIterations,
+          intent: options.intent,
+          cwd,
+          env: { ...baseEnv }
         });
+        record.baselineBenchmark = baselineBenchmark;
+        record.primaryBlockerCluster = baselineBenchmark.primaryBlockerCluster;
+        record.deferredClusters = baselineBenchmark.benchmarkOutcome?.iterations?.at(-1)?.deferredClusters ?? [];
+        record.phaseState.baseline = true;
+        programRecord.currentPhase = "fix";
+        await writeJson(path.join(iterationDir, "benchmark-record.json"), { phase: "baseline", ...baselineBenchmark });
+        await persistIteration(rootDir, iterationDir, programRecord, record);
       }
-      record.phaseState["branch-push"] = true;
-      programRecord.currentPhase = "pr-create";
-      await persistIteration(rootDir, iterationDir, programRecord, record);
-    }
 
-    if (record.improved && !record.phaseState["pr-create"]) {
-      if (record.branchName) {
-        const prTitle = `Program iteration ${String(iteration).padStart(2, "0")}: ${record.primaryBlockerCluster ?? "bounded improvement"}`;
-        const prBodyPath = await writePrBody(iterationDir, record);
-        record.pullRequest = await ensurePullRequest(cwd, record.branchName, prTitle, prBodyPath);
-      } else {
-        record.pullRequest = null;
+      const phaseEnv = {
+        ...baseEnv,
+        CSTACK_BASELINE_RUN_ID: record.baselineBenchmark?.runId ?? "",
+        CSTACK_BASELINE_STATUS: record.baselineBenchmark?.status ?? "failed",
+        CSTACK_BASELINE_LOOP_ARTIFACTS_DIR: record.baselineBenchmark?.loopArtifactsDir ?? "",
+        CSTACK_PRIMARY_BLOCKER_CLUSTER: record.primaryBlockerCluster ?? "",
+        CSTACK_DEFERRED_CLUSTERS: JSON.stringify(record.deferredClusters ?? [])
+      };
+
+      if (!record.phaseState.fix && options.fixCommand) {
+        record.fixCommandResult = await runPhase(options.fixCommand, cwd, phaseEnv, path.join(iterationDir, "fix-command.json"));
+        record.diagnosis = await readJsonIfExists(diagnosisPath);
+        record.phaseState.fix = true;
+        programRecord.currentPhase = "validate";
+        await persistIteration(rootDir, iterationDir, programRecord, record);
       }
-      record.phaseState["pr-create"] = true;
-      programRecord.currentPhase = "pr-checks";
-      await writeJson(path.join(iterationDir, "pull-request.json"), record.pullRequest);
-      await persistIteration(rootDir, iterationDir, programRecord, record);
-    }
 
-    if (record.improved && !record.phaseState["pr-checks"]) {
-      const prCheckResult = record.pullRequest
-        ? await waitForPrChecksAndMerge(cwd, record.pullRequest.number)
-        : { skipped: true, reason: "pull request phases skipped for local-only run" };
-      record.phaseState["pr-checks"] = true;
-      record.phaseState.merge = true;
-      programRecord.currentPhase = "release";
-      await writeJson(path.join(iterationDir, "pull-request-checks.json"), prCheckResult);
-      await persistIteration(rootDir, iterationDir, programRecord, record);
-    }
-
-    if (record.improved && !record.phaseState.release && options.releaseCommand) {
-      record.releaseCommandResult = await runPhase(
-        options.releaseCommand,
-        cwd,
-        {
-          ...phaseEnv,
-          CSTACK_CANDIDATE_STATUS: record.candidateResult?.status ?? "",
-          CSTACK_CANDIDATE_BLOCKER_CLUSTER: record.candidateResult?.primaryBlockerCluster ?? ""
-        },
-        path.join(iterationDir, "release-command.json")
-      );
-      const releaseResult = await readJsonIfExists(releaseResultPath);
-      record.releasedTag = releaseResult?.releasedTag ?? (lastNonEmptyLine(record.releaseCommandResult.stdout) || null);
-      if (record.releasedTag) {
-        currentRelease = record.releasedTag;
-        record.endingRelease = currentRelease;
+      if (!record.phaseState.validate && options.validateCommand) {
+        record.validateCommandResult = await runPhase(
+          options.validateCommand,
+          cwd,
+          phaseEnv,
+          path.join(iterationDir, "validate-command.json")
+        );
+        record.phaseState.validate = true;
+        programRecord.currentPhase = "candidate";
+        await persistIteration(rootDir, iterationDir, programRecord, record);
       }
-      record.phaseState.release = true;
-      programRecord.currentPhase = "update";
-      await persistIteration(rootDir, iterationDir, programRecord, record);
-    }
 
-    if (record.improved && !record.phaseState.update && options.updateCommand) {
-      record.updateCommandResult = await runPhase(
-        options.updateCommand,
-        cwd,
-        {
-          ...phaseEnv,
-          CSTACK_RELEASED_TAG: record.releasedTag ?? "",
-          CSTACK_STARTING_RELEASE: record.startingRelease
-        },
-        path.join(iterationDir, "update-command.json")
-      );
-      record.updaterValidated = true;
-      record.phaseState.update = true;
-      programRecord.currentPhase = "released-benchmark";
-      await persistIteration(rootDir, iterationDir, programRecord, record);
-    }
-
-    if (record.improved && !record.phaseState["released-benchmark"] && options.releaseCommand) {
-      record.releasedBenchmark = await runReleasedBenchmark({
-        cstackBin: options.cstackBin,
-        repo: options.repo,
-        branch: options.branch,
-        benchmarkIterations: options.benchmarkIterations,
-        intent: options.intent,
-        cwd,
-        env: {
-          ...phaseEnv,
-          CSTACK_RELEASED_TAG: record.releasedTag ?? ""
+      if (!record.phaseState.candidate && options.candidateCommand) {
+        await runPhase(options.candidateCommand, cwd, phaseEnv, path.join(iterationDir, "candidate-command.json"));
+        record.candidateResult = await readCandidateResult(candidateResultPath, {
+          status: record.baselineBenchmark?.status ?? "failed",
+          summary: record.baselineBenchmark?.summary ?? "",
+          primaryBlockerCluster: record.primaryBlockerCluster,
+          runId: null,
+          changedFiles: [],
+          commitSha: null,
+          deferredClusters: record.deferredClusters,
+          improved: null
+        });
+        record.improved = compareBenchmarkResults(record.baselineBenchmark, record.candidateResult);
+        if (record.candidateResult.primaryBlockerCluster !== undefined) {
+          record.primaryBlockerCluster = record.candidateResult.primaryBlockerCluster;
         }
-      });
-      record.benchmarkVerdict = record.releasedBenchmark.status;
-      record.phaseState["released-benchmark"] = true;
-      programRecord.currentPhase = "finalize";
-      await writeJson(path.join(iterationDir, "released-benchmark.json"), record.releasedBenchmark);
-      await writeJson(path.join(iterationDir, "release-validation.json"), {
-        releaseCommandResult: record.releaseCommandResult,
-        updateCommandResult: record.updateCommandResult,
-        releasedBenchmark: record.releasedBenchmark
-      });
-      await persistIteration(rootDir, iterationDir, programRecord, record);
+        if (record.candidateResult.deferredClusters.length > 0) {
+          record.deferredClusters = record.candidateResult.deferredClusters;
+        }
+        record.phaseState.candidate = true;
+        programRecord.currentPhase = record.improved ? "branch-push" : "finalize";
+        await persistIteration(rootDir, iterationDir, programRecord, record);
+      }
+
+      if (record.improved && !record.phaseState["branch-push"]) {
+        const remoteCapable = await hasOriginRemote(cwd);
+        if (remoteCapable) {
+          record.branchName ??= `cstack/program-${id.slice(0, 8)}/iter-${String(iteration).padStart(2, "0")}-${slugify(record.primaryBlockerCluster ?? "slice")}`;
+          const commitMessage = `fix: program iteration ${String(iteration).padStart(2, "0")} ${slugify(record.primaryBlockerCluster ?? "slice")}`;
+          const branchResult = await createBranchAndCommit(cwd, record.branchName, commitMessage);
+          record.commitSha = branchResult.commitSha;
+          if ((record.candidateResult?.changedFiles?.length ?? 0) === 0) {
+            record.candidateResult.changedFiles = branchResult.changedFiles;
+          }
+          await writeJson(path.join(iterationDir, "branch-push.json"), branchResult);
+        } else {
+          record.branchName = null;
+          record.commitSha = record.candidateResult?.commitSha ?? (await currentCommitSha(cwd));
+          await writeJson(path.join(iterationDir, "branch-push.json"), {
+            skipped: true,
+            reason: "origin remote is not configured; branch push skipped for local-only run"
+          });
+        }
+        record.phaseState["branch-push"] = true;
+        programRecord.currentPhase = "pr-create";
+        await persistIteration(rootDir, iterationDir, programRecord, record);
+      }
+
+      if (record.improved && !record.phaseState["pr-create"]) {
+        if (record.branchName) {
+          const prTitle = `Program iteration ${String(iteration).padStart(2, "0")}: ${record.primaryBlockerCluster ?? "bounded improvement"}`;
+          const prBodyPath = await writePrBody(iterationDir, record);
+          record.pullRequest = await ensurePullRequest(cwd, record.branchName, prTitle, prBodyPath);
+        } else {
+          record.pullRequest = null;
+        }
+        record.phaseState["pr-create"] = true;
+        programRecord.currentPhase = "pr-checks";
+        await writeJson(path.join(iterationDir, "pull-request.json"), record.pullRequest);
+        await persistIteration(rootDir, iterationDir, programRecord, record);
+      }
+
+      if (record.improved && !record.phaseState["pr-checks"]) {
+        const prCheckResult = record.pullRequest
+          ? await waitForPrChecksAndMerge(cwd, record.pullRequest.number)
+          : { skipped: true, reason: "pull request phases skipped for local-only run" };
+        record.phaseState["pr-checks"] = true;
+        record.phaseState.merge = true;
+        programRecord.currentPhase = "release";
+        await writeJson(path.join(iterationDir, "pull-request-checks.json"), prCheckResult);
+        await persistIteration(rootDir, iterationDir, programRecord, record);
+      }
+
+      if (record.improved && !record.phaseState.release && options.releaseCommand) {
+        record.releaseCommandResult = await runPhase(
+          options.releaseCommand,
+          cwd,
+          {
+            ...phaseEnv,
+            CSTACK_CANDIDATE_STATUS: record.candidateResult?.status ?? "",
+            CSTACK_CANDIDATE_BLOCKER_CLUSTER: record.candidateResult?.primaryBlockerCluster ?? ""
+          },
+          path.join(iterationDir, "release-command.json")
+        );
+        const releaseResult = await readJsonIfExists(releaseResultPath);
+        record.releasedTag = releaseResult?.releasedTag ?? (lastNonEmptyLine(record.releaseCommandResult.stdout) || null);
+        if (record.releasedTag) {
+          currentRelease = record.releasedTag;
+          record.endingRelease = currentRelease;
+        }
+        record.phaseState.release = true;
+        programRecord.currentPhase = "update";
+        await persistIteration(rootDir, iterationDir, programRecord, record);
+      }
+
+      if (record.improved && !record.phaseState.update && options.updateCommand) {
+        record.updateCommandResult = await runPhase(
+          options.updateCommand,
+          cwd,
+          {
+            ...phaseEnv,
+            CSTACK_RELEASED_TAG: record.releasedTag ?? "",
+            CSTACK_STARTING_RELEASE: record.startingRelease
+          },
+          path.join(iterationDir, "update-command.json")
+        );
+        record.updaterValidated = true;
+        record.phaseState.update = true;
+        programRecord.currentPhase = "released-benchmark";
+        await persistIteration(rootDir, iterationDir, programRecord, record);
+      }
+
+      if (record.improved && !record.phaseState["released-benchmark"] && options.releaseCommand) {
+        record.releasedBenchmark = await runReleasedBenchmark({
+          cstackBin: options.cstackBin,
+          repo: options.repo,
+          branch: options.branch,
+          benchmarkIterations: options.benchmarkIterations,
+          intent: options.intent,
+          cwd,
+          env: {
+            ...phaseEnv,
+            CSTACK_RELEASED_TAG: record.releasedTag ?? ""
+          }
+        });
+        record.benchmarkVerdict = record.releasedBenchmark.status;
+        record.phaseState["released-benchmark"] = true;
+        programRecord.currentPhase = "finalize";
+        await writeJson(path.join(iterationDir, "released-benchmark.json"), record.releasedBenchmark);
+        await writeJson(path.join(iterationDir, "release-validation.json"), {
+          releaseCommandResult: record.releaseCommandResult,
+          updateCommandResult: record.updateCommandResult,
+          releasedBenchmark: record.releasedBenchmark
+        });
+        await persistIteration(rootDir, iterationDir, programRecord, record);
+      }
+    } catch (error) {
+      await recordPhaseError(rootDir, iterationDir, programRecord, record, programRecord.currentPhase, error);
+      throw error;
     }
 
     if (!record.improved) {

@@ -183,6 +183,74 @@ describe("self-improvement program script", () => {
     await expect(fs.access(releaseLogPath)).rejects.toThrow(/ENOENT/);
   });
 
+  it("does not promote a failed candidate benchmark when blocker extraction returns null", async () => {
+    const scenarioPath = path.join(repoDir, "scenario.json");
+    const statePath = path.join(repoDir, "state.json");
+    const releaseLogPath = path.join(repoDir, "release.log");
+
+    await fs.writeFile(
+      scenarioPath,
+      `${JSON.stringify(
+        {
+          benchmarks: [
+            {
+              runId: "intent-baseline",
+              status: "failed",
+              summary: "blocked by validation",
+              primaryBlockerCluster: "validation blocker"
+            }
+          ]
+        },
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
+
+    await execFileAsync(
+      process.execPath,
+      [
+        scriptPath,
+        "--iterations",
+        "1",
+        "--repo",
+        repoDir,
+        "--intent",
+        "What are the gaps in this project? Can you work on closing the gaps?",
+        "--cstack-bin",
+        fakeCstackPath,
+        "--start-version",
+        "v0.1.0",
+        "--fix-command",
+        "printf 'fixed\\n'",
+        "--validate-command",
+        "printf 'validated\\n'",
+        "--candidate-command",
+        `cat > "$CSTACK_CANDIDATE_RESULT_PATH" <<'JSON'\n{"status":"failed","summary":"still blocked","primaryBlockerCluster":null}\nJSON`,
+        "--release-command",
+        `printf 'v0.1.1\\n' > "${releaseLogPath}"`
+      ],
+      {
+        cwd: repoDir,
+        env: {
+          ...process.env,
+          FAKE_SELF_IMPROVEMENT_SCENARIO: scenarioPath,
+          FAKE_SELF_IMPROVEMENT_STATE: statePath
+        },
+        maxBuffer: 20 * 1024 * 1024
+      }
+    );
+
+    const programRoot = path.join(repoDir, ".cstack", "programs");
+    const programIds = await fs.readdir(programRoot);
+    const programDir = path.join(programRoot, programIds[0]!);
+    const iterationRecord = JSON.parse(await fs.readFile(path.join(programDir, "iteration-01", "iteration-record.json"), "utf8"));
+
+    expect(iterationRecord.improved).toBe(false);
+    expect(iterationRecord.phaseState["branch-push"]).toBe(false);
+    await expect(fs.access(releaseLogPath)).rejects.toThrow(/ENOENT/);
+  });
+
   it("extracts a blocker from run artifacts when cstack loop does not print loop artifacts", async () => {
     const noArtifactsCstackPath = path.join(repoDir, "fake-no-artifacts-cstack.mjs");
     const workspaceDir = path.join(repoDir, "benchmark-workspace");
@@ -451,5 +519,110 @@ describe("self-improvement program script", () => {
     expect(resumedIteration.phaseState.finalize).toBe(true);
     expect(resumedIteration.releasedTag).toBe("v0.1.1");
     expect(resumedIteration.benchmarkVerdict).toBe("completed");
+  });
+
+  it("records a pr-checks phase error and excludes tracked program artifacts from the branch commit", async () => {
+    const scenarioPath = path.join(repoDir, "scenario.json");
+    const statePath = path.join(repoDir, "state.json");
+    const bareRemoteDir = await fs.mkdtemp(path.join(os.tmpdir(), "cstack-program-remote-"));
+    const fakeGhPath = path.resolve("test/fixtures/fake-gh.mjs");
+    const fakeGhBinDir = await fs.mkdtemp(path.join(os.tmpdir(), "cstack-fake-gh-bin-"));
+    await fs.writeFile(
+      path.join(fakeGhBinDir, "gh"),
+      `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(fakeGhPath)} "$@"\n`,
+      "utf8"
+    );
+    chmodSync(path.join(fakeGhBinDir, "gh"), 0o755);
+    chmodSync(fakeGhPath, 0o755);
+
+    await execFileAsync("git", ["init", "--bare", bareRemoteDir]);
+    await execFileAsync("git", ["remote", "add", "origin", bareRemoteDir], { cwd: repoDir });
+    await execFileAsync("git", ["push", "-u", "origin", "main"], { cwd: repoDir });
+    await fs.mkdir(path.join(repoDir, ".cstack", "programs", "tracked"), { recursive: true });
+    await fs.writeFile(path.join(repoDir, ".cstack", "programs", "tracked", "summary.md"), "tracked\n", "utf8");
+    await execFileAsync("git", ["add", ".cstack/programs/tracked/summary.md"], { cwd: repoDir });
+    await execFileAsync("git", ["commit", "-m", "track program artifact fixture"], { cwd: repoDir });
+    await execFileAsync("git", ["push"], { cwd: repoDir });
+
+    await fs.writeFile(
+      scenarioPath,
+      `${JSON.stringify(
+        {
+          benchmarks: [
+            {
+              runId: "intent-baseline",
+              status: "failed",
+              summary: "blocked by validation",
+              primaryBlockerCluster: "validation blocker"
+            }
+          ]
+        },
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
+
+    await expect(
+      execFileAsync(
+        process.execPath,
+        [
+          scriptPath,
+          "--iterations",
+          "1",
+          "--repo",
+          repoDir,
+          "--intent",
+          "What are the gaps in this project? Can you work on closing the gaps?",
+          "--cstack-bin",
+          fakeCstackPath,
+          "--start-version",
+          "v0.1.0",
+          "--validate-command",
+          "printf 'validated\\n'"
+        ],
+        {
+          cwd: repoDir,
+          env: {
+            ...process.env,
+            PATH: `${fakeGhBinDir}:${process.env.PATH ?? ""}`,
+            FAKE_GH_SCENARIO: JSON.stringify({
+              prChecksError: "simulated pr checks failure"
+            }),
+            FAKE_SELF_IMPROVEMENT_SCENARIO: scenarioPath,
+            FAKE_SELF_IMPROVEMENT_STATE: statePath,
+            CSTACK_PROGRAM_FIX_COMMAND:
+              "printf 'code change\\n' >> README.md && printf 'artifact drift\\n' >> .cstack/programs/tracked/summary.md",
+            CSTACK_PROGRAM_CANDIDATE_COMMAND:
+              `cat > "$CSTACK_CANDIDATE_RESULT_PATH" <<'JSON'\n{"status":"partial","summary":"candidate improved","primaryBlockerCluster":"validation blocker","improved":true}\nJSON`
+          },
+          maxBuffer: 20 * 1024 * 1024
+        }
+      )
+    ).rejects.toThrow(/simulated pr checks failure/);
+
+    const programRoot = path.join(repoDir, ".cstack", "programs");
+    const programIds = await fs.readdir(programRoot);
+    const programDir = path.join(programRoot, programIds.find((entry) => entry !== "tracked")!);
+    const iterationRecord = JSON.parse(await fs.readFile(path.join(programDir, "iteration-01", "iteration-record.json"), "utf8"));
+    const phaseError = JSON.parse(await fs.readFile(path.join(programDir, "iteration-01", "phase-error.json"), "utf8"));
+    const branchPush = JSON.parse(await fs.readFile(path.join(programDir, "iteration-01", "branch-push.json"), "utf8"));
+    const commitFiles = (
+      await execFileAsync("git", ["show", "--name-only", "--pretty=format:", iterationRecord.commitSha], { cwd: repoDir })
+    ).stdout
+      .split(/\r?\n/)
+      .filter(Boolean);
+
+    expect(iterationRecord.failedPhase).toBe("pr-checks");
+    expect(iterationRecord.phaseErrorSummary).toContain("simulated pr checks failure");
+    expect(iterationRecord.recoverable).toBe(true);
+    expect(phaseError.failedPhase).toBe("pr-checks");
+    expect(branchPush.changedFiles).toContain("README.md");
+    expect(branchPush.changedFiles.some((file: string) => file.startsWith(".cstack/"))).toBe(false);
+    expect(commitFiles).toContain("README.md");
+    expect(commitFiles.some((file) => file.startsWith(".cstack/"))).toBe(false);
+
+    await fs.rm(bareRemoteDir, { recursive: true, force: true });
+    await fs.rm(fakeGhBinDir, { recursive: true, force: true });
   });
 });

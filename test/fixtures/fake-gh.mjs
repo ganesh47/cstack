@@ -67,6 +67,21 @@ if (args[0] === "pr" && args[1] === "view") {
   process.exit(0);
 }
 
+if (args[0] === "pr" && args[1] === "list") {
+  const pullRequest = fixture.pullRequest ?? fixture.pr;
+  const headRefName = getArgValue("--head");
+  if (!pullRequest) {
+    printJson([]);
+    process.exit(0);
+  }
+  if (headRefName && pullRequest.headRefName && headRefName !== pullRequest.headRefName) {
+    printJson([]);
+    process.exit(0);
+  }
+  printJson([pullRequest]);
+  process.exit(0);
+}
+
 if (args[0] === "pr" && args[1] === "create") {
   if (fixture.prCreateError) {
     fail(fixture.prCreateError);
@@ -134,6 +149,26 @@ if (args[0] === "pr" && args[1] === "checks") {
     fail(fixture.prChecksError);
   }
   printJson(fixture.prChecks ?? fixture.checks ?? []);
+  process.exit(0);
+}
+
+if (args[0] === "pr" && args[1] === "merge") {
+  if (fixture.prMergeError) {
+    fail(fixture.prMergeError);
+  }
+  const currentPr = fixture.pullRequest ?? fixture.pr;
+  if (!currentPr) {
+    fail("no pull request found");
+  }
+  const pullRequest = {
+    ...currentPr,
+    state: "MERGED"
+  };
+  await saveState({
+    ...fixture,
+    pullRequest
+  });
+  process.stdout.write(`Merged pull request #${pullRequest.number}\n`);
   process.exit(0);
 }
 
