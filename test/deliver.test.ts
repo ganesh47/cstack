@@ -880,7 +880,7 @@ describe("runDeliver", () => {
 
     expect(run.status).toBe("failed");
     expect(localValidation.blockerCategories).toContain("registry-unreachable");
-    expect(coverageSummary.outcomeCategory).toBe("blocked-by-validation");
+    expect(coverageSummary.outcomeCategory).toBe("partial");
     expect(coverageSummary.gaps.join("\n")).toContain("registry-unreachable");
   }, 60_000);
 

@@ -1515,12 +1515,27 @@ function renderCoverageGapsMarkdown(plan: DeliverValidationPlan, localValidation
   ].join("\n") + "\n";
 }
 
+function hasOnlyExternalValidationBlockers(localValidationRecord: DeliverValidationLocalRecord): boolean {
+  const blockers = localValidationRecord.blockerCategories ?? [];
+  if (blockers.length === 0) {
+    return false;
+  }
+  return blockers.every((blocker) =>
+    ["network-blocked", "registry-unreachable", "toolchain-mismatch", "host-tool-missing", "external-service-blocked", "orchestration-timeout"].includes(
+      blocker
+    )
+  );
+}
+
 function deriveValidationOutcomeCategory(
   plan: Pick<DeliverValidationPlan, "status" | "coverage" | "localValidation" | "unsupported" | "classificationReason">,
   localValidationRecord: DeliverValidationLocalRecord
 ): DeliverValidationPlan["outcomeCategory"] {
   if (plan.classificationReason === "validation drift detected") {
     return "blocked-by-validation-drift";
+  }
+  if (hasOnlyExternalValidationBlockers(localValidationRecord)) {
+    return "partial";
   }
   if (localValidationRecord.status === "failed" || (localValidationRecord.blockerCategories?.length ?? 0) > 0) {
     return "blocked-by-validation";
@@ -1592,6 +1607,9 @@ function buildCoverageSummary(plan: DeliverValidationPlan, localValidationRecord
 function finalizeValidationPlanStatus(plan: DeliverValidationPlan, localValidationRecord: DeliverValidationLocalRecord): DeliverValidationPlan["status"] {
   if (plan.classificationReason === "validation drift detected") {
     return "blocked";
+  }
+  if (hasOnlyExternalValidationBlockers(localValidationRecord)) {
+    return "partial";
   }
   if (localValidationRecord.status === "failed") {
     return "blocked";
