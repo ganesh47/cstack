@@ -88,7 +88,10 @@ async function main() {
   }
 
   const backlog = parseDeferredClusters();
-  const primary = process.env.CSTACK_PRIMARY_BLOCKER_CLUSTER?.trim() || "unclassified blocker";
+  const primary = process.env.CSTACK_PRIMARY_BLOCKER_CLUSTER?.trim() || "";
+  if (!primary) {
+    throw new Error("program fix hook could not determine a primary blocker cluster from the baseline benchmark");
+  }
   const diagnosis = {
     schemaVersion: 1,
     iteration: Number.parseInt(process.env.CSTACK_ITERATION ?? "0", 10) || null,

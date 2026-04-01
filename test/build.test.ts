@@ -494,4 +494,27 @@ describe("runBuild", () => {
 
     expect(diagnosis.blockerCategory).toBe("repo-test-failure");
   });
+
+  it("classifies permission blockers during verification", async () => {
+    await rewriteBuildVerificationCommands(repoDir, [
+      "node -e \"process.stderr.write('EACCES: permission denied, open /tmp/build-output.txt\\n'); process.exit(1)\""
+    ]);
+
+    await runBuild(repoDir, ["--exec", "Implement the queued billing retry cleanup"]);
+
+    const runs = await listRuns(repoDir);
+    const run = await readRun(repoDir, runs[0]!.id);
+    const runDir = path.dirname(run.finalPath);
+    const diagnosis = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "failure-diagnosis.json"), "utf8")) as {
+      blockerCategory?: string;
+    };
+    const verification = JSON.parse(await fs.readFile(path.join(runDir, "artifacts", "verification.json"), "utf8")) as {
+      blockerCategories?: string[];
+      results: Array<{ blockerCategory?: string }>;
+    };
+
+    expect(diagnosis.blockerCategory).toBe("permission-blocked");
+    expect(verification.blockerCategories).toContain("permission-blocked");
+    expect(verification.results[0]?.blockerCategory).toBe("permission-blocked");
+  });
 });

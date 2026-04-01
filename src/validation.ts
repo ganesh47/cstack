@@ -277,18 +277,27 @@ function createBlockedValidationExecutionFromSpecialists(options: {
 }): DeliverValidationExecutionResult {
   const failedExecutions = options.specialistExecutions.filter((entry) => entry.status === "failed");
   const blockerCategories = uniqueBlockerCategories(failedExecutions.map((entry) => entry.blockerCategory));
+  const externalOnlyBlockers =
+    blockerCategories.length > 0 &&
+    blockerCategories.every((blocker) =>
+      ["network-blocked", "registry-unreachable", "toolchain-mismatch", "host-tool-missing", "permission-blocked", "external-service-blocked", "orchestration-timeout"].includes(
+        blocker
+      )
+    );
   const blockerLines = failedExecutions.map((entry) => {
     const base = `${entry.name}: ${entry.notes ?? "specialist failed"}`;
     return entry.blockerCategory ? `${base} [${entry.blockerCategory}]` : base;
   });
   const summary =
     blockerCategories.length > 0
-      ? `Validation blocked by external specialist blocker(s): ${blockerCategories.join(", ")}.`
+      ? externalOnlyBlockers
+        ? `Validation is partial because external specialist blocker(s) prevented a complete bounded pass: ${blockerCategories.join(", ")}.`
+        : `Validation blocked by external specialist blocker(s): ${blockerCategories.join(", ")}.`
       : "Validation blocked because a selected specialist failed before producing usable output.";
   const validationPlan: DeliverValidationPlan = {
     ...options.initialPlan,
-    status: "blocked",
-    outcomeCategory: "blocked-by-validation",
+    status: externalOnlyBlockers ? "partial" : "blocked",
+    outcomeCategory: externalOnlyBlockers ? "partial" : "blocked-by-validation",
     summary,
     profileSummary: summary,
     selectedSpecialists: options.selectedSpecialists
@@ -1521,7 +1530,7 @@ function hasOnlyExternalValidationBlockers(localValidationRecord: DeliverValidat
     return false;
   }
   return blockers.every((blocker) =>
-    ["network-blocked", "registry-unreachable", "toolchain-mismatch", "host-tool-missing", "external-service-blocked", "orchestration-timeout"].includes(
+    ["network-blocked", "registry-unreachable", "toolchain-mismatch", "host-tool-missing", "permission-blocked", "external-service-blocked", "orchestration-timeout"].includes(
       blocker
     )
   );

@@ -23,6 +23,18 @@ describe("classifyExecutionBlocker", () => {
     });
   });
 
+  it("classifies workspace permission failures as permission-blocked", () => {
+    const result = classifyExecutionBlocker(
+      "npm test",
+      "EACCES: permission denied, open '/repo/.cstack/runs/2026-04-01/final.md'"
+    );
+
+    expect(result).toEqual({
+      category: "permission-blocked",
+      detail: "EACCES: permission denied, open '/repo/.cstack/runs/2026-04-01/final.md'"
+    });
+  });
+
   it("classifies command-not-found while extracting a useful detail line", () => {
     const result = classifyExecutionBlocker(
       "pytest",

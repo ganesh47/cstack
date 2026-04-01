@@ -1285,7 +1285,7 @@ describe("runDeliver", () => {
     expect(lineage.stages.find((stage) => stage.name === "validation")?.status).toBe("deferred");
   }, 60_000);
 
-  it("fails closed when a validation specialist stalls on a registry blocker", async () => {
+  it("degrades to partial when a validation specialist stalls on an external registry blocker", async () => {
     process.env.FAKE_CODEX_VALIDATION_SPECIALIST_REGISTRY_STALL = "1";
     process.env.FAKE_CODEX_VALIDATION_SPECIALIST_STALL_MS = "4000";
     await fs.mkdir(path.join(repoDir, ".github", "workflows"), { recursive: true });
@@ -1308,7 +1308,7 @@ describe("runDeliver", () => {
     const runDir = path.dirname(run.finalPath);
     const validationPlan = JSON.parse(
       await fs.readFile(path.join(runDir, "stages", "validation", "validation-plan.json"), "utf8")
-    ) as { status: string; summary: string; coverage: { gaps: string[] } };
+    ) as { status: string; outcomeCategory: string; summary: string; coverage: { gaps: string[] } };
     const localValidation = JSON.parse(
       await fs.readFile(path.join(runDir, "stages", "validation", "artifacts", "local-validation.json"), "utf8")
     ) as { status: string; blockerCategories?: string[] };
@@ -1319,12 +1319,13 @@ describe("runDeliver", () => {
     );
 
     expect(run.status).toBe("failed");
-    expect(validationPlan.status).toBe("blocked");
+    expect(validationPlan.status).toBe("partial");
+    expect(validationPlan.outcomeCategory).toBe("partial");
     expect(validationPlan.summary).toContain("registry-unreachable");
     expect(validationPlan.coverage.gaps.join("\n")).toContain("workflow-security-specialist");
     expect(localValidation.status).toBe("not-run");
     expect(localValidation.blockerCategories).toContain("registry-unreachable");
-    expect(lineage.stages.find((stage) => stage.name === "validation")).toMatchObject({ status: "failed", executed: true });
+    expect(lineage.stages.find((stage) => stage.name === "validation")).toMatchObject({ status: "deferred", executed: true });
     expect(specialistArtifact).toContain("Blocker category: registry-unreachable");
     expect(specialistArtifact).not.toContain("ENOENT");
   }, 60_000);

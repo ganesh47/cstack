@@ -183,6 +183,94 @@ describe("self-improvement program script", () => {
     await expect(fs.access(releaseLogPath)).rejects.toThrow(/ENOENT/);
   });
 
+  it("extracts a blocker from run artifacts when cstack loop does not print loop artifacts", async () => {
+    const noArtifactsCstackPath = path.join(repoDir, "fake-no-artifacts-cstack.mjs");
+    const workspaceDir = path.join(repoDir, "benchmark-workspace");
+    const intentRunId = "2026-04-01T15-10-23-620Z-intent-artifact-only";
+    const deliverRunId = "2026-04-01T15-14-00-759Z-deliver-artifact-only";
+    await fs.mkdir(path.join(workspaceDir, ".cstack", "runs", intentRunId), { recursive: true });
+    await fs.mkdir(path.join(workspaceDir, ".cstack", "runs", deliverRunId), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceDir, ".cstack", "runs", intentRunId, "final.md"),
+      [
+        "# Intent Run Summary",
+        "",
+        "## Stage status",
+        `- build: completed (executed) via ${deliverRunId}`,
+        "- review: failed (executed) via 2026-04-01T15-14-00-759Z-deliver-artifact-only",
+        "  note: Delivery is blocked because validation was blocked by a missing host tool."
+      ].join("\n") + "\n",
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(workspaceDir, ".cstack", "runs", deliverRunId, "final.md"),
+      [
+        "# Deliver Run Summary",
+        "",
+        "## Stage status",
+        "- build: completed",
+        "- validation: failed (blocked-by-validation: Validation blocked by external specialist blocker(s): host-tool-missing.)",
+        "",
+        "## Validation",
+        "- status: blocked",
+        "- outcome category: blocked-by-validation",
+        "- summary: Validation blocked by external specialist blocker(s): host-tool-missing."
+      ].join("\n") + "\n",
+      "utf8"
+    );
+    await fs.writeFile(
+      noArtifactsCstackPath,
+      [
+        "#!/usr/bin/env node",
+        "const args = process.argv.slice(2);",
+        "if (args[0] === 'update' && args[1] === '--check') { process.stdout.write('Current: v0.1.0\\n'); process.exit(0); }",
+        "if (args[0] === '--version') { process.stdout.write('v0.1.0\\n'); process.exit(0); }",
+        "if (args[0] !== 'loop') { throw new Error(`Unsupported command: ${args.join(' ')}`); }",
+        `process.stdout.write('Loop iteration: 1/1\\nWorkspace: ${workspaceDir}\\nIntent: test intent\\nResult run: ${intentRunId}\\nStatus: failed\\nFinal summary: Intent run finished with downstream workflow failures\\n');`,
+        "process.exitCode = 1;"
+      ].join("\n"),
+      "utf8"
+    );
+    chmodSync(noArtifactsCstackPath, 0o755);
+
+    await execFileAsync(
+      process.execPath,
+      [
+        scriptPath,
+        "--iterations",
+        "1",
+        "--repo",
+        repoDir,
+        "--intent",
+        "What are the gaps in this project? Can you work on closing the gaps?",
+        "--cstack-bin",
+        noArtifactsCstackPath,
+        "--start-version",
+        "v0.1.0",
+        "--fix-command",
+        "printf 'fixed\\n'",
+        "--validate-command",
+        "printf 'validated\\n'",
+        "--candidate-command",
+        `cat > "$CSTACK_CANDIDATE_RESULT_PATH" <<'JSON'\n{"status":"failed","summary":"still blocked","primaryBlockerCluster":"validation host-tool bootstrap"}\nJSON`
+      ],
+      {
+        cwd: repoDir,
+        env: {
+          ...process.env
+        },
+        maxBuffer: 20 * 1024 * 1024
+      }
+    );
+
+    const programRoot = path.join(repoDir, ".cstack", "programs");
+    const programIds = await fs.readdir(programRoot);
+    const programDir = path.join(programRoot, programIds[0]!);
+    const iterationRecord = JSON.parse(await fs.readFile(path.join(programDir, "iteration-01", "iteration-record.json"), "utf8"));
+    expect(iterationRecord.baselineBenchmark.primaryBlockerCluster).toBe("validation host-tool bootstrap");
+    expect(iterationRecord.primaryBlockerCluster).toBe("validation host-tool bootstrap");
+  });
+
   it("uses the default hook scripts and records diagnosis plus update validation artifacts", async () => {
     const scenarioPath = path.join(repoDir, "scenario.json");
     const statePath = path.join(repoDir, "state.json");

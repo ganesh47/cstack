@@ -577,6 +577,7 @@ export type EnvironmentBlockerCategory =
   | "registry-unreachable"
   | "toolchain-mismatch"
   | "host-tool-missing"
+  | "permission-blocked"
   | "repo-test-failure"
   | "orchestration-timeout"
   | "external-service-blocked"

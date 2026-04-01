@@ -225,6 +225,93 @@ function parseBenchmarkOutput(stdout, cwd) {
   };
 }
 
+async function readTextIfExists(targetPath) {
+  try {
+    return await fs.readFile(targetPath, "utf8");
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return "";
+    }
+    throw error;
+  }
+}
+
+function parseMarkdownStatus(markdown, heading) {
+  const escapedHeading = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = markdown.match(new RegExp(`- ${escapedHeading}: ([^\\n]+)`, "i"));
+  return match?.[1]?.trim() ?? null;
+}
+
+function parseDeliverRunId(intentFinalBody) {
+  const match = intentFinalBody.match(/via ([0-9T:-]+Z-deliver-[^\s)]+)/);
+  return match?.[1] ?? null;
+}
+
+function classifyBenchmarkBlockerFromText(text) {
+  const normalized = text.toLowerCase();
+  if (!normalized.trim()) {
+    return null;
+  }
+  if (normalized.includes("host-tool-missing")) {
+    return "validation host-tool bootstrap";
+  }
+  if (normalized.includes("blocked-by-validation-drift") || normalized.includes("validation drift")) {
+    return "validation drift";
+  }
+  if (normalized.includes("blocked-by-validation") || normalized.includes("validation blocked")) {
+    return "validation blocker";
+  }
+  if (normalized.includes("build failed")) {
+    return "build blocker";
+  }
+  if (normalized.includes("release readiness is blocked") || normalized.includes("ship readiness is blocked")) {
+    return "ship readiness blocker";
+  }
+  if (normalized.includes("review verdict") || normalized.includes("delivery is blocked")) {
+    return "review evidence blocker";
+  }
+  return null;
+}
+
+async function enrichBenchmarkFromArtifacts(parsed, cwd) {
+  if (!parsed.workspace || !parsed.resultRunId) {
+    return {
+      status: parsed.status,
+      summary: parsed.finalSummary,
+      primaryBlockerCluster: null,
+      deliverRunId: null
+    };
+  }
+
+  const intentFinalPath = path.join(parsed.workspace, ".cstack", "runs", parsed.resultRunId, "final.md");
+  const intentFinalBody = await readTextIfExists(intentFinalPath);
+  const deliverRunId = parseDeliverRunId(intentFinalBody);
+  const deliverFinalBody = deliverRunId
+    ? await readTextIfExists(path.join(parsed.workspace, ".cstack", "runs", deliverRunId, "final.md"))
+    : "";
+  const combined = [deliverFinalBody, intentFinalBody, parsed.finalSummary].filter(Boolean).join("\n");
+  const deliverValidationStatus = parseMarkdownStatus(deliverFinalBody, "validation");
+  const inferredStatus =
+    deliverValidationStatus?.startsWith("partial")
+      ? "partial"
+      : deliverValidationStatus?.startsWith("failed") || deliverValidationStatus?.startsWith("blocked")
+        ? "failed"
+        : parseMarkdownStatus(intentFinalBody, "review")?.startsWith("failed") || parseMarkdownStatus(intentFinalBody, "ship")?.startsWith("failed")
+          ? "failed"
+          : parsed.status;
+
+  return {
+    status: inferredStatus,
+    summary:
+      parseMarkdownStatus(deliverFinalBody, "summary") ??
+      parseMarkdownStatus(deliverFinalBody, "review verdict") ??
+      parseMarkdownStatus(intentFinalBody, "review") ??
+      parsed.finalSummary,
+    primaryBlockerCluster: classifyBenchmarkBlockerFromText(combined),
+    deliverRunId
+  };
+}
+
 async function runReleasedBenchmark(options) {
   const args = ["loop", "--repo", options.repo, "--iterations", String(options.benchmarkIterations)];
   if (options.branch) {
@@ -237,6 +324,7 @@ async function runReleasedBenchmark(options) {
   const benchmarkOutcome = parsed.loopArtifactsDir
     ? await readJsonIfExists(path.join(parsed.loopArtifactsDir, "benchmark-outcome.json"))
     : null;
+  const artifactFallback = await enrichBenchmarkFromArtifacts(parsed, options.cwd);
   return {
     command: [options.cstackBin, ...args].join(" "),
     exitCode: result.code,
@@ -244,11 +332,12 @@ async function runReleasedBenchmark(options) {
     stderr: result.stderr,
     workspace: parsed.workspace,
     runId: parsed.resultRunId,
-    status: cycleRecord?.status ?? parsed.status,
-    summary: cycleRecord?.latestSummary ?? parsed.finalSummary,
-    primaryBlockerCluster: cycleRecord?.primaryBlockerCluster ?? null,
+    status: cycleRecord?.status ?? artifactFallback.status,
+    summary: cycleRecord?.latestSummary ?? artifactFallback.summary,
+    primaryBlockerCluster: cycleRecord?.primaryBlockerCluster ?? artifactFallback.primaryBlockerCluster,
     loopArtifactsDir: parsed.loopArtifactsDir,
-    benchmarkOutcome
+    benchmarkOutcome,
+    deliverRunId: artifactFallback.deliverRunId
   };
 }
 
@@ -305,6 +394,7 @@ async function changedFiles(cwd) {
     .split(/\r?\n/)
     .filter(Boolean)
     .map((line) => line.slice(3).trim())
+    .filter((file) => !file.startsWith(".cstack/"))
     .filter(Boolean);
 }
 

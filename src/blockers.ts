@@ -46,6 +46,15 @@ export function classifyExecutionBlocker(command: string, output: string): Execu
   }
 
   if (
+    /\b(permission denied|operation not permitted|read-only file system|eacces|eperm|sandbox(?:ing)? .*denied|cannot write|failed to create|failed to open)\b/i.test(
+      normalized
+    ) &&
+    /\b(file|directory|path|workspace|artifact|output|write|open|mkdir|mkdtemp|rename|unlink|chmod|touch|access)\b/i.test(normalized)
+  ) {
+    return { category: "permission-blocked", detail };
+  }
+
+  if (
     /\b(java version|unsupported major.minor|unsupported release|unsupported class file major version|no suitable java|python .* not found)\b/i.test(normalized)
   ) {
     return { category: "toolchain-mismatch", detail };
