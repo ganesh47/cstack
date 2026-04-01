@@ -28,6 +28,12 @@ import type {
 
 const execFileAsync = promisify(execFile);
 
+const VALIDATION_BOOTSTRAP_PACKAGES: Record<string, string> = {
+  actionlint: "actionlint-py",
+  hadolint: "hadolint-py",
+  zizmor: "zizmor"
+};
+
 const TOOL_SOURCES: Record<string, string> = {
   playwright: "https://playwright.dev/docs/ci",
   vitest: "https://vitest.dev/",
@@ -1243,6 +1249,46 @@ function inferUsedValidationCapabilities(options: {
   return [...used].filter((capability) => options.availableCapabilities.includes(capability));
 }
 
+export function detectValidationBootstrapTools(commands: string[]): string[] {
+  const tools = new Set<string>();
+
+  for (const command of commands) {
+    for (const tool of Object.keys(VALIDATION_BOOTSTRAP_PACKAGES)) {
+      if (new RegExp(`(^|[^A-Za-z0-9_-])${tool}([^A-Za-z0-9_-]|$)`).test(command)) {
+        tools.add(tool);
+      }
+    }
+  }
+
+  return [...tools];
+}
+
+export async function prepareValidationToolBin(runDir: string, commands: string[]): Promise<{ binDir: string | null; tools: string[] }> {
+  const tools = detectValidationBootstrapTools(commands);
+  if (tools.length === 0) {
+    return { binDir: null, tools: [] };
+  }
+
+  const binDir = path.join(runDir, "artifacts", "validation-tools", "bin");
+  await fs.mkdir(binDir, { recursive: true });
+
+  for (const tool of tools) {
+    const packageName = VALIDATION_BOOTSTRAP_PACKAGES[tool];
+    if (!packageName) {
+      continue;
+    }
+    const wrapperPath = path.join(binDir, tool);
+    await fs.writeFile(
+      wrapperPath,
+      ["#!/usr/bin/env bash", "set -euo pipefail", `exec uvx --from ${packageName} ${tool} \"$@\"`, ""].join("\n"),
+      "utf8"
+    );
+    await fs.chmod(wrapperPath, 0o755);
+  }
+
+  return { binDir, tools };
+}
+
 async function runCommandSet(cwd: string, runDir: string, commands: string[]): Promise<DeliverValidationLocalRecord> {
   if (commands.length === 0) {
     return {
@@ -1257,6 +1303,11 @@ async function runCommandSet(cwd: string, runDir: string, commands: string[]): P
   await fs.mkdir(commandDir, { recursive: true });
   const shell = process.env.SHELL || "/bin/sh";
   const results: ValidationCommandRecord[] = [];
+  const toolBin = await prepareValidationToolBin(runDir, commands);
+  const env =
+    toolBin.binDir && toolBin.binDir.length > 0
+      ? { ...process.env, PATH: `${toolBin.binDir}:${process.env.PATH ?? ""}` }
+      : process.env;
 
   for (let index = 0; index < commands.length; index += 1) {
     const command = commands[index]!;
@@ -1264,7 +1315,7 @@ async function runCommandSet(cwd: string, runDir: string, commands: string[]): P
     const stderrPath = path.join(commandDir, `${index + 1}.stderr.log`);
     const startedAt = Date.now();
     try {
-      const { stdout, stderr } = await execFileAsync(shell, ["-lc", command], { cwd, maxBuffer: 10 * 1024 * 1024 });
+      const { stdout, stderr } = await execFileAsync(shell, ["-lc", command], { cwd, env, maxBuffer: 10 * 1024 * 1024 });
       await fs.writeFile(stdoutPath, stdout, "utf8");
       await fs.writeFile(stderrPath, stderr, "utf8");
       results.push({
@@ -1297,7 +1348,8 @@ async function runCommandSet(cwd: string, runDir: string, commands: string[]): P
     status: results.every((entry) => entry.status === "passed") ? "passed" : "failed",
     requestedCommands: commands,
     results,
-    blockerCategories: uniqueBlockerCategories(results.map((result) => result.blockerCategory))
+    blockerCategories: uniqueBlockerCategories(results.map((result) => result.blockerCategory)),
+    ...(toolBin.tools.length > 0 ? { notes: `Validation command environment prepared wrappers for: ${toolBin.tools.join(", ")}` } : {})
   };
 }
 
