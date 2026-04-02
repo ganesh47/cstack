@@ -521,6 +521,90 @@ describe("self-improvement program script", () => {
     expect(resumedIteration.benchmarkVerdict).toBe("completed");
   });
 
+  it("finalizes a stale candidate phase from persisted candidate artifacts on resume", async () => {
+    const scenarioPath = path.join(repoDir, "scenario.json");
+    const statePath = path.join(repoDir, "state.json");
+
+    await fs.writeFile(
+      scenarioPath,
+      `${JSON.stringify(
+        {
+          benchmarks: [
+            {
+              runId: "intent-baseline",
+              status: "failed",
+              summary: "blocked by validation",
+              primaryBlockerCluster: "validation blocker"
+            }
+          ]
+        },
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
+
+    await expect(
+      execFileAsync(
+        process.execPath,
+        [
+          scriptPath,
+          "--iterations",
+          "1",
+          "--repo",
+          repoDir,
+          "--intent",
+          "What are the gaps in this project? Can you work on closing the gaps?",
+          "--cstack-bin",
+          fakeCstackPath,
+          "--start-version",
+          "v0.1.0",
+          "--fix-command",
+          "printf 'fixed\\n'",
+          "--validate-command",
+          "printf 'validated\\n'",
+          "--candidate-command",
+          `cat > "$CSTACK_CANDIDATE_RESULT_PATH" <<'JSON'\n{"status":"failed","summary":"still blocked","primaryBlockerCluster":null}\nJSON\nexit 17`
+        ],
+        {
+          cwd: repoDir,
+          env: {
+            ...process.env,
+            FAKE_SELF_IMPROVEMENT_SCENARIO: scenarioPath,
+            FAKE_SELF_IMPROVEMENT_STATE: statePath
+          },
+          maxBuffer: 20 * 1024 * 1024
+        }
+      )
+    ).rejects.toThrow();
+
+    const programRoot = path.join(repoDir, ".cstack", "programs");
+    const programIds = await fs.readdir(programRoot);
+    const programDir = path.join(programRoot, programIds[0]!);
+    const interruptedIteration = JSON.parse(await fs.readFile(path.join(programDir, "iteration-01", "iteration-record.json"), "utf8"));
+    expect(interruptedIteration.phaseState.validate).toBe(true);
+    expect(interruptedIteration.phaseState.candidate).toBe(false);
+
+    await execFileAsync(process.execPath, [scriptPath, "--resume", programDir], {
+      cwd: repoDir,
+      env: {
+        ...process.env,
+        FAKE_SELF_IMPROVEMENT_SCENARIO: scenarioPath,
+        FAKE_SELF_IMPROVEMENT_STATE: statePath
+      },
+      maxBuffer: 20 * 1024 * 1024
+    });
+
+    const resumedProgram = JSON.parse(await fs.readFile(path.join(programDir, "program-record.json"), "utf8"));
+    const resumedIteration = JSON.parse(await fs.readFile(path.join(programDir, "iteration-01", "iteration-record.json"), "utf8"));
+    expect(resumedProgram.status).toBe("completed");
+    expect(resumedIteration.phaseState.candidate).toBe(true);
+    expect(resumedIteration.phaseState.finalize).toBe(true);
+    expect(resumedIteration.improved).toBe(false);
+    expect(resumedIteration.primaryBlockerCluster).toBe("validation blocker");
+    expect(resumedIteration.benchmarkVerdict).toBe("failed");
+  });
+
   it("records a pr-checks phase error and excludes tracked program artifacts from the branch commit", async () => {
     const scenarioPath = path.join(repoDir, "scenario.json");
     const statePath = path.join(repoDir, "state.json");

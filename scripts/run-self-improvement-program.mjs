@@ -383,6 +383,27 @@ async function readCandidateResult(candidateResultPath, fallback) {
   };
 }
 
+async function finalizeCandidatePhase(record, iterationDir, candidateResultPath) {
+  record.candidateResult = await readCandidateResult(candidateResultPath, {
+    status: record.baselineBenchmark?.status ?? "failed",
+    summary: record.baselineBenchmark?.summary ?? "",
+    primaryBlockerCluster: record.primaryBlockerCluster,
+    runId: null,
+    changedFiles: [],
+    commitSha: null,
+    deferredClusters: record.deferredClusters,
+    improved: null
+  });
+  record.improved = compareBenchmarkResults(record.baselineBenchmark, record.candidateResult);
+  if (record.candidateResult.primaryBlockerCluster !== undefined && record.candidateResult.primaryBlockerCluster !== null) {
+    record.primaryBlockerCluster = record.candidateResult.primaryBlockerCluster;
+  }
+  if (record.candidateResult.deferredClusters.length > 0) {
+    record.deferredClusters = record.candidateResult.deferredClusters;
+  }
+  record.phaseState.candidate = true;
+}
+
 async function currentCommitSha(cwd) {
   const result = await runExec("git", ["rev-parse", "--short", "HEAD"], cwd);
   return result.code === 0 ? lastNonEmptyLine(result.stdout) : null;
@@ -773,25 +794,13 @@ async function main() {
       }
 
       if (!record.phaseState.candidate && options.candidateCommand) {
-        await runPhase(options.candidateCommand, cwd, phaseEnv, path.join(iterationDir, "candidate-command.json"));
-        record.candidateResult = await readCandidateResult(candidateResultPath, {
-          status: record.baselineBenchmark?.status ?? "failed",
-          summary: record.baselineBenchmark?.summary ?? "",
-          primaryBlockerCluster: record.primaryBlockerCluster,
-          runId: null,
-          changedFiles: [],
-          commitSha: null,
-          deferredClusters: record.deferredClusters,
-          improved: null
-        });
-        record.improved = compareBenchmarkResults(record.baselineBenchmark, record.candidateResult);
-        if (record.candidateResult.primaryBlockerCluster !== undefined) {
-          record.primaryBlockerCluster = record.candidateResult.primaryBlockerCluster;
+        const existingCandidateArtifacts =
+          (await readJsonIfExists(candidateResultPath)) ||
+          (await readJsonIfExists(path.join(iterationDir, "candidate-benchmark.json")));
+        if (!existingCandidateArtifacts) {
+          await runPhase(options.candidateCommand, cwd, phaseEnv, path.join(iterationDir, "candidate-command.json"));
         }
-        if (record.candidateResult.deferredClusters.length > 0) {
-          record.deferredClusters = record.candidateResult.deferredClusters;
-        }
-        record.phaseState.candidate = true;
+        await finalizeCandidatePhase(record, iterationDir, candidateResultPath);
         programRecord.currentPhase = record.improved ? "branch-push" : "finalize";
         await persistIteration(rootDir, iterationDir, programRecord, record);
       }
