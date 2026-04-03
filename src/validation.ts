@@ -665,6 +665,10 @@ function parsePyprojectRequiresPython(raw: string): string | null {
   return match?.[1]?.trim() ?? null;
 }
 
+function pyprojectHasDevExtra(raw: string): boolean {
+  return /\[project\.optional-dependencies\][\s\S]*?\bdev\s*=\s*\[/i.test(raw);
+}
+
 async function inferWorkspaceTargetDetails(options: {
   cwd: string;
   targetPath: string;
@@ -696,6 +700,7 @@ async function inferWorkspaceTargetDetails(options: {
   if (options.manifests.includes("pyproject.toml")) {
     const pyproject = await readTextFile(path.join(options.cwd, options.targetPath, "pyproject.toml"));
     const requiresPython = parsePyprojectRequiresPython(pyproject);
+    const uvExtra = pyprojectHasDevExtra(pyproject) ? " --extra dev" : "";
     if (requiresPython) {
       addPrerequisite(`Python ${requiresPython} for ${options.targetPath}`);
     }
@@ -703,10 +708,10 @@ async function inferWorkspaceTargetDetails(options: {
       addPrerequisite(`uv available on PATH for ${options.targetPath}`);
     }
     if (/\[tool\.ruff\]/i.test(pyproject) || /\bruff\b/i.test(pyproject)) {
-      addCommand(`cd ${options.targetPath} && uv run ruff check .`);
+      addCommand(`cd ${options.targetPath} && uv run${uvExtra} ruff check .`);
     }
     if (/\[tool\.pytest\.ini_options\]/i.test(pyproject) || /\bpytest\b/i.test(pyproject)) {
-      addCommand(`cd ${options.targetPath} && uv run pytest`);
+      addCommand(`cd ${options.targetPath} && uv run${uvExtra} pytest`);
     }
   }
 
@@ -1460,7 +1465,9 @@ export async function prepareValidationToolBin(runDir: string, commands: string[
   }
 
   const binDir = path.join(runDir, "artifacts", "validation-tools", "bin");
+  const cacheDir = path.join(runDir, "artifacts", "validation-tools", "cache");
   await fs.mkdir(binDir, { recursive: true });
+  await fs.mkdir(cacheDir, { recursive: true });
 
   for (const tool of tools) {
     const packageName = VALIDATION_BOOTSTRAP_PACKAGES[tool];
@@ -1470,7 +1477,30 @@ export async function prepareValidationToolBin(runDir: string, commands: string[
     const wrapperPath = path.join(binDir, tool);
     await fs.writeFile(
       wrapperPath,
-      ["#!/usr/bin/env bash", "set -euo pipefail", `exec uvx --from ${packageName} ${tool} \"$@\"`, ""].join("\n"),
+      [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        'ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"',
+        `TOOL_DIR="$ROOT_DIR/cache/${tool}"`,
+        `TOOL_BIN="$TOOL_DIR/bin/${tool}"`,
+        'if [ -x "$TOOL_BIN" ]; then',
+        '  exec "$TOOL_BIN" "$@"',
+        "fi",
+        "if command -v uvx >/dev/null 2>&1; then",
+        `  exec uvx --from ${packageName} ${tool} "$@"`,
+        "fi",
+        'PYTHON_BIN="$(command -v python3 || command -v python || true)"',
+        'if [ -z "$PYTHON_BIN" ]; then',
+        `  echo "Unable to bootstrap ${tool}: neither uvx nor python is available on PATH." >&2`,
+        "  exit 127",
+        "fi",
+        'if [ ! -x "$TOOL_BIN" ]; then',
+        '  "$PYTHON_BIN" -m venv "$TOOL_DIR"',
+        '  "$TOOL_DIR/bin/pip" install --disable-pip-version-check -q ' + packageName,
+        "fi",
+        'exec "$TOOL_BIN" "$@"',
+        ""
+      ].join("\n"),
       "utf8"
     );
     await fs.chmod(wrapperPath, 0o755);

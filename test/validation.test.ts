@@ -1,6 +1,8 @@
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   buildValidationToolResearch,
@@ -11,6 +13,8 @@ import {
   selectValidationSpecialists
 } from "../src/validation.js";
 import type { BuildVerificationRecord } from "../src/types.js";
+
+const execFileAsync = promisify(execFile);
 
 describe("validation intelligence", () => {
   let repoDir: string;
@@ -200,6 +204,51 @@ describe("validation intelligence", () => {
     await expect(fs.access(path.join(prepared.binDir!, "zizmor"))).resolves.toBeUndefined();
   });
 
+  it("bootstraps validation tools through a cached python environment when uvx is unavailable", async () => {
+    const prepared = await prepareValidationToolBin(repoDir, ["actionlint .github/workflows/*.yml"]);
+    const fakeBinDir = await fs.mkdtemp(path.join(os.tmpdir(), "cstack-validation-bootstrap-"));
+    const logPath = path.join(repoDir, "actionlint.log");
+    const pythonPath = path.join(fakeBinDir, "python3");
+
+    await fs.writeFile(
+      pythonPath,
+      `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+if (args[0] === "-m" && args[1] === "venv") {
+  const toolDir = args[2];
+  const binDir = path.join(toolDir, "bin");
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.writeFileSync(path.join(binDir, "pip"), "#!/bin/sh\\nexit 0\\n", "utf8");
+  fs.chmodSync(path.join(binDir, "pip"), 0o755);
+  fs.writeFileSync(
+    path.join(binDir, "actionlint"),
+    "#!/usr/bin/env node\\nrequire('node:fs').appendFileSync(process.env.CSTACK_ACTIONLINT_LOG, process.argv.slice(2).join(' ') + '\\\\n');\\n",
+    "utf8"
+  );
+  fs.chmodSync(path.join(binDir, "actionlint"), 0o755);
+  process.exit(0);
+}
+process.stderr.write("unsupported fake python invocation\\n");
+process.exit(1);
+`,
+      "utf8"
+    );
+    await fs.chmod(pythonPath, 0o755);
+
+    await execFileAsync(path.join(prepared.binDir!, "actionlint"), [".github/workflows/ci.yml"], {
+      cwd: repoDir,
+      env: {
+        ...process.env,
+        PATH: `${fakeBinDir}:${path.dirname(process.execPath)}:/usr/bin:/bin`,
+        CSTACK_ACTIONLINT_LOG: logPath
+      }
+    });
+
+    expect(await fs.readFile(logPath, "utf8")).toBe(".github/workflows/ci.yml\n");
+  });
+
   it("selects local JS validation commands with the repo package manager", () => {
     const verificationRecord: BuildVerificationRecord = {
       status: "passed",
@@ -322,8 +371,8 @@ describe("validation intelligence", () => {
     expect(commands).toContain("pnpm check");
     expect(commands).toContain("pnpm --dir packages/api lint");
     expect(commands).toContain("pnpm --dir packages/api test");
-    expect(commands).toContain("cd packages/cli && uv run ruff check .");
-    expect(commands).toContain("cd packages/cli && uv run pytest");
+    expect(commands).toContain("cd packages/cli && uv run --extra dev ruff check .");
+    expect(commands).toContain("cd packages/cli && uv run --extra dev pytest");
     expect(profile.prerequisites).toContain("Node 20.17.0 from .nvmrc");
     expect(profile.prerequisites).toContain("Python >=3.12 for packages/cli");
     expect(profile.prerequisites).toContain("uv available on PATH for packages/cli");
