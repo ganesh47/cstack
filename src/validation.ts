@@ -481,6 +481,9 @@ function classifyWorkspaceSupport(target: {
   if (target.workflowFiles.length > 0) {
     return "native";
   }
+  if (target.manifests.includes("pyproject.toml") || target.manifests.includes("pom.xml")) {
+    return "partial";
+  }
   if (target.manifests.includes("package.json") && target.packageScripts.length > 0) {
     return "partial";
   }
@@ -530,6 +533,9 @@ function detectLanguages(manifests: string[], pkg: Record<string, unknown> | nul
   if (manifests.includes("pyproject.toml") || manifests.includes("requirements.txt")) {
     languages.push("python");
   }
+  if (manifests.includes("pom.xml")) {
+    languages.push("java");
+  }
   if (manifests.includes("Gemfile")) {
     languages.push("ruby");
   }
@@ -565,6 +571,9 @@ function detectBuildSystems(manifests: string[], pkg: Record<string, unknown> | 
   }
   if (manifests.includes("pyproject.toml")) {
     systems.push("python");
+  }
+  if (manifests.includes("pom.xml")) {
+    systems.push("maven");
   }
   if (manifests.some((manifest) => manifest.startsWith("build.gradle") || manifest === "gradlew")) {
     systems.push("gradle");
@@ -636,6 +645,81 @@ function buildPackageScriptCommand(packageManager: "npm" | "pnpm" | "yarn", scri
     return packageManager === "npm" ? "npm test" : `${packageManager} test`;
   }
   return packageManager === "npm" ? `npm run ${scriptName}` : `${packageManager} ${scriptName}`;
+}
+
+function buildWorkspacePackageScriptCommand(packageManager: "npm" | "pnpm" | "yarn", targetPath: string, scriptName: string): string {
+  if (targetPath === ".") {
+    return buildPackageScriptCommand(packageManager, scriptName);
+  }
+  if (packageManager === "npm") {
+    return `npm --prefix ${targetPath} run ${scriptName}`;
+  }
+  if (packageManager === "yarn") {
+    return `yarn --cwd ${targetPath} ${scriptName}`;
+  }
+  return `pnpm --dir ${targetPath} ${scriptName}`;
+}
+
+function parsePyprojectRequiresPython(raw: string): string | null {
+  const match = raw.match(/requires-python\s*=\s*["']([^"']+)["']/i);
+  return match?.[1]?.trim() ?? null;
+}
+
+async function inferWorkspaceTargetDetails(options: {
+  cwd: string;
+  targetPath: string;
+  manifests: string[];
+  packageScripts: ValidationDetectedScript[];
+  packageManager: "npm" | "pnpm" | "yarn";
+}): Promise<{ inferredCommands: string[]; prerequisites: string[]; notes: string[] }> {
+  const inferredCommands: string[] = [];
+  const prerequisites: string[] = [];
+  const notes: string[] = [];
+  const addCommand = (command: string) => {
+    if (command && !inferredCommands.includes(command)) {
+      inferredCommands.push(command);
+    }
+  };
+  const addPrerequisite = (entry: string) => {
+    if (entry && !prerequisites.includes(entry)) {
+      prerequisites.push(entry);
+    }
+  };
+  const scriptNames = new Set(options.packageScripts.map((script) => script.name));
+
+  for (const scriptName of ["check", "lint", "typecheck", "test", "build"]) {
+    if (scriptNames.has(scriptName)) {
+      addCommand(buildWorkspacePackageScriptCommand(options.packageManager, options.targetPath, scriptName));
+    }
+  }
+
+  if (options.manifests.includes("pyproject.toml")) {
+    const pyproject = await readTextFile(path.join(options.cwd, options.targetPath, "pyproject.toml"));
+    const requiresPython = parsePyprojectRequiresPython(pyproject);
+    if (requiresPython) {
+      addPrerequisite(`Python ${requiresPython} for ${options.targetPath}`);
+    }
+    if (/\[tool\.uv\]/i.test(pyproject) || /\buv\b/i.test(pyproject)) {
+      addPrerequisite(`uv available on PATH for ${options.targetPath}`);
+    }
+    if (/\[tool\.ruff\]/i.test(pyproject) || /\bruff\b/i.test(pyproject)) {
+      addCommand(`cd ${options.targetPath} && uv run ruff check .`);
+    }
+    if (/\[tool\.pytest\.ini_options\]/i.test(pyproject) || /\bpytest\b/i.test(pyproject)) {
+      addCommand(`cd ${options.targetPath} && uv run pytest`);
+    }
+  }
+
+  if (options.manifests.includes("pom.xml")) {
+    addCommand(`mvn --batch-mode -f ${options.targetPath}/pom.xml verify`);
+    addPrerequisite(`Java required for ${options.targetPath}`);
+  }
+
+  if (options.targetPath !== "." && inferredCommands.length === 0) {
+    notes.push("Validation command inference could not derive a deterministic target-specific command for this workspace.");
+  }
+
+  return { inferredCommands, prerequisites, notes };
 }
 
 function detectSurfaces(options: {
@@ -723,6 +807,7 @@ async function collectWorkspaceTargets(cwd: string, rootPkg: Record<string, unkn
       "package.json",
       "pyproject.toml",
       "requirements.txt",
+      "pom.xml",
       "Cargo.toml",
       "go.mod",
       "Dockerfile",
@@ -738,6 +823,7 @@ async function collectWorkspaceTargets(cwd: string, rootPkg: Record<string, unkn
     { maxDepth: 6, maxResults: 200 }
   );
   const targets = new Map<string, ValidationWorkspaceTarget>();
+  const rootPackageManager = detectNodePackageManager(rootPkg, rootManifests);
   const ensureTarget = async (targetPath: string): Promise<ValidationWorkspaceTarget> => {
     const existing = targets.get(targetPath);
     if (existing) {
@@ -756,6 +842,8 @@ async function collectWorkspaceTargets(cwd: string, rootPkg: Record<string, unkn
       packageScripts: extractPackageScripts(pkg),
       detectedTools: collectPackageTools(pkg),
       support: "inventory-only",
+      inferredCommands: [],
+      prerequisites: [],
       notes: []
     };
     targets.set(targetPath, target);
@@ -808,7 +896,17 @@ async function collectWorkspaceTargets(cwd: string, rootPkg: Record<string, unkn
       packageScripts: target.packageScripts,
       workflowFiles: target.path === "." ? workflowFiles : []
     });
-    if (target.path !== "." && target.support !== "native") {
+    const inferred = await inferWorkspaceTargetDetails({
+      cwd,
+      targetPath: target.path,
+      manifests: target.manifests,
+      packageScripts: target.packageScripts,
+      packageManager: rootPackageManager
+    });
+    target.inferredCommands = inferred.inferredCommands;
+    target.prerequisites = inferred.prerequisites;
+    target.notes.push(...inferred.notes);
+    if (target.path !== "." && target.support !== "native" && target.inferredCommands.length === 0) {
       target.notes.push("Validation command inference is currently rooted in the top-level repo; inspect this target manually.");
     }
     if (target.path !== "." && !target.manifests.includes("package.json")) {
@@ -856,6 +954,28 @@ export async function profileValidationRepository(cwd: string): Promise<Validati
   });
   const ciSystems = workflowFiles.length > 0 ? ["github-actions"] : [];
   const workspaceTargets = await collectWorkspaceTargets(cwd, pkg, manifests, workflowFiles);
+  const prerequisites: string[] = [];
+  const addPrerequisite = (entry: string) => {
+    if (entry && !prerequisites.includes(entry)) {
+      prerequisites.push(entry);
+    }
+  };
+  const nvmrc = (await readTextFile(path.join(cwd, ".nvmrc"))).trim();
+  if (nvmrc) {
+    addPrerequisite(`Node ${nvmrc} from .nvmrc`);
+  }
+  const engineNode =
+    pkg && typeof pkg.engines === "object" && pkg.engines !== null && typeof (pkg.engines as Record<string, unknown>).node === "string"
+      ? String((pkg.engines as Record<string, unknown>).node)
+      : null;
+  if (engineNode) {
+    addPrerequisite(`Node ${engineNode} from package.json engines`);
+  }
+  for (const target of workspaceTargets) {
+    for (const entry of target.prerequisites ?? []) {
+      addPrerequisite(entry);
+    }
+  }
   const runnerConstraints: string[] = [];
   if (surfaces.includes("ios-app")) {
     runnerConstraints.push("macos-required", "ios-simulator");
@@ -881,11 +1001,13 @@ export async function profileValidationRepository(cwd: string): Promise<Validati
     limitations.push("Repository surface could not be classified confidently.");
   }
   const nestedTargets = workspaceTargets.filter((target) => target.path !== ".");
-  if (nestedTargets.length > 0) {
+  if (nestedTargets.some((target) => (target.inferredCommands ?? []).length === 0)) {
     limitations.push("Validation command inference is currently root-biased; nested workspace targets are inventoried and reported explicitly.");
   }
   for (const target of nestedTargets.filter((entry) => entry.support !== "native")) {
-    limitations.push(`Workspace target ${target.path} is ${target.support}; direct validation commands were not inferred for it.`);
+    if ((target.inferredCommands ?? []).length === 0) {
+      limitations.push(`Workspace target ${target.path} is ${target.support}; direct validation commands were not inferred for it.`);
+    }
   }
 
   return {
@@ -902,6 +1024,7 @@ export async function profileValidationRepository(cwd: string): Promise<Validati
     packageScripts: scripts,
     detectedTools: packageTools,
     workspaceTargets,
+    prerequisites,
     limitations
   };
 }
@@ -1040,10 +1163,10 @@ export function selectDefaultLocalCommands(profile: ValidationRepoProfile, build
       ? {
           packageManager:
             profile.packageManagers.includes("pnpm")
-              ? "pnpm"
+              ? "pnpm@0"
               : profile.packageManagers.includes("yarn")
-                ? "yarn"
-                : "npm"
+                ? "yarn@0"
+                : "npm@0"
         }
       : null,
     profile.manifests
@@ -1056,6 +1179,9 @@ export function selectDefaultLocalCommands(profile: ValidationRepoProfile, build
 
   for (const command of buildVerificationRecord.requestedCommands) {
     add(command);
+  }
+  if (scriptMap.has("check")) {
+    add(buildPackageScriptCommand(packageManager, "check"));
   }
   if (scriptMap.has("lint")) {
     add(buildPackageScriptCommand(packageManager, "lint"));
@@ -1083,6 +1209,11 @@ export function selectDefaultLocalCommands(profile: ValidationRepoProfile, build
   }
   if (scriptMap.has("smoke:packaged")) {
     add(buildPackageScriptCommand(packageManager, "smoke:packaged"));
+  }
+  for (const target of profile.workspaceTargets.filter((entry) => entry.path !== ".")) {
+    for (const command of target.inferredCommands ?? []) {
+      add(command);
+    }
   }
   if (profile.buildSystems.includes("cargo")) {
     add("cargo test");
@@ -1194,7 +1325,7 @@ function buildInitialValidationPlan(profile: ValidationRepoProfile, toolResearch
     })),
     localValidation: {
       commands: localCommands,
-      prerequisites: profile.runnerConstraints,
+      prerequisites: uniqueStrings([...profile.runnerConstraints, ...(profile.prerequisites ?? [])]),
       notes: localCommands.length > 0 ? [] : ["No deterministic local validation commands were inferred from the repo."]
     },
     ciValidation: {

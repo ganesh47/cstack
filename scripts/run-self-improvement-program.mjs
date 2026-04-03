@@ -236,6 +236,10 @@ async function readTextIfExists(targetPath) {
   }
 }
 
+function uniqueStrings(values) {
+  return values.filter((value, index) => Boolean(value) && values.indexOf(value) === index);
+}
+
 function parseMarkdownStatus(markdown, heading) {
   const escapedHeading = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = markdown.match(new RegExp(`- ${escapedHeading}: ([^\\n]+)`, "i"));
@@ -383,7 +387,7 @@ async function readCandidateResult(candidateResultPath, fallback) {
   };
 }
 
-async function finalizeCandidatePhase(record, iterationDir, candidateResultPath) {
+async function finalizeCandidatePhase(record, iterationDir, candidateResultPath, dirtyTrackedFiles, cwd) {
   record.candidateResult = await readCandidateResult(candidateResultPath, {
     status: record.baselineBenchmark?.status ?? "failed",
     summary: record.baselineBenchmark?.summary ?? "",
@@ -394,7 +398,15 @@ async function finalizeCandidatePhase(record, iterationDir, candidateResultPath)
     deferredClusters: record.deferredClusters,
     improved: null
   });
+  const filteredCandidateFiles = uniqueStrings(
+    (record.candidateResult.changedFiles ?? []).filter((file) => !dirtyTrackedFiles.includes(file) && !file.startsWith(".cstack/"))
+  );
+  const liveChangedFiles = await changedFiles(cwd, dirtyTrackedFiles);
+  record.candidateResult.changedFiles = filteredCandidateFiles.length > 0 ? filteredCandidateFiles : liveChangedFiles;
   record.improved = compareBenchmarkResults(record.baselineBenchmark, record.candidateResult);
+  if (dirtyTrackedFiles.length > 0 && (record.candidateResult.changedFiles?.length ?? 0) === 0) {
+    record.improved = false;
+  }
   if (record.candidateResult.primaryBlockerCluster !== undefined && record.candidateResult.primaryBlockerCluster !== null) {
     record.primaryBlockerCluster = record.candidateResult.primaryBlockerCluster;
   }
@@ -409,7 +421,7 @@ async function currentCommitSha(cwd) {
   return result.code === 0 ? lastNonEmptyLine(result.stdout) : null;
 }
 
-async function changedFiles(cwd) {
+async function trackedDirtyFiles(cwd) {
   const result = await runExec("git", ["status", "--short"], cwd);
   if (result.code !== 0) {
     return [];
@@ -417,9 +429,15 @@ async function changedFiles(cwd) {
   return result.stdout
     .split(/\r?\n/)
     .filter(Boolean)
+    .filter((line) => !line.startsWith("?? "))
     .map((line) => line.slice(3).trim())
     .filter((file) => !file.startsWith(".cstack/"))
     .filter(Boolean);
+}
+
+async function changedFiles(cwd, excludedFiles = []) {
+  const excluded = new Set(excludedFiles);
+  return (await trackedDirtyFiles(cwd)).filter((file) => !excluded.has(file));
 }
 
 function slugify(value) {
@@ -481,6 +499,7 @@ async function loadOrCreateProgram(options, cwd) {
       iterationsCompleted: 0,
       startingRelease,
       endingRelease: startingRelease,
+      dirtyTrackedFiles: await trackedDirtyFiles(cwd),
       status: "running",
       currentPhase: "baseline",
       lastSuccessfulIteration: 0,
@@ -509,6 +528,7 @@ async function loadOrCreateProgram(options, cwd) {
   options.candidateCommand = programRecord.candidateCommand ?? options.candidateCommand;
   options.releaseCommand = programRecord.releaseCommand ?? options.releaseCommand;
   options.updateCommand = programRecord.updateCommand ?? options.updateCommand;
+  programRecord.dirtyTrackedFiles ??= await trackedDirtyFiles(cwd);
   return {
     id: programRecord.programId,
     rootDir: resumePath,
@@ -604,7 +624,7 @@ async function ensureGitIdentity(cwd) {
   await runExec("git", ["config", "user.email", "cstack-program@example.com"], cwd);
 }
 
-async function createBranchAndCommit(cwd, branchName, commitMessage) {
+async function createBranchAndCommit(cwd, branchName, commitMessage, excludedFiles = []) {
   const existingBranch = await runExec("git", ["rev-parse", "--verify", branchName], cwd);
   if (existingBranch.code === 0) {
     await runExec("git", ["checkout", branchName], cwd);
@@ -614,7 +634,7 @@ async function createBranchAndCommit(cwd, branchName, commitMessage) {
       throw new Error(lastNonEmptyLine(checkout.stderr) || "failed to create iteration branch");
     }
   }
-  const files = await changedFiles(cwd);
+  const files = await changedFiles(cwd, excludedFiles);
   if (files.length === 0) {
     throw new Error("Candidate reported improvement but no repo-tracked changes are present.");
   }
@@ -743,6 +763,7 @@ async function main() {
       CSTACK_BENCHMARK_ITERATIONS: String(options.benchmarkIterations),
       CSTACK_BRANCH: options.branch ?? ""
     };
+    const dirtyTrackedFiles = Array.isArray(programRecord.dirtyTrackedFiles) ? programRecord.dirtyTrackedFiles : [];
 
     try {
       if (!record.phaseState.baseline) {
@@ -800,7 +821,7 @@ async function main() {
         if (!existingCandidateArtifacts) {
           await runPhase(options.candidateCommand, cwd, phaseEnv, path.join(iterationDir, "candidate-command.json"));
         }
-        await finalizeCandidatePhase(record, iterationDir, candidateResultPath);
+        await finalizeCandidatePhase(record, iterationDir, candidateResultPath, dirtyTrackedFiles, cwd);
         programRecord.currentPhase = record.improved ? "branch-push" : "finalize";
         await persistIteration(rootDir, iterationDir, programRecord, record);
       }
@@ -810,7 +831,7 @@ async function main() {
         if (remoteCapable) {
           record.branchName ??= `cstack/program-${id.slice(0, 8)}/iter-${String(iteration).padStart(2, "0")}-${slugify(record.primaryBlockerCluster ?? "slice")}`;
           const commitMessage = `fix: program iteration ${String(iteration).padStart(2, "0")} ${slugify(record.primaryBlockerCluster ?? "slice")}`;
-          const branchResult = await createBranchAndCommit(cwd, record.branchName, commitMessage);
+          const branchResult = await createBranchAndCommit(cwd, record.branchName, commitMessage, dirtyTrackedFiles);
           record.commitSha = branchResult.commitSha;
           if ((record.candidateResult?.changedFiles?.length ?? 0) === 0) {
             record.candidateResult.changedFiles = branchResult.changedFiles;

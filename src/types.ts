@@ -883,6 +883,8 @@ export interface ValidationWorkspaceTarget {
   packageScripts: ValidationDetectedScript[];
   detectedTools: string[];
   support: "native" | "partial" | "inventory-only";
+  inferredCommands?: string[];
+  prerequisites?: string[];
   notes: string[];
 }
 
@@ -900,6 +902,7 @@ export interface ValidationRepoProfile {
   packageScripts: ValidationDetectedScript[];
   detectedTools: string[];
   workspaceTargets: ValidationWorkspaceTarget[];
+  prerequisites?: string[];
   limitations: string[];
 }
 

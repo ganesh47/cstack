@@ -251,6 +251,82 @@ describe("self-improvement program script", () => {
     await expect(fs.access(releaseLogPath)).rejects.toThrow(/ENOENT/);
   });
 
+  it("ignores preserved dirty tracked files when deciding candidate improvement", async () => {
+    const scenarioPath = path.join(repoDir, "scenario.json");
+    const statePath = path.join(repoDir, "state.json");
+    const releaseLogPath = path.join(repoDir, "release.log");
+
+    await fs.writeFile(
+      scenarioPath,
+      `${JSON.stringify(
+        {
+          benchmarks: [
+            {
+              runId: "intent-baseline",
+              status: "failed",
+              summary: "blocked by validation",
+              primaryBlockerCluster: "validation blocker"
+            }
+          ]
+        },
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
+    await fs.mkdir(path.join(repoDir, "scripts"), { recursive: true });
+    await fs.mkdir(path.join(repoDir, "test"), { recursive: true });
+    await fs.writeFile(path.join(repoDir, "scripts", "program-validate.mjs"), "base\n", "utf8");
+    await fs.writeFile(path.join(repoDir, "test", "program-validate.test.ts"), "base\n", "utf8");
+    await execFileAsync("git", ["add", "."], { cwd: repoDir });
+    await execFileAsync("git", ["commit", "-m", "tracked files"], { cwd: repoDir });
+    await fs.writeFile(path.join(repoDir, "scripts", "program-validate.mjs"), "preserved\n", "utf8");
+    await fs.writeFile(path.join(repoDir, "test", "program-validate.test.ts"), "preserved\n", "utf8");
+
+    await execFileAsync(
+      process.execPath,
+      [
+        scriptPath,
+        "--iterations",
+        "1",
+        "--repo",
+        repoDir,
+        "--intent",
+        "What are the gaps in this project? Can you work on closing the gaps?",
+        "--cstack-bin",
+        fakeCstackPath,
+        "--start-version",
+        "v0.1.0",
+        "--fix-command",
+        "printf 'fixed\\n'",
+        "--validate-command",
+        "printf 'validated\\n'",
+        "--candidate-command",
+        `cat > "$CSTACK_CANDIDATE_RESULT_PATH" <<'JSON'\n{"status":"completed","summary":"candidate improved","primaryBlockerCluster":null,"changedFiles":["scripts/program-validate.mjs","test/program-validate.test.ts"]}\nJSON`,
+        "--release-command",
+        `printf 'v0.1.1\\n' > "${releaseLogPath}"`
+      ],
+      {
+        cwd: repoDir,
+        env: {
+          ...process.env,
+          FAKE_SELF_IMPROVEMENT_SCENARIO: scenarioPath,
+          FAKE_SELF_IMPROVEMENT_STATE: statePath
+        },
+        maxBuffer: 20 * 1024 * 1024
+      }
+    );
+
+    const programRoot = path.join(repoDir, ".cstack", "programs");
+    const programIds = await fs.readdir(programRoot);
+    const programDir = path.join(programRoot, programIds[0]!);
+    const iterationRecord = JSON.parse(await fs.readFile(path.join(programDir, "iteration-01", "iteration-record.json"), "utf8"));
+
+    expect(iterationRecord.improved).toBe(false);
+    expect(iterationRecord.candidateResult.changedFiles).toEqual([]);
+    await expect(fs.access(releaseLogPath)).rejects.toThrow(/ENOENT/);
+  });
+
   it("extracts a blocker from run artifacts when cstack loop does not print loop artifacts", async () => {
     const noArtifactsCstackPath = path.join(repoDir, "fake-no-artifacts-cstack.mjs");
     const workspaceDir = path.join(repoDir, "benchmark-workspace");

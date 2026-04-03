@@ -118,7 +118,7 @@ describe("validation intelligence", () => {
 
     expect(profile.workspaceTargets.map((target) => target.path)).toEqual([".", "docker/api", "packages/api", "packages/cli"]);
     expect(profile.workspaceTargets.find((target) => target.path === "packages/api")?.support).toBe("partial");
-    expect(profile.workspaceTargets.find((target) => target.path === "packages/cli")?.support).toBe("inventory-only");
+    expect(profile.workspaceTargets.find((target) => target.path === "packages/cli")?.support).toBe("partial");
     expect(profile.workspaceTargets.find((target) => target.path === "docker/api")?.support).toBe("inventory-only");
     expect(profile.limitations).toContain("Validation command inference is currently root-biased; nested workspace targets are inventoried and reported explicitly.");
     expect(profile.limitations.join("\n")).toContain("packages/cli");
@@ -256,5 +256,76 @@ describe("validation intelligence", () => {
 
     expect(pnpmCommands).toEqual(["pnpm lint", "pnpm test", "pnpm build"]);
     expect(yarnCommands).toEqual(["yarn typecheck", "yarn test:e2e"]);
+  });
+
+  it("infers target-aware commands and prerequisites for nested workspaces", async () => {
+    await fs.mkdir(path.join(repoDir, "packages", "api"), { recursive: true });
+    await fs.mkdir(path.join(repoDir, "packages", "cli"), { recursive: true });
+    await fs.writeFile(path.join(repoDir, ".nvmrc"), "20.17.0\n", "utf8");
+    await fs.writeFile(
+      path.join(repoDir, "package.json"),
+      JSON.stringify(
+        {
+          name: "fixture-monorepo",
+          private: true,
+          packageManager: "pnpm@9.12.0",
+          scripts: {
+            check: "pnpm run check:api && pnpm run check:cli"
+          }
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(repoDir, "packages", "api", "package.json"),
+      JSON.stringify(
+        {
+          name: "@fixture/api",
+          private: true,
+          scripts: {
+            lint: "eslint src --ext .ts",
+            test: "vitest run"
+          }
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(repoDir, "packages", "cli", "pyproject.toml"),
+      [
+        "[project]",
+        "name = 'fixture-cli'",
+        "requires-python = '>=3.12'",
+        "",
+        "[project.optional-dependencies]",
+        "dev = ['pytest>=8.0', 'ruff>=0.6']",
+        "",
+        "[tool.uv]",
+        "package = true",
+        "",
+        "[tool.ruff]",
+        "line-length = 100",
+        "",
+        "[tool.pytest.ini_options]",
+        "minversion = '8.0'"
+      ].join("\n"),
+      "utf8"
+    );
+
+    const profile = await profileValidationRepository(repoDir);
+    const commands = selectDefaultLocalCommands(profile, { status: "passed", requestedCommands: [], results: [] });
+
+    expect(commands).toContain("pnpm check");
+    expect(commands).toContain("pnpm --dir packages/api lint");
+    expect(commands).toContain("pnpm --dir packages/api test");
+    expect(commands).toContain("cd packages/cli && uv run ruff check .");
+    expect(commands).toContain("cd packages/cli && uv run pytest");
+    expect(profile.prerequisites).toContain("Node 20.17.0 from .nvmrc");
+    expect(profile.prerequisites).toContain("Python >=3.12 for packages/cli");
+    expect(profile.prerequisites).toContain("uv available on PATH for packages/cli");
   });
 });
