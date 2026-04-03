@@ -46,6 +46,16 @@ async function ghRepo(cwd) {
   return JSON.parse(result.stdout).nameWithOwner;
 }
 
+function includesUpdateAvailable(output) {
+  const normalized = output.toLowerCase();
+  return normalized.includes("update available") || (normalized.includes("current:") && normalized.includes("target:"));
+}
+
+function extractVersion(output, label) {
+  const match = output.match(new RegExp(`${label}:\\s*(v[^\\s]+)`, "i"));
+  return match?.[1] ?? null;
+}
+
 async function main() {
   const iterationDir = process.env.CSTACK_ITERATION_DIR;
   const releasedTag = process.env.CSTACK_RELEASED_TAG;
@@ -57,62 +67,92 @@ async function main() {
   const customCommand = process.env.CSTACK_PROGRAM_UPDATE_COMMAND;
   if (customCommand) {
     const result = await runShell(customCommand, process.cwd(), process.env);
+    const record = {
+      schemaVersion: 1,
+      releasedTag,
+      startingRelease,
+      mode: "custom",
+      status: result.code === 0 ? "passed" : "failed",
+      checkResult: result,
+      ...(result.code !== 0 ? { failureReason: result.stderr.trim() || result.stdout.trim() || "program update validation hook failed" } : {})
+    };
+    await fs.writeFile(path.join(iterationDir, "update-validation.json"), `${JSON.stringify(record, null, 2)}\n`, "utf8");
     if (result.code !== 0) {
-      throw new Error(result.stderr.trim() || result.stdout.trim() || "program update validation hook failed");
+      throw new Error(record.failureReason);
     }
-    await fs.writeFile(
-      path.join(iterationDir, "update-validation.json"),
-      `${JSON.stringify({ schemaVersion: 1, releasedTag, mode: "custom", checkResult: result }, null, 2)}\n`,
-      "utf8"
-    );
     return;
   }
 
-  const repo = await ghRepo(process.cwd());
-  const installRoot = await fs.mkdtemp(path.join(os.tmpdir(), "cstack-program-update-"));
-  const prefix = path.join(installRoot, "prefix");
-  const previousUrl = `https://github.com/${repo}/releases/download/${startingRelease}/cstack-latest.tgz`;
-  const env = {
-    ...process.env,
-    npm_config_prefix: prefix,
-    PATH: `${path.join(prefix, "bin")}:${process.env.PATH ?? ""}`
-  };
-
-  const install = await runExec("npm", ["install", "-g", previousUrl, "--prefix", prefix], process.cwd(), env);
-  if (install.code !== 0) {
-    throw new Error(install.stderr.trim() || install.stdout.trim() || "failed to install previous cstack release");
-  }
-
-  const binary = path.join(prefix, "bin", "cstack");
-  const checkBefore = await runExec(binary, ["update", "--check"], process.cwd(), env);
-  if (checkBefore.code !== 0) {
-    throw new Error(checkBefore.stderr.trim() || checkBefore.stdout.trim() || "update --check failed before upgrade");
-  }
-
-  const update = await runExec(binary, ["update", "--yes"], process.cwd(), env);
-  if (update.code !== 0) {
-    throw new Error(update.stderr.trim() || update.stdout.trim() || "cstack update --yes failed");
-  }
-
-  const checkAfter = await runExec(binary, ["update", "--check"], process.cwd(), env);
-  if (checkAfter.code !== 0) {
-    throw new Error(checkAfter.stderr.trim() || checkAfter.stdout.trim() || "update --check failed after upgrade");
-  }
-
-  const versionAfter = await runExec(binary, ["--version"], process.cwd(), env);
-  const record = {
+  let record = {
     schemaVersion: 1,
     releasedTag,
     startingRelease,
     mode: "isolated-prefix",
-    prefix,
-    binary,
-    install,
-    checkBefore,
-    update,
-    checkAfter,
-    versionAfter
+    status: "failed",
+    prefix: null,
+    binary: null,
+    install: null,
+    checkBefore: null,
+    update: null,
+    checkAfter: null,
+    versionAfter: null,
+    updateAvailable: false,
+    detectedCurrentVersion: null,
+    detectedTargetVersion: null,
+    failureReason: null
   };
+
+  try {
+    const repo = await ghRepo(process.cwd());
+    const installRoot = await fs.mkdtemp(path.join(os.tmpdir(), "cstack-program-update-"));
+    const prefix = path.join(installRoot, "prefix");
+    const previousUrl = `https://github.com/${repo}/releases/download/${startingRelease}/cstack-latest.tgz`;
+    const env = {
+      ...process.env,
+      npm_config_prefix: prefix,
+      PATH: `${path.join(prefix, "bin")}:${process.env.PATH ?? ""}`
+    };
+
+    const install = await runExec("npm", ["install", "-g", previousUrl, "--prefix", prefix], process.cwd(), env);
+    record = { ...record, prefix, install };
+    if (install.code !== 0) {
+      throw new Error(install.stderr.trim() || install.stdout.trim() || "failed to install previous cstack release");
+    }
+
+    const binary = path.join(prefix, "bin", "cstack");
+    record.binary = binary;
+
+    const checkBefore = await runExec(binary, ["update", "--check"], process.cwd(), env);
+    const checkBeforeOutput = `${checkBefore.stdout}\n${checkBefore.stderr}`;
+    record.checkBefore = checkBefore;
+    record.detectedCurrentVersion = extractVersion(checkBeforeOutput, "Current");
+    record.detectedTargetVersion = extractVersion(checkBeforeOutput, "Target");
+    record.updateAvailable = includesUpdateAvailable(checkBeforeOutput);
+    if (checkBefore.code !== 0 && !record.updateAvailable) {
+      throw new Error(checkBefore.stderr.trim() || checkBefore.stdout.trim() || "update --check failed before upgrade");
+    }
+
+    const update = await runExec(binary, ["update", "--yes"], process.cwd(), env);
+    record.update = update;
+    if (update.code !== 0) {
+      throw new Error(update.stderr.trim() || update.stdout.trim() || "cstack update --yes failed");
+    }
+
+    const checkAfter = await runExec(binary, ["update", "--check"], process.cwd(), env);
+    record.checkAfter = checkAfter;
+    if (checkAfter.code !== 0) {
+      throw new Error(checkAfter.stderr.trim() || checkAfter.stdout.trim() || "update --check failed after upgrade");
+    }
+
+    const versionAfter = await runExec(binary, ["--version"], process.cwd(), env);
+    record.versionAfter = versionAfter;
+    record.status = "passed";
+  } catch (error) {
+    record.failureReason = error instanceof Error ? error.message : String(error);
+    await fs.writeFile(path.join(iterationDir, "update-validation.json"), `${JSON.stringify(record, null, 2)}\n`, "utf8");
+    throw error;
+  }
+
   await fs.writeFile(path.join(iterationDir, "update-validation.json"), `${JSON.stringify(record, null, 2)}\n`, "utf8");
 }
 
