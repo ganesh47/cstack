@@ -57,6 +57,24 @@ describe("classifyExecutionBlocker", () => {
     });
   });
 
+  it("classifies better-sqlite3 native binding load failures as toolchain mismatch", () => {
+    const result = classifyExecutionBlocker(
+      "pnpm --dir packages/api exec vitest run tests/health.spec.ts tests/graph.spec.ts",
+      [
+        "Error: Could not locate the bindings file.",
+        "Tried:",
+        " -> /repo/packages/api/node_modules/better-sqlite3/build/better_sqlite3.node",
+        "Error: The module '/repo/packages/api/node_modules/better-sqlite3/build/Release/better_sqlite3.node'",
+        "was compiled against a different Node.js version using NODE_MODULE_VERSION 115."
+      ].join("\n")
+    );
+
+    expect(result).toEqual({
+      category: "toolchain-mismatch",
+      detail: "Error: Could not locate the bindings file."
+    });
+  });
+
   it("returns null for unrelated terminal output", () => {
     expect(classifyExecutionBlocker("echo", "done writing files\n")).toBeNull();
   });

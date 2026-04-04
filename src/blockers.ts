@@ -61,6 +61,15 @@ export function classifyExecutionBlocker(command: string, output: string): Execu
   }
 
   if (
+    /\bbetter-sqlite3\b/i.test(normalized) &&
+    /\b(could not locate the bindings file|compiled against a different node\.js version|node_module_version|module did not self-register|invalid elf header|cannot open shared object file)\b/i.test(
+      normalized
+    )
+  ) {
+    return { category: "toolchain-mismatch", detail };
+  }
+
+  if (
     /\b(unsupportedclassversionerror|release version .* not supported|source option \d+ is no longer supported|target option \d+ is no longer supported|requires node >=|engine .* unsupported|requires python|java_home|python \d+\.\d+ not found|version mismatch|unsupported runtime)\b/i.test(
       normalized
     )
