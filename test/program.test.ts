@@ -415,6 +415,118 @@ describe("self-improvement program script", () => {
     expect(iterationRecord.primaryBlockerCluster).toBe("validation host-tool bootstrap");
   });
 
+  it("waits for loop artifacts to finish when cstack loop returns before benchmark artifacts finalize", async () => {
+    const asyncCstackPath = path.join(repoDir, "fake-async-cstack.mjs");
+    const workspaceDir = path.join(repoDir, "async-benchmark-workspace");
+    const loopDir = path.join(workspaceDir, ".cstack", "loops", "2026-04-04T15-00-00.000Z");
+    const intentRunId = "2026-04-04T15-00-01-000Z-intent-artifact-delay";
+    const deliverRunId = "2026-04-04T15-00-02-000Z-deliver-artifact-delay";
+    await fs.mkdir(path.join(workspaceDir, ".cstack", "runs", intentRunId), { recursive: true });
+    await fs.mkdir(path.join(workspaceDir, ".cstack", "runs", deliverRunId), { recursive: true });
+    await fs.mkdir(loopDir, { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceDir, ".cstack", "runs", intentRunId, "run.json"),
+      `${JSON.stringify({ id: intentRunId, status: "running" }, null, 2)}\n`,
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(loopDir, "benchmark-outcome.json"),
+      `${JSON.stringify({ schemaVersion: 1, iterationsRequested: 1, iterationsCompleted: 0, status: "failed", iterations: [] }, null, 2)}\n`,
+      "utf8"
+    );
+    await fs.writeFile(
+      asyncCstackPath,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        "const args = process.argv.slice(2);",
+        "if (args[0] === 'update' && args[1] === '--check') { process.stdout.write('Current: v0.1.0\\n'); process.exit(0); }",
+        "if (args[0] === '--version') { process.stdout.write('v0.1.0\\n'); process.exit(0); }",
+        "if (args[0] !== 'loop') { throw new Error(`Unsupported command: ${args.join(' ')}`); }",
+        `const workspace = ${JSON.stringify(workspaceDir)};`,
+        `const loopDir = ${JSON.stringify(loopDir)};`,
+        `const intentRunId = ${JSON.stringify(intentRunId)};`,
+        `const deliverRunId = ${JSON.stringify(deliverRunId)};`,
+        "setTimeout(() => {",
+        "  fs.writeFileSync(path.join(workspace, '.cstack', 'runs', intentRunId, 'final.md'), [",
+        "    '# Intent Run Summary',",
+        "    '',",
+        "    '## Stage status',",
+        `    '- build: completed (executed) via ${deliverRunId}',`,
+        "    '- review: failed (executed)',",
+        "    '  note: Delivery is blocked because validation was blocked by a missing host tool.'",
+        "  ].join('\\n') + '\\n');",
+        "  fs.writeFileSync(path.join(workspace, '.cstack', 'runs', intentRunId, 'run.json'), JSON.stringify({ id: intentRunId, status: 'failed' }, null, 2) + '\\n');",
+        "  fs.writeFileSync(path.join(workspace, '.cstack', 'runs', deliverRunId, 'final.md'), [",
+        "    '# Deliver Run Summary',",
+        "    '',",
+        "    '## Stage status',",
+        "    '- validation: failed (blocked-by-validation: Validation blocked by external specialist blocker(s): host-tool-missing.)'",
+        "  ].join('\\n') + '\\n');",
+        "  fs.writeFileSync(path.join(loopDir, 'benchmark-outcome.json'), JSON.stringify({",
+        "    schemaVersion: 1,",
+        "    iterationsRequested: 1,",
+        "    iterationsCompleted: 1,",
+        "    status: 'failed',",
+        "    latestRunId: intentRunId,",
+        "    latestSummary: 'Intent run finished with downstream workflow failures',",
+        "    iterations: [{ iteration: 1, runId: intentRunId, status: 'failed', summary: 'Intent run finished with downstream workflow failures', deferredClusters: [], specialists: [] }]",
+        "  }, null, 2) + '\\n');",
+        "  fs.writeFileSync(path.join(loopDir, 'cycle-record.json'), JSON.stringify({",
+        "    schemaVersion: 1,",
+        "    status: 'failed',",
+        "    latestSummary: 'Intent run finished with downstream workflow failures',",
+        "    primaryBlockerCluster: 'validation host-tool bootstrap'",
+        "  }, null, 2) + '\\n');",
+        "}, 250);",
+        `process.stdout.write('Loop iteration: 1/1\\nWorkspace: ${workspaceDir}\\nIntent: test intent\\nResult run: ${intentRunId}\\nStatus: failed\\nFinal summary: Intent run finished with downstream workflow failures\\nLoop artifacts: ${loopDir}\\n');`,
+        "process.exitCode = 1;"
+      ].join("\n"),
+      "utf8"
+    );
+    chmodSync(asyncCstackPath, 0o755);
+
+    await execFileAsync(
+      process.execPath,
+      [
+        scriptPath,
+        "--iterations",
+        "1",
+        "--repo",
+        repoDir,
+        "--intent",
+        "What are the gaps in this project? Can you work on closing the gaps?",
+        "--cstack-bin",
+        asyncCstackPath,
+        "--start-version",
+        "v0.1.0",
+        "--fix-command",
+        "printf 'fixed\\n'",
+        "--validate-command",
+        "printf 'validated\\n'",
+        "--candidate-command",
+        `cat > "$CSTACK_CANDIDATE_RESULT_PATH" <<'JSON'\n{"status":"failed","summary":"still blocked","primaryBlockerCluster":"validation host-tool bootstrap"}\nJSON`
+      ],
+      {
+        cwd: repoDir,
+        env: {
+          ...process.env
+        },
+        maxBuffer: 20 * 1024 * 1024
+      }
+    );
+
+    const programRoot = path.join(repoDir, ".cstack", "programs");
+    const programIds = await fs.readdir(programRoot);
+    const programDir = path.join(programRoot, programIds[0]!);
+    const iterationRecord = JSON.parse(await fs.readFile(path.join(programDir, "iteration-01", "iteration-record.json"), "utf8"));
+    expect(iterationRecord.phaseState.baseline).toBe(true);
+    expect(iterationRecord.phaseState.finalize).toBe(true);
+    expect(iterationRecord.baselineBenchmark.status).toBe("failed");
+    expect(iterationRecord.benchmarkVerdict).toBe("failed");
+  });
+
   it("uses the default hook scripts and records diagnosis plus update validation artifacts", async () => {
     const scenarioPath = path.join(repoDir, "scenario.json");
     const statePath = path.join(repoDir, "state.json");

@@ -225,6 +225,10 @@ function parseBenchmarkOutput(stdout, cwd) {
   };
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function readTextIfExists(targetPath) {
   try {
     return await fs.readFile(targetPath, "utf8");
@@ -256,7 +260,7 @@ function classifyBenchmarkBlockerFromText(text) {
   if (!normalized.trim()) {
     return null;
   }
-  if (normalized.includes("host-tool-missing")) {
+  if (normalized.includes("host-tool-missing") || normalized.includes("missing host tool") || normalized.includes("missing host tools")) {
     return "validation host-tool bootstrap";
   }
   if (normalized.includes("blocked-by-validation-drift") || normalized.includes("validation drift")) {
@@ -316,6 +320,41 @@ async function enrichBenchmarkFromArtifacts(parsed, cwd) {
   };
 }
 
+async function waitForBenchmarkArtifactCompletion(parsed, cwd, benchmarkIterations) {
+  if (!parsed.workspace || !parsed.resultRunId || !parsed.loopArtifactsDir) {
+    return null;
+  }
+
+  const runJsonPath = path.join(parsed.workspace, ".cstack", "runs", parsed.resultRunId, "run.json");
+  const deadline = Date.now() + 15 * 60 * 1000;
+  let lastSnapshot = null;
+
+  while (Date.now() < deadline) {
+    const benchmarkOutcome = await readJsonIfExists(path.join(parsed.loopArtifactsDir, "benchmark-outcome.json"));
+    const cycleRecord = await readJsonIfExists(path.join(parsed.loopArtifactsDir, "cycle-record.json"));
+    const runRecord = await readJsonIfExists(runJsonPath);
+    const artifactFallback = await enrichBenchmarkFromArtifacts(parsed, cwd);
+    lastSnapshot = {
+      cycleRecord,
+      benchmarkOutcome,
+      runRecord,
+      artifactFallback
+    };
+
+    const iterationsCompleted = benchmarkOutcome?.iterationsCompleted ?? 0;
+    const runFinished = runRecord?.status && runRecord.status !== "running";
+    const loopFinished = typeof benchmarkOutcome?.status === "string" && iterationsCompleted >= benchmarkIterations;
+
+    if (runFinished && (loopFinished || iterationsCompleted >= benchmarkIterations)) {
+      return lastSnapshot;
+    }
+
+    await sleep(5000);
+  }
+
+  return lastSnapshot;
+}
+
 async function runReleasedBenchmark(options) {
   const args = ["loop", "--repo", options.repo, "--iterations", String(options.benchmarkIterations)];
   if (options.branch) {
@@ -324,11 +363,21 @@ async function runReleasedBenchmark(options) {
   args.push(options.intent);
   const result = await runExec(options.cstackBin, args, options.cwd, options.env);
   const parsed = parseBenchmarkOutput(result.stdout, options.cwd);
-  const cycleRecord = parsed.loopArtifactsDir ? await readJsonIfExists(path.join(parsed.loopArtifactsDir, "cycle-record.json")) : null;
-  const benchmarkOutcome = parsed.loopArtifactsDir
+  let cycleRecord = parsed.loopArtifactsDir ? await readJsonIfExists(path.join(parsed.loopArtifactsDir, "cycle-record.json")) : null;
+  let benchmarkOutcome = parsed.loopArtifactsDir
     ? await readJsonIfExists(path.join(parsed.loopArtifactsDir, "benchmark-outcome.json"))
     : null;
-  const artifactFallback = await enrichBenchmarkFromArtifacts(parsed, options.cwd);
+  let artifactFallback = await enrichBenchmarkFromArtifacts(parsed, options.cwd);
+
+  if ((benchmarkOutcome?.iterationsCompleted ?? 0) < options.benchmarkIterations) {
+    const recovered = await waitForBenchmarkArtifactCompletion(parsed, options.cwd, options.benchmarkIterations);
+    if (recovered) {
+      cycleRecord = recovered.cycleRecord ?? cycleRecord;
+      benchmarkOutcome = recovered.benchmarkOutcome ?? benchmarkOutcome;
+      artifactFallback = recovered.artifactFallback ?? artifactFallback;
+    }
+  }
+
   return {
     command: [options.cstackBin, ...args].join(" "),
     exitCode: result.code,
