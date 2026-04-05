@@ -75,6 +75,23 @@ describe("classifyExecutionBlocker", () => {
     });
   });
 
+  it("classifies better_sqlite3 native binding load failures as toolchain mismatch", () => {
+    const result = classifyExecutionBlocker(
+      "pnpm --filter metadata-api test",
+      [
+        "⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯",
+        "Error: Could not locate the bindings file.",
+        " -> /repo/node_modules/better-sqlite3/build/Release/better_sqlite3.node",
+        " -> /repo/node_modules/better-sqlite3/lib/binding/node-v137-linux-x64/better_sqlite3.node"
+      ].join("\n")
+    );
+
+    expect(result).toEqual({
+      category: "toolchain-mismatch",
+      detail: "⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯"
+    });
+  });
+
   it("returns null for unrelated terminal output", () => {
     expect(classifyExecutionBlocker("echo", "done writing files\n")).toBeNull();
   });

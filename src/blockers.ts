@@ -61,7 +61,7 @@ export function classifyExecutionBlocker(command: string, output: string): Execu
   }
 
   if (
-    /\bbetter-sqlite3\b/i.test(normalized) &&
+    /\bbetter[-_]sqlite3\b/i.test(normalized) &&
     /\b(could not locate the bindings file|compiled against a different node\.js version|node_module_version|module did not self-register|invalid elf header|cannot open shared object file)\b/i.test(
       normalized
     )
