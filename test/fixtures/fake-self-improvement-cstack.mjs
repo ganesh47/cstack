@@ -64,9 +64,16 @@ async function main() {
     `${JSON.stringify(
       {
         status: benchmark.status,
+        iterationsRequested: 1,
+        iterationsCompleted: 1,
+        latestRunId: benchmark.runId,
+        latestSummary: benchmark.summary,
         iterations: [
           {
             iteration: 1,
+            runId: benchmark.runId,
+            status: benchmark.status,
+            summary: benchmark.summary,
             deferredClusters: benchmark.deferredClusters ?? []
           }
         ]
