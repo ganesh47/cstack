@@ -32,9 +32,7 @@ const REPOSITORY_CONTEXT_CANDIDATES = [
   "specs/001-plan-alignment/spec.md",
   "specs/001-plan-alignment/research.md",
   "sqlite-metadata-system.md",
-  "docs/project-readme.md",
-  "AGENTS.md",
-  "README.md"
+  "docs/project-readme.md"
 ];
 
 async function readPromptReferenceFiles(cwd: string, limit = 4): Promise<PromptReferenceFile[]> {

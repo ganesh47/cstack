@@ -49,6 +49,8 @@ describe("buildBuildPrompt", () => {
     expect(prompt).toContain("### Patch resilience");
     expect(prompt).toContain("If `apply_patch` fails once, do not retry the same hunk unchanged");
     expect(prompt).toContain("If the file has mixed line endings, normalize them once before editing");
+    expect(prompt).not.toContain("### README.md");
     expect(context).toContain("Retry failure hints:");
+    expect(context).toContain("Reference files: none");
   });
 });
