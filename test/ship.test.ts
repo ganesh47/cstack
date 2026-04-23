@@ -164,13 +164,19 @@ async function seedInitiativeReviewRun(repoDir: string, buildRunId: string): Pro
 describe("runShip", () => {
   let repoDir: string;
   let remoteDir: string;
+  let originalPath: string | undefined;
 
   beforeEach(async () => {
     repoDir = await fs.mkdtemp(path.join(os.tmpdir(), "cstack-ship-"));
     const fakeCodexPath = path.resolve("test/fixtures/fake-codex.mjs");
     const fakeGhPath = path.resolve("test/fixtures/fake-gh.mjs");
+    const fakeGhBinDir = await fs.mkdtemp(path.join(os.tmpdir(), "cstack-ship-fake-gh-bin-"));
     chmodSync(fakeCodexPath, 0o755);
     chmodSync(fakeGhPath, 0o755);
+    await fs.copyFile(fakeGhPath, path.join(fakeGhBinDir, "gh"));
+    chmodSync(path.join(fakeGhBinDir, "gh"), 0o755);
+    originalPath = process.env.PATH;
+    process.env.PATH = `${fakeGhBinDir}${path.delimiter}${originalPath ?? ""}`;
 
     await fs.mkdir(path.join(repoDir, ".cstack", "prompts"), { recursive: true });
     await fs.mkdir(path.join(repoDir, ".cstack", "runs"), { recursive: true });
@@ -191,7 +197,7 @@ describe("runShip", () => {
         "",
         "[workflows.deliver.github]",
         'enabled = true',
-        `command = "${fakeGhPath.replaceAll("\\", "\\\\")}"`,
+        'command = "gh"',
         'repository = "ganesh47/cstack"',
         'pushBranch = true',
         'branchPrefix = "cstack"',
@@ -224,6 +230,7 @@ describe("runShip", () => {
   });
 
   afterEach(async () => {
+    process.env.PATH = originalPath;
     await fs.rm(repoDir, { recursive: true, force: true });
     await fs.rm(remoteDir, { recursive: true, force: true });
   });

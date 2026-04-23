@@ -100,23 +100,8 @@ async function pathExists(filePath: string): Promise<boolean> {
   }
 }
 
-function resolveCommand(command: string, args: string[]): { file: string; args: string[] } {
-  if (/\.(mjs|cjs|js|ts)$/i.test(command)) {
-    return {
-      file: process.execPath,
-      args: [command, ...args]
-    };
-  }
-
-  return {
-    file: command,
-    args
-  };
-}
-
 async function runCommand(command: string, args: string[], cwd: string): Promise<CommandResult> {
-  const invocation = resolveCommand(command, args);
-  const result = await execFileAsync(invocation.file, invocation.args, {
+  const result = await execFileAsync(command, args, {
     cwd,
     maxBuffer: 10 * 1024 * 1024,
     timeout: Number.parseInt(process.env.CSTACK_GITHUB_COMMAND_TIMEOUT_MS ?? "", 10) || DEFAULT_GITHUB_COMMAND_TIMEOUT_MS
@@ -1104,7 +1089,7 @@ export async function performGitHubDeliverMutations(options: PerformGitHubMutati
   );
   const remote = await resolveRemoteForPush(options.cwd);
   const { repository } = await detectRepository(options.cwd, policy.repository);
-  const ghCommand = policy.command || "gh";
+  const ghCommand = "gh";
   const defaultBranchInfo = await resolveDefaultBranch({ ghCommand, cwd: options.cwd, repository });
   const defaultBranch = defaultBranchInfo.name;
   let branch = options.gitBranch;
@@ -1619,7 +1604,7 @@ export async function collectGitHubDeliveryEvidence(options: CollectGitHubDelive
     };
   }
 
-  const ghCommand = policy.command || "gh";
+  const ghCommand = "gh";
   const { repository, remoteUrl } = await detectRepository(options.cwd, policy.repository);
   const headSha = await detectHeadSha(options.cwd);
   const defaultBranchInfo = await resolveDefaultBranch({ ghCommand, cwd: options.cwd, repository });
