@@ -787,8 +787,11 @@ function renderMitigations(inspection: RunInspection): string {
   ].join("\n");
 }
 
-function buildMitigationPrompt(inspection: RunInspection, workflow: WorkflowName, actions: string[]): string {
-  const focus = actions.length > 0 ? actions.join(" ") : inspection.run.summary ?? inspection.run.inputs.userPrompt;
+function buildMitigationPrompt(inspection: RunInspection, workflow: WorkflowName, actionIndexes: number[]): string {
+  const focus =
+    actionIndexes.length > 0
+      ? `recorded mitigation item${actionIndexes.length === 1 ? "" : "s"} #${actionIndexes.join(", #")} (view details with \`show mitigations\`)`
+      : "recorded mitigation items (view details with `show mitigations`)";
   switch (workflow) {
     case "build":
       return `Implement changes to mitigate the findings from ${inspection.run.workflow} run ${inspection.run.id}. Focus on: ${focus}`;
@@ -894,11 +897,15 @@ async function startMitigationWorkflow(cwd: string, inspection: RunInspection, t
           if (!action) {
             throw new Error(`Mitigation action ${parsed.actionIndex} is not available. Use \`show mitigations\` to inspect choices.`);
           }
-          return [action];
+          return [{ index: parsed.actionIndex, action }];
         })()
-      : actions;
+      : actions.map((action, index) => ({ index: index + 1, action }));
 
-  const prompt = buildMitigationPrompt(inspection, workflow, selectedActions);
+  const prompt = buildMitigationPrompt(
+    inspection,
+    workflow,
+    selectedActions.map((entry) => entry.index)
+  );
   const args: string[] = ["--from-run", inspection.run.id];
   if (inspection.run.inputs.safe) {
     args.push("--safe");
@@ -924,7 +931,7 @@ async function startMitigationWorkflow(cwd: string, inspection: RunInspection, t
     output: [
       `Started mitigation workflow: ${workflow}`,
       `Run: ${runId}`,
-      `Focus: ${selectedActions.join(" | ")}`
+      `Focus: ${selectedActions.map((entry) => entry.action).join(" | ")}`
     ].join("\n"),
     switchToRunId: runId
   };
