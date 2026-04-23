@@ -417,16 +417,11 @@ async function resolveBuildEnvironmentAssessment(cwd: string): Promise<BuildEnvi
     requiredTools.add("node");
     evidence.push("Detected a Node workspace from package.json / pnpm lockfiles.");
     if ((packageManager ?? "").startsWith("pnpm@") || (await pathExists(path.join(cwd, "pnpm-lock.yaml")))) {
-      requiredTools.add("pnpm");
-      requiredTools.add("corepack");
       evidence.push(`Root package manager: ${packageManager ?? "pnpm (inferred from lockfile)"}.`);
       if (!(await pathExists(path.join(cwd, "node_modules")))) {
-        bootstrapActions.push({
-          label: "bootstrap root pnpm workspace",
-          cwd,
-          command: "corepack pnpm install --frozen-lockfile",
-          rationale: "The workspace uses pnpm and has not been bootstrapped yet."
-        });
+        notes.push(
+          "Skipped automatic pnpm bootstrap because package-manager installs are not executed outside the Codex sandbox."
+        );
       }
     }
   }
@@ -440,16 +435,12 @@ async function resolveBuildEnvironmentAssessment(cwd: string): Promise<BuildEnvi
     )
   ).slice(0, 3);
   if (pyprojectDirs.length > 0) {
-    requiredTools.add("uv");
     evidence.push(`Detected ${pyprojectDirs.length} uv-managed Python workspace${pyprojectDirs.length > 1 ? "s" : ""}.`);
     for (const dir of pyprojectDirs) {
       if (!(await pathExists(path.join(dir, ".venv")))) {
-        bootstrapActions.push({
-          label: `bootstrap uv environment (${path.relative(cwd, dir) || "."})`,
-          cwd: dir,
-          command: "uv sync --frozen",
-          rationale: "The Python workspace uses uv and does not have a local environment yet."
-        });
+        notes.push(
+          `Skipped automatic uv bootstrap for ${path.relative(cwd, dir) || "."} because package-manager installs are not executed outside the Codex sandbox.`
+        );
       }
     }
   }
