@@ -320,12 +320,24 @@ describe("validation intelligence", () => {
     const commands = selectDefaultLocalCommands(profile, { status: "passed", requestedCommands: [], results: [] });
 
     expect(commands).toContain("pnpm check");
-    expect(commands).toContain("pnpm --dir packages/api lint");
-    expect(commands).toContain("pnpm --dir packages/api test");
-    expect(commands).toContain("cd packages/cli && uv run ruff check .");
-    expect(commands).toContain("cd packages/cli && uv run pytest");
+    expect(commands).toContain("pnpm --dir 'packages/api' lint");
+    expect(commands).toContain("pnpm --dir 'packages/api' test");
+    expect(commands).toContain("cd 'packages/cli' && uv run ruff check .");
+    expect(commands).toContain("cd 'packages/cli' && uv run pytest");
     expect(profile.prerequisites).toContain("Node 20.17.0 from .nvmrc");
     expect(profile.prerequisites).toContain("Python >=3.12 for packages/cli");
     expect(profile.prerequisites).toContain("uv available on PATH for packages/cli");
+  });
+
+  it("shell-quotes inferred nested workspace paths", async () => {
+    const nestedPath = path.join(repoDir, "packages", "evil;touch /tmp/cstack_pwned");
+    await fs.mkdir(nestedPath, { recursive: true });
+    await fs.writeFile(path.join(repoDir, "package.json"), JSON.stringify({ name: "fixture", private: true, packageManager: "pnpm@9.12.0" }), "utf8");
+    await fs.writeFile(path.join(nestedPath, "package.json"), JSON.stringify({ name: "@fixture/evil", private: true, scripts: { test: "vitest run" } }), "utf8");
+
+    const profile = await profileValidationRepository(repoDir);
+    const commands = selectDefaultLocalCommands(profile, { status: "passed", requestedCommands: [], results: [] });
+
+    expect(commands).toContain("pnpm --dir 'packages/evil;touch /tmp/cstack_pwned' test");
   });
 });

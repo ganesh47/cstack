@@ -647,17 +647,22 @@ function buildPackageScriptCommand(packageManager: "npm" | "pnpm" | "yarn", scri
   return packageManager === "npm" ? `npm run ${scriptName}` : `${packageManager} ${scriptName}`;
 }
 
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\"'\"'")}'`;
+}
+
 function buildWorkspacePackageScriptCommand(packageManager: "npm" | "pnpm" | "yarn", targetPath: string, scriptName: string): string {
   if (targetPath === ".") {
     return buildPackageScriptCommand(packageManager, scriptName);
   }
+  const quotedPath = shellQuote(targetPath);
   if (packageManager === "npm") {
-    return `npm --prefix ${targetPath} run ${scriptName}`;
+    return `npm --prefix ${quotedPath} run ${scriptName}`;
   }
   if (packageManager === "yarn") {
-    return `yarn --cwd ${targetPath} ${scriptName}`;
+    return `yarn --cwd ${quotedPath} ${scriptName}`;
   }
-  return `pnpm --dir ${targetPath} ${scriptName}`;
+  return `pnpm --dir ${quotedPath} ${scriptName}`;
 }
 
 function parsePyprojectRequiresPython(raw: string): string | null {
@@ -703,15 +708,15 @@ async function inferWorkspaceTargetDetails(options: {
       addPrerequisite(`uv available on PATH for ${options.targetPath}`);
     }
     if (/\[tool\.ruff\]/i.test(pyproject) || /\bruff\b/i.test(pyproject)) {
-      addCommand(`cd ${options.targetPath} && uv run ruff check .`);
+      addCommand(`cd ${shellQuote(options.targetPath)} && uv run ruff check .`);
     }
     if (/\[tool\.pytest\.ini_options\]/i.test(pyproject) || /\bpytest\b/i.test(pyproject)) {
-      addCommand(`cd ${options.targetPath} && uv run pytest`);
+      addCommand(`cd ${shellQuote(options.targetPath)} && uv run pytest`);
     }
   }
 
   if (options.manifests.includes("pom.xml")) {
-    addCommand(`mvn --batch-mode -f ${options.targetPath}/pom.xml verify`);
+    addCommand(`mvn --batch-mode -f ${shellQuote(`${options.targetPath}/pom.xml`)} verify`);
     addPrerequisite(`Java required for ${options.targetPath}`);
   }
 
