@@ -458,7 +458,7 @@ cstack inspect
 cstack inspect <run-id> --interactive
 ```
 
-By default, `cstack` uses `danger-full-access` and allows direct source execution for `build`, `ship`, and `deliver`. Use `--safe` on a run when you want that invocation to fall back to `workspace-write` plus clean-worktree execution for defaulted dirty-worktree settings.
+By default, `cstack` uses `workspace-write` and isolated execution checkouts for `build`, `ship`, and `deliver`. Use `--allow-dirty` when you explicitly want direct source execution for a run.
 
 While a run is active in a normal terminal, `cstack` renders a bounded ANSI dashboard instead of endlessly appending log lines.
 
@@ -551,8 +551,8 @@ Notes:
 
 - `command` can point at the installed `codex` binary or a script path for testing.
 - `sandbox`, `profile`, `model`, and `extraArgs` are passed through to Codex launches.
-- By default, `sandbox` resolves to `danger-full-access`, and `workflows.build.allowDirty`, `workflows.ship.allowDirty`, and `workflows.deliver.allowDirty` resolve to `true`.
-- Use `--safe` when you want one run to fall back to `workspace-write` and clean-worktree execution for defaulted `allowDirty` values.
+- By default, `sandbox` resolves to `workspace-write`, and `workflows.build.allowDirty`, `workflows.ship.allowDirty`, and `workflows.deliver.allowDirty` resolve to `false`.
+- Use `--allow-dirty` when you want one run to execute directly in the source checkout.
 - If repo or user config explicitly sets `sandbox` or `allowDirty`, that explicit config wins over `--safe`.
 - `--allow-all` is deprecated and currently accepted as a temporary no-op.
 - `workflows.build.mode` selects `interactive` or `exec`; interactive is the default for build runs.

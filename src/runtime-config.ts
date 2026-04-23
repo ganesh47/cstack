@@ -58,11 +58,11 @@ export function resolveSourceExecutionReason(options: {
   if (options.configuredAllowDirtySource && options.configuredAllowDirtySource !== "default") {
     return `Direct source execution was enabled by configured allowDirty for ${options.workflow}.`;
   }
-  return `Direct source execution used the default dangerous execution policy for ${options.workflow}.`;
+  return `Direct source execution used the default execution policy for ${options.workflow}.`;
 }
 
 export function emitDeprecatedAllowAllWarning(command: string): void {
   process.stderr.write(
-    `[cstack] Warning: \`--allow-all\` is deprecated for \`${command}\` and has no effect because dangerous execution is now the default.\n`
+    `[cstack] Warning: \`--allow-all\` is deprecated for \`${command}\` and has no effect.\n`
   );
 }

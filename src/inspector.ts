@@ -1221,7 +1221,7 @@ export function renderInspectionSummary(cwd: string, inspection: RunInspection):
         ? `- source snapshot: ${inspection.executionContext.source.branch} ${inspection.executionContext.source.commit}`
         : undefined,
       inspection.executionContext
-        ? `- execution policy: ${run.inputs.safe ? "dangerous default disabled via --safe" : "default dangerous execution"}`
+        ? `- execution policy: ${run.inputs.safe ? "safe overrides applied via --safe" : "default execution policy"}`
         : undefined,
       inspection.executionContext?.source.localChangesIgnored
         ? "- local dirty changes: ignored by default; execution used committed HEAD"

@@ -166,18 +166,18 @@ blockSeverities = ["medium", "high", "critical"]
     const { config, sources, provenance } = await loadConfig(repoDir);
 
     expect(sources).toHaveLength(0);
-    expect(config.codex.sandbox).toBe("danger-full-access");
+    expect(config.codex.sandbox).toBe("workspace-write");
     expect(config.workflows.spec.timeoutSeconds).toBe(600);
     expect(config.workflows.discover.timeoutSeconds).toBe(600);
-    expect(config.workflows.build.allowDirty).toBe(true);
+    expect(config.workflows.build.allowDirty).toBe(false);
     expect(config.workflows.build.timeoutSeconds).toBe(900);
     expect(config.workflows.review.mode).toBe("exec");
     expect(config.workflows.review.allowDirty).toBe(true);
     expect(config.workflows.review.timeoutSeconds).toBe(600);
     expect(config.workflows.ship.mode).toBe("exec");
-    expect(config.workflows.ship.allowDirty).toBe(true);
+    expect(config.workflows.ship.allowDirty).toBe(false);
     expect(config.workflows.ship.timeoutSeconds).toBe(600);
-    expect(config.workflows.deliver.allowDirty).toBe(true);
+    expect(config.workflows.deliver.allowDirty).toBe(false);
     expect(config.workflows.deliver.timeoutSeconds).toBe(900);
     expect(config.workflows.deliver.stageTimeoutSeconds?.build).toBe(900);
     expect(config.workflows.deliver.stageTimeoutSeconds?.validation).toBe(600);

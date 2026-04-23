@@ -252,7 +252,7 @@ export async function runShip(cwd: string, args: string[] = [], hooks: ShipRunHo
         `Run: ${runId}`,
         "Workflow: ship",
         `Status: ${finalRunRecord.status}`,
-        `Execution policy: ${policy.safe ? "dangerous default disabled via --safe" : "default dangerous execution"}`,
+        `Execution policy: ${policy.safe ? "safe overrides applied via --safe" : "default execution policy"}`,
         `Ship readiness: ${execution.shipRecord.readiness}`,
         `GitHub mutation: ${execution.githubMutationRecord.summary}`,
         `GitHub delivery: ${execution.githubDeliveryRecord.overall.status}`,

@@ -292,7 +292,7 @@ describe("runBuild", () => {
     expect(await fs.readFile(path.join(executionContext.execution.cwd, "codex-generated-change.txt"), "utf8")).toContain("generated");
   }, 60_000);
 
-  it("uses the source checkout and danger-full-access by default when sandbox and allowDirty are not configured", async () => {
+  it("uses an isolated checkout and workspace-write by default when sandbox and allowDirty are not configured", async () => {
     await fs.writeFile(path.join(repoDir, "local-only.txt"), "uncommitted\n", "utf8");
     const configPath = path.join(repoDir, ".cstack", "config.toml");
     await fs.writeFile(
@@ -322,15 +322,14 @@ describe("runBuild", () => {
       codexCommand: string[];
     };
 
-    expect(run.inputs.allowDirty).toBe(true);
+    expect(run.inputs.allowDirty).toBe(false);
     expect(executionContext.source.dirtyFiles).toContain("local-only.txt");
-    expect(executionContext.source.localChangesIgnored).toBe(false);
-    expect(executionContext.execution.kind).toBe("source");
-    expect(executionContext.execution.cwd).toBe(repoDir);
-    expect(executionContext.execution.notes.join(" ")).toContain("default dangerous execution policy");
+    expect(executionContext.source.localChangesIgnored).toBe(true);
+    expect(executionContext.execution.kind).toBe("git-worktree");
+    expect(executionContext.execution.cwd).not.toBe(repoDir);
     expect(session.codexCommand).toContain("--sandbox");
-    expect(session.codexCommand).toContain("danger-full-access");
-    expect(await fs.readFile(path.join(repoDir, "codex-generated-change.txt"), "utf8")).toContain("generated");
+    expect(session.codexCommand).toContain("workspace-write");
+    await expect(fs.access(path.join(repoDir, "codex-generated-change.txt"))).rejects.toThrow();
   }, 60_000);
 
   it("treats --allow-all as a deprecated no-op", async () => {

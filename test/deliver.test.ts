@@ -406,7 +406,7 @@ describe("runDeliver", () => {
     expect(lineage.stages.find((stage) => stage.name === "validation")?.status).toBe("deferred");
   }, 60_000);
 
-  it("uses the source checkout and danger-full-access by default when sandbox and allowDirty are not configured", async () => {
+  it("uses an isolated checkout and workspace-write by default when sandbox and allowDirty are not configured", async () => {
     const configPath = path.join(repoDir, ".cstack", "config.toml");
     const configBody = await fs.readFile(configPath, "utf8");
     await fs.writeFile(
@@ -451,15 +451,14 @@ describe("runDeliver", () => {
       codexCommand: string[];
     };
 
-    expect(run.inputs.allowDirty).toBe(true);
+    expect(run.inputs.allowDirty).toBe(false);
     expect(executionContext.source.dirtyFiles).toContain("src-change.txt");
-    expect(executionContext.source.localChangesIgnored).toBe(false);
-    expect(executionContext.execution.kind).toBe("source");
-    expect(executionContext.execution.cwd).toBe(repoDir);
-    expect(executionContext.execution.notes.join(" ")).toContain("default dangerous execution policy");
+    expect(executionContext.source.localChangesIgnored).toBe(true);
+    expect(executionContext.execution.kind).toBe("git-worktree");
+    expect(executionContext.execution.cwd).not.toBe(repoDir);
     expect(buildSession.codexCommand).toContain("--sandbox");
-    expect(buildSession.codexCommand).toContain("danger-full-access");
-    expect(await fs.readFile(path.join(repoDir, "codex-generated-change.txt"), "utf8")).toContain("generated");
+    expect(buildSession.codexCommand).toContain("workspace-write");
+    await expect(fs.access(path.join(repoDir, "codex-generated-change.txt"))).rejects.toThrow();
   }, 60_000);
 
   it("treats --allow-all as a deprecated no-op when source execution is otherwise disabled", async () => {
