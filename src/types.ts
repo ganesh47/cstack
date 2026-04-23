@@ -440,6 +440,8 @@ export interface ConfigValueProvenance {
 
 export interface ConfigProvenance {
   codexSandbox: ConfigValueProvenance;
+  buildVerificationCommands: ConfigValueProvenance;
+  defaultVerificationCommands: ConfigValueProvenance;
   workflowAllowDirty: {
     build: ConfigValueProvenance;
     ship: ConfigValueProvenance;

@@ -548,6 +548,8 @@ function validateConfigDocument(source: string, value: unknown): void {
 function createDefaultProvenance(): ConfigProvenance {
   return {
     codexSandbox: { source: "default" },
+    buildVerificationCommands: { source: "default" },
+    defaultVerificationCommands: { source: "default" },
     workflowAllowDirty: {
       build: { source: "default" },
       ship: { source: "default" },
@@ -564,6 +566,12 @@ function updateProvenanceFromDocument(
 ): void {
   if (hasConfigPath(parsed, ["codex", "sandbox"])) {
     provenance.codexSandbox = { source: sourceKind, sourcePath };
+  }
+  if (hasConfigPath(parsed, ["workflows", "build", "verificationCommands"])) {
+    provenance.buildVerificationCommands = { source: sourceKind, sourcePath };
+  }
+  if (hasConfigPath(parsed, ["verification", "defaultCommands"])) {
+    provenance.defaultVerificationCommands = { source: sourceKind, sourcePath };
   }
   for (const workflowName of ["build", "ship", "deliver"] as const) {
     if (hasConfigPath(parsed, ["workflows", workflowName, "allowDirty"])) {
