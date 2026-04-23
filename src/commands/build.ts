@@ -139,9 +139,15 @@ export async function runBuild(cwd: string, args: string[] = []): Promise<string
   ]);
   const maxCodexAttempts = config.workflows.build.maxCodexAttempts ?? 3;
 
+  const buildVerificationCommands = provenance.buildVerificationCommands.source === "repo"
+    ? []
+    : (config.workflows.build.verificationCommands ?? []);
+  const defaultVerificationCommands = provenance.defaultVerificationCommands.source === "repo"
+    ? []
+    : (config.verification?.defaultCommands ?? []);
   const verificationCommands = [
-    ...(config.workflows.build.verificationCommands ?? []),
-    ...((config.workflows.build.verificationCommands?.length ?? 0) > 0 ? [] : (config.verification?.defaultCommands ?? []))
+    ...buildVerificationCommands,
+    ...(buildVerificationCommands.length > 0 ? [] : defaultVerificationCommands)
   ];
   const requestedMode = parsed.options.requestedMode ?? config.workflows.build.mode ?? "interactive";
   const timeoutSeconds = config.workflows.build.timeoutSeconds;
