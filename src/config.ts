@@ -7,7 +7,7 @@ import type { ConfigProvenance, ConfigValueSource, CstackConfig } from "./types.
 const DEFAULT_CONFIG: CstackConfig = {
   codex: {
     command: process.env.CSTACK_CODEX_BIN || "codex",
-    sandbox: "danger-full-access",
+    sandbox: "workspace-write",
     extraArgs: []
   },
   workflows: {
@@ -40,7 +40,7 @@ const DEFAULT_CONFIG: CstackConfig = {
     build: {
       mode: "interactive",
       verificationCommands: [],
-      allowDirty: true,
+      allowDirty: false,
       maxCodexAttempts: 3,
       timeoutSeconds: 900,
       capabilities: {
@@ -69,7 +69,7 @@ const DEFAULT_CONFIG: CstackConfig = {
     ship: {
       mode: "exec",
       verificationCommands: [],
-      allowDirty: true,
+      allowDirty: false,
       timeoutSeconds: 600,
       capabilities: {
         allowed: ["shell", "github"],
@@ -83,7 +83,7 @@ const DEFAULT_CONFIG: CstackConfig = {
     deliver: {
       mode: "interactive",
       verificationCommands: [],
-      allowDirty: true,
+      allowDirty: false,
       timeoutSeconds: 900,
       capabilities: {
         allowed: ["shell", "github", "browser"],

@@ -300,7 +300,7 @@ export async function runDeliver(cwd: string, args: string[] = [], hooks: Delive
         `Mode: requested=${requestedMode} observed=${execution.buildExecution.observedMode}`,
         `Status: ${finalRunRecord.status}`,
         buildSession.sessionId ? `Build session: ${buildSession.sessionId}` : "Build session: not observed",
-        `Execution policy: ${policy.safe ? "dangerous default disabled via --safe" : "default dangerous execution"}`,
+        `Execution policy: ${policy.safe ? "safe overrides applied via --safe" : "default execution policy"}`,
         `Execution checkout: ${executionCheckout.record.execution.kind} @ ${executionCheckout.record.execution.cwd}`,
         `Source snapshot: ${executionCheckout.record.source.branch} ${executionCheckout.record.source.commit}`,
         executionCheckout.record.source.dirtyFiles.length > 0 && !allowDirty

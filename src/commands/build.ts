@@ -259,7 +259,7 @@ export async function runBuild(cwd: string, args: string[] = []): Promise<string
         `Mode: requested=${requestedMode} observed=${execution.observedMode}`,
         `Status: ${runRecord.status}`,
         execution.result.sessionId ? `Session: ${execution.result.sessionId}` : "Session: not observed",
-        `Execution policy: ${policy.safe ? "dangerous default disabled via --safe" : "default dangerous execution"}`,
+        `Execution policy: ${policy.safe ? "safe overrides applied via --safe" : "default execution policy"}`,
         `Execution checkout: ${executionCheckout.record.execution.kind} @ ${executionCheckout.record.execution.cwd}`,
         `Source snapshot: ${executionCheckout.record.source.branch} ${executionCheckout.record.source.commit}`,
         executionCheckout.record.source.dirtyFiles.length > 0 && !allowDirty
