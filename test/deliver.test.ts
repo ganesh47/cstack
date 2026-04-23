@@ -99,13 +99,19 @@ async function initGitRepo(repoDir: string): Promise<{ remoteDir: string }> {
 describe("runDeliver", () => {
   let repoDir: string;
   let remoteDir: string;
+  let originalPath: string | undefined;
 
   beforeEach(async () => {
     repoDir = await fs.mkdtemp(path.join(os.tmpdir(), "cstack-deliver-"));
     const fakeCodexPath = path.resolve("test/fixtures/fake-codex.mjs");
     const fakeGhPath = path.resolve("test/fixtures/fake-gh.mjs");
+    const fakeGhBinDir = await fs.mkdtemp(path.join(os.tmpdir(), "cstack-deliver-fake-gh-bin-"));
     chmodSync(fakeCodexPath, 0o755);
     chmodSync(fakeGhPath, 0o755);
+    await fs.copyFile(fakeGhPath, path.join(fakeGhBinDir, "gh"));
+    chmodSync(path.join(fakeGhBinDir, "gh"), 0o755);
+    originalPath = process.env.PATH;
+    process.env.PATH = `${fakeGhBinDir}${path.delimiter}${originalPath ?? ""}`;
 
     await fs.mkdir(path.join(repoDir, ".cstack", "prompts"), { recursive: true });
     await fs.mkdir(path.join(repoDir, ".cstack", "runs"), { recursive: true });
@@ -131,7 +137,7 @@ describe("runDeliver", () => {
         "",
         "[workflows.deliver.github]",
         'enabled = true',
-        `command = "${fakeGhPath.replaceAll("\\", "\\\\")}"`,
+        'command = "gh"',
         'repository = "ganesh47/cstack"',
         'pushBranch = true',
         'branchPrefix = "cstack"',
@@ -167,6 +173,7 @@ describe("runDeliver", () => {
   });
 
   afterEach(async () => {
+    process.env.PATH = originalPath;
     delete process.env.FAKE_CODEX_FAIL_BUILD;
     delete process.env.FAKE_CODEX_DELAY_MS;
     delete process.env.FAKE_CODEX_VALIDATION_COMMAND;
@@ -1599,7 +1606,7 @@ describe("runDeliver", () => {
       issueNumbers: [906],
       policy: {
         enabled: true,
-        command: path.resolve("test/fixtures/fake-gh.mjs"),
+        command: "gh",
         repository: "ganesh47/cstack",
         pushBranch: true,
         branchPrefix: "cstack",
