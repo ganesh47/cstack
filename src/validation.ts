@@ -1412,6 +1412,17 @@ async function runCommandSet(cwd: string, runDir: string, commands: string[]): P
   };
 }
 
+function selectApprovedLocalValidationCommands(requested: string[], inferred: string[]): string[] {
+  const approved = new Set(uniqueStrings(inferred));
+  const selected: string[] = [];
+  for (const command of uniqueStrings(requested)) {
+    if (approved.has(command)) {
+      selected.push(command);
+    }
+  }
+  return selected;
+}
+
 async function runValidationSpecialist(options: {
   cwd: string;
   runId: string;
@@ -2107,12 +2118,16 @@ export async function runDeliverValidationExecution(options: DeliverValidationEx
         };
   }
 
+  const approvedLocalCommands = selectApprovedLocalValidationCommands(
+    validationPlan.localValidation.commands,
+    initialPlan.localValidation.commands
+  );
   const localValidationRecord: DeliverValidationLocalRecord =
     result.code === 0
-      ? await runCommandSet(options.cwd, options.paths.stageDir, validationPlan.localValidation.commands)
+      ? await runCommandSet(options.cwd, options.paths.stageDir, approvedLocalCommands)
       : {
           status: "not-run",
-          requestedCommands: validationPlan.localValidation.commands,
+          requestedCommands: approvedLocalCommands,
           results: [],
           notes: "Local validation commands were skipped because the validation lead did not complete successfully."
         };
